@@ -30,7 +30,7 @@ export function SearchResults({ results }: SearchResultsProps) {
       {results.map((entity) => (
         <a
           key={entity.id}
-          href={`/entity/${entity.id}?type=${entity.entity_type}`}
+          href={`/entity?id=${entity.id}&type=${entity.entity_type}`}
           className="block bg-white rounded-lg p-4 border border-gray-200 hover:border-blue-300
                      hover:shadow-sm transition"
         >

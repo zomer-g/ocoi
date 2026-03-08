@@ -4,6 +4,15 @@ version = "0.1.0"
 description = "אינטרסים לעם — Conflict of Interest Transparency Platform"
 requires-python = ">=3.12"
 readme = "README.md"
+dependencies = [
+    "ocoi-common",
+    "ocoi-db",
+    "ocoi-importer",
+    "ocoi-converter",
+    "ocoi-extractor",
+    "ocoi-matcher",
+    "ocoi-api",
+]
 
 [tool.uv.workspace]
 members = ["packages/*"]

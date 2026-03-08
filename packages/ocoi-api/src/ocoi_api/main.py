@@ -1,10 +1,13 @@
 """FastAPI application factory."""
 
 import os
+from pathlib import Path
 import uvicorn
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
@@ -36,17 +39,19 @@ async def lifespan(app: FastAPI):
 
 
 def _get_allowed_origins() -> list[str]:
-    """Return allowed origins from env var, defaulting to localhost for dev."""
+    """Return allowed origins from env var for external API consumers."""
     origins_env = os.getenv("ALLOWED_ORIGINS", "")
     if origins_env:
         return [o.strip() for o in origins_env.split(",") if o.strip()]
-    # Default: local development origins only
-    return [
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
-    ]
+    return []
+
+
+def _get_static_dir() -> Path | None:
+    """Return the static files directory if it exists."""
+    static_dir = Path(os.getenv("STATIC_DIR", "./frontend/out"))
+    if static_dir.is_dir() and (static_dir / "index.html").exists():
+        return static_dir
+    return None
 
 
 def create_app() -> FastAPI:
@@ -62,15 +67,18 @@ def create_app() -> FastAPI:
     # Security headers
     app.add_middleware(SecurityHeadersMiddleware)
 
-    # CORS — restricted to explicit origins, no wildcard credentials
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=_get_allowed_origins(),
-        allow_credentials=False,
-        allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Content-Type", "Authorization"],
-    )
+    # CORS — only needed for external API consumers (frontend is same-origin)
+    allowed_origins = _get_allowed_origins()
+    if allowed_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=allowed_origins,
+            allow_credentials=False,
+            allow_methods=["GET", "POST", "OPTIONS"],
+            allow_headers=["Content-Type", "Authorization"],
+        )
 
+    # ── API routers (matched first) ──────────────────────────────────────
     app.include_router(search.router, prefix="/api/v1")
     app.include_router(entities.router, prefix="/api/v1")
     app.include_router(connections.router, prefix="/api/v1")
@@ -80,6 +88,35 @@ def create_app() -> FastAPI:
     @app.get("/api/health")
     async def health():
         return {"status": "ok"}
+
+    # ── Static frontend (SPA fallback) ───────────────────────────────────
+    static_dir = _get_static_dir()
+    if static_dir:
+        # Root must be registered before catch-all
+        @app.get("/", include_in_schema=False)
+        async def serve_root():
+            return FileResponse(static_dir / "index.html", media_type="text/html")
+
+        # Catch-all: serve static files or SPA fallback
+        @app.get("/{path:path}", include_in_schema=False)
+        async def spa_fallback(request: Request, path: str):
+            # Try to serve the exact file first
+            file_path = static_dir / path
+            if file_path.is_file():
+                return FileResponse(file_path)
+
+            # Try path + .html (Next.js static export generates graph.html, entity.html, etc.)
+            html_path = static_dir / f"{path}.html"
+            if html_path.is_file():
+                return FileResponse(html_path, media_type="text/html")
+
+            # Try path/index.html
+            index_path = static_dir / path / "index.html"
+            if index_path.is_file():
+                return FileResponse(index_path, media_type="text/html")
+
+            # Fallback to index.html for SPA client-side routing
+            return FileResponse(static_dir / "index.html", media_type="text/html")
 
     return app
 

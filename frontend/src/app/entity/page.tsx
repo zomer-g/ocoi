@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useParams, useSearchParams } from "next/navigation";
+import { useEffect, useState, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import { ConnectionMap } from "@/components/graph/ConnectionMap";
 import type { SubGraph } from "@/lib/api-client";
 
@@ -17,10 +17,9 @@ interface EntityData {
   status?: string;
 }
 
-export default function EntityPage() {
-  const params = useParams();
+function EntityContent() {
   const searchParams = useSearchParams();
-  const id = params.id as string;
+  const id = searchParams.get("id") || "";
   const type = searchParams.get("type") || "person";
 
   const [entity, setEntity] = useState<EntityData | null>(null);
@@ -28,6 +27,11 @@ export default function EntityPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    if (!id) {
+      setLoading(false);
+      return;
+    }
+
     const fetchData = async () => {
       setLoading(true);
       try {
@@ -58,7 +62,7 @@ export default function EntityPage() {
   }, [id, type]);
 
   if (loading) return <div className="text-center py-12 text-gray-400">טוען...</div>;
-  if (!entity) return <div className="text-center py-12 text-gray-400">לא נמצא</div>;
+  if (!id || !entity) return <div className="text-center py-12 text-gray-400">לא נמצא</div>;
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-8">
@@ -99,12 +103,20 @@ export default function EntityPage() {
               centerId={id}
               centerType={type}
               onNodeClick={(nodeId, nodeType) => {
-                window.location.href = `/entity/${nodeId}?type=${nodeType}`;
+                window.location.href = `/entity?id=${nodeId}&type=${nodeType}`;
               }}
             />
           </div>
         </div>
       )}
     </div>
+  );
+}
+
+export default function EntityPage() {
+  return (
+    <Suspense fallback={<div className="text-center py-12 text-gray-400">טוען...</div>}>
+      <EntityContent />
+    </Suspense>
   );
 }

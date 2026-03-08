@@ -98,7 +98,7 @@ export default function GraphPage() {
           <ConnectionMap
             graph={graph}
             onNodeClick={(nodeId, nodeType) => {
-              window.location.href = `/entity/${nodeId}?type=${nodeType}`;
+              window.location.href = `/entity?id=${nodeId}&type=${nodeType}`;
             }}
             onExpandNode={handleExpand}
           />
