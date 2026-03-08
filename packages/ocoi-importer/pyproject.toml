@@ -1,0 +1,27 @@
+[project]
+name = "ocoi-importer"
+version = "0.1.0"
+description = "Data import from CKAN (odata.org.il) and gov.il sources"
+requires-python = ">=3.12"
+dependencies = [
+    "ocoi-common",
+    "ocoi-db",
+    "httpx>=0.27",
+    "click>=8.0",
+    "tenacity>=9.0",
+    "tqdm>=4.66",
+]
+
+[project.scripts]
+ocoi-import = "ocoi_importer.cli:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ocoi_importer"]
+
+[tool.uv.sources]
+ocoi-common = { workspace = true }
+ocoi-db = { workspace = true }

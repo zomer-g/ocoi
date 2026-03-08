@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+
+# Environment / Secrets
+.env
+*.env.local
+
+# Database
+*.db
+data/
+
+# Caches
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+
+# Node / Frontend
+node_modules/
+.next/
+frontend/.next/
+frontend/node_modules/
+
+# Claude
+.claude/
+
+# Locks (regenerated per-platform)
+uv.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

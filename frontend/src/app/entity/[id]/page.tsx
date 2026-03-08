@@ -1,0 +1,110 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { useParams, useSearchParams } from "next/navigation";
+import { ConnectionMap } from "@/components/graph/ConnectionMap";
+import type { SubGraph } from "@/lib/api-client";
+
+interface EntityData {
+  id: string;
+  name_hebrew: string;
+  name_english?: string;
+  title?: string;
+  position?: string;
+  ministry?: string;
+  registration_number?: string;
+  company_type?: string;
+  status?: string;
+}
+
+export default function EntityPage() {
+  const params = useParams();
+  const searchParams = useSearchParams();
+  const id = params.id as string;
+  const type = searchParams.get("type") || "person";
+
+  const [entity, setEntity] = useState<EntityData | null>(null);
+  const [graph, setGraph] = useState<SubGraph | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchData = async () => {
+      setLoading(true);
+      try {
+        const plural =
+          type === "person" ? "persons"
+          : type === "company" ? "companies"
+          : type === "association" ? "associations"
+          : "domains";
+
+        const [entityRes, graphRes] = await Promise.all([
+          fetch(`/api/v1/${plural}/${id}`),
+          fetch(`/api/v1/graph/neighbors/${id}?type=${type}&depth=1`),
+        ]);
+
+        const entityData = await entityRes.json();
+        const graphData = await graphRes.json();
+
+        setEntity(entityData.data);
+        setGraph(graphData.data);
+      } catch {
+        // ignore
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchData();
+  }, [id, type]);
+
+  if (loading) return <div className="text-center py-12 text-gray-400">טוען...</div>;
+  if (!entity) return <div className="text-center py-12 text-gray-400">לא נמצא</div>;
+
+  return (
+    <div className="max-w-6xl mx-auto px-4 py-8">
+      <div className="bg-white rounded-lg p-6 border mb-6">
+        <h1 className="text-3xl font-bold mb-2">{entity.name_hebrew}</h1>
+        {entity.name_english && (
+          <p className="text-gray-500" dir="ltr">{entity.name_english}</p>
+        )}
+
+        <div className="mt-4 grid grid-cols-2 gap-4 text-sm">
+          {entity.title && (
+            <div><span className="text-gray-500">תואר:</span> {entity.title}</div>
+          )}
+          {entity.position && (
+            <div><span className="text-gray-500">תפקיד:</span> {entity.position}</div>
+          )}
+          {entity.ministry && (
+            <div><span className="text-gray-500">משרד:</span> {entity.ministry}</div>
+          )}
+          {entity.registration_number && (
+            <div><span className="text-gray-500">מספר רישום:</span> {entity.registration_number}</div>
+          )}
+          {entity.company_type && (
+            <div><span className="text-gray-500">סוג:</span> {entity.company_type}</div>
+          )}
+          {entity.status && (
+            <div><span className="text-gray-500">סטטוס:</span> {entity.status}</div>
+          )}
+        </div>
+      </div>
+
+      {graph && (graph.nodes.length > 0 || graph.edges.length > 0) && (
+        <div className="bg-white rounded-lg border">
+          <h2 className="text-lg font-semibold p-4 border-b">מפת קשרים</h2>
+          <div className="h-[500px]">
+            <ConnectionMap
+              graph={graph}
+              centerId={id}
+              centerType={type}
+              onNodeClick={(nodeId, nodeType) => {
+                window.location.href = `/entity/${nodeId}?type=${nodeType}`;
+              }}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,36 @@
+[project]
+name = "ocoi"
+version = "0.1.0"
+description = "אינטרסים לעם — Conflict of Interest Transparency Platform"
+requires-python = ">=3.12"
+readme = "README.md"
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+ocoi-common = { workspace = true }
+ocoi-db = { workspace = true }
+ocoi-importer = { workspace = true }
+ocoi-converter = { workspace = true }
+ocoi-extractor = { workspace = true }
+ocoi-matcher = { workspace = true }
+ocoi-api = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["packages"]
