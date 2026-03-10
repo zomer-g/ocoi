@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -9,6 +10,23 @@ class Settings(BaseSettings):
     # Database (defaults to local SQLite — set to postgresql+asyncpg://... for production)
     database_url: str = "sqlite+aiosqlite:///./data/ocoi.db"
     database_url_sync: str = "sqlite:///./data/ocoi.db"
+
+    @model_validator(mode="after")
+    def _fix_pg_urls(self):
+        """Render provides postgres:// — convert to SQLAlchemy-compatible schemes."""
+        if self.database_url.startswith("postgres://"):
+            self.database_url = self.database_url.replace(
+                "postgres://", "postgresql+asyncpg://", 1
+            )
+            self.database_url_sync = self.database_url.replace(
+                "postgresql+asyncpg://", "postgresql://", 1
+            )
+        elif self.database_url.startswith("postgresql://"):
+            self.database_url_sync = self.database_url
+            self.database_url = self.database_url.replace(
+                "postgresql://", "postgresql+asyncpg://", 1
+            )
+        return self
 
     # Redis
     redis_url: str = "redis://localhost:6379/0"
