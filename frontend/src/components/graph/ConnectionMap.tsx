@@ -88,7 +88,7 @@ export function ConnectionMap({
             "text-valign": "bottom",
             "text-margin-y": 5,
             "font-size": 11,
-            "font-family": "Arial, sans-serif",
+            "font-family": "Rubik, Heebo, sans-serif",
             width: 35,
             height: 35,
             "background-color": (ele: { data: (key: string) => string }) =>
@@ -96,7 +96,7 @@ export function ConnectionMap({
             "border-width": (ele: { data: (key: string) => boolean }) =>
               ele.data("isCenter") ? 3 : 1,
             "border-color": (ele: { data: (key: string) => boolean }) =>
-              ele.data("isCenter") ? "#1D4ED8" : "#E5E7EB",
+              ele.data("isCenter") ? "#06607C" : "#E5E7EB",
           },
         },
         {
@@ -117,7 +117,7 @@ export function ConnectionMap({
           selector: "node:selected",
           style: {
             "border-width": 3,
-            "border-color": "#1D4ED8",
+            "border-color": "#06607C",
           },
         },
       ],

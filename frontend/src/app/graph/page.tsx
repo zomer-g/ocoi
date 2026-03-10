@@ -70,20 +70,22 @@ export default function GraphPage() {
 
   return (
     <div className="h-[calc(100vh-60px)] flex flex-col">
-      <div className="p-4 border-b bg-white">
+      <div className="p-4 border-b border-gray-200 bg-white">
         <form onSubmit={handleSearch} className="flex gap-2 max-w-xl">
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="חיפוש ישות להצגה במפת קשרים..."
-            className="flex-1 px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm
+                       focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
             dir="rtl"
           />
           <button
             type="submit"
             disabled={loading}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50"
+            className="px-4 py-2 bg-primary-700 text-white rounded-lg text-sm font-medium
+                       hover:bg-primary-800 transition-colors disabled:opacity-50"
           >
             {loading ? "טוען..." : "הצג מפה"}
           </button>

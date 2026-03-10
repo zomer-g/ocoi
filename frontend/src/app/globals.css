@@ -1,1 +1,34 @@
 @import "tailwindcss";
+
+@theme {
+  --color-primary-50: #E8F5F9;
+  --color-primary-100: #CCEBF3;
+  --color-primary-200: #9CD9EA;
+  --color-primary-300: #68C4DE;
+  --color-primary-400: #38AED0;
+  --color-primary-500: #1094B8;
+  --color-primary-600: #0A7A9A;
+  --color-primary-700: #06607C;
+  --color-primary-800: #044E66;
+  --color-primary-900: #003647;
+}
+
+@layer base {
+  body {
+    font-family: 'Rubik', 'Heebo', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-size: 16px;
+    line-height: 1.5;
+  }
+
+  *:focus-visible {
+    outline: 3px solid #06607C;
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}

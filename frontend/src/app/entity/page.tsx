@@ -65,9 +65,9 @@ function EntityContent() {
   if (!id || !entity) return <div className="text-center py-12 text-gray-400">לא נמצא</div>;
 
   return (
-    <div className="max-w-6xl mx-auto px-4 py-8">
-      <div className="bg-white rounded-lg p-6 border mb-6">
-        <h1 className="text-3xl font-bold mb-2">{entity.name_hebrew}</h1>
+    <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <div className="bg-white rounded-lg p-6 border border-gray-200 mb-6">
+        <h1 className="text-3xl font-bold text-gray-900 mb-2">{entity.name_hebrew}</h1>
         {entity.name_english && (
           <p className="text-gray-500" dir="ltr">{entity.name_english}</p>
         )}
@@ -95,8 +95,8 @@ function EntityContent() {
       </div>
 
       {graph && (graph.nodes.length > 0 || graph.edges.length > 0) && (
-        <div className="bg-white rounded-lg border">
-          <h2 className="text-lg font-semibold p-4 border-b">מפת קשרים</h2>
+        <div className="bg-white rounded-lg border border-gray-200">
+          <h2 className="text-lg font-semibold text-gray-900 p-4 border-b border-gray-200">מפת קשרים</h2>
           <div className="h-[500px]">
             <ConnectionMap
               graph={graph}
