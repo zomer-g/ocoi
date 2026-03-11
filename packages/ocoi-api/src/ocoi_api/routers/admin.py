@@ -333,6 +333,25 @@ async def ckan_import(body: dict):
 
 # ── Gov.il: automated bulk import ────────────────────────────────────────
 
+@router.post("/import/govil/proxy")
+async def govil_proxy(request: Request):
+    """Proxy a single Gov.il API page request (avoids browser CORS)."""
+    import httpx as hx
+    body = await request.json()
+    headers = {
+        "Content-Type": "application/json;charset=utf-8",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Origin": "https://www.gov.il",
+        "Referer": "https://www.gov.il/he/departments/dynamiccollectors/ministers_conflict",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    }
+    async with hx.AsyncClient(timeout=30, follow_redirects=True, headers=headers) as client:
+        resp = await client.post("https://www.gov.il/he/api/DynamicCollector", json=body)
+        resp.raise_for_status()
+        return resp.json()
+
+
 @router.post("/import/govil/trigger")
 async def govil_trigger(
     background_tasks: BackgroundTasks,

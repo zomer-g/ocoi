@@ -143,44 +143,38 @@ export interface GovilApiItem {
   [key: string]: unknown;
 }
 
-const GOVIL_API_URL = "https://www.gov.il/he/api/DynamicCollector";
 const GOVIL_TEMPLATE_ID = "c6e0f53e-02c0-4db1-ae89-76590f0f502e";
 
-/** Fetch all Gov.il records directly from the user's browser (bypasses Cloudflare). */
+/** Fetch a single page from Gov.il via our backend proxy (avoids CORS). */
+async function govilProxyFetch(skip: number, quantity: number = 20) {
+  const res = await fetch(`${ADMIN_BASE}/import/govil/proxy`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      DynamicTemplateID: GOVIL_TEMPLATE_ID,
+      QueryFilters: {},
+      From: skip,
+      Quantity: quantity,
+    }),
+  });
+  if (!res.ok) throw new Error(`Proxy error: ${res.status}`);
+  return res.json();
+}
+
+/** Fetch all Gov.il records page by page via backend proxy. */
 export async function fetchGovilFromBrowser(
   onProgress?: (fetched: number, total: number) => void
 ): Promise<GovilApiItem[]> {
   const pageSize = 20;
-  const firstResp = await fetch(GOVIL_API_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json;charset=utf-8" },
-    body: JSON.stringify({
-      DynamicTemplateID: GOVIL_TEMPLATE_ID,
-      QueryFilters: {},
-      From: 0,
-      Quantity: pageSize,
-    }),
-  });
-  if (!firstResp.ok) throw new Error(`Gov.il API error: ${firstResp.status}`);
-  const firstData = await firstResp.json();
+  const firstData = await govilProxyFetch(0, pageSize);
   const totalResults: number = firstData.TotalResults || 0;
   const allItems: GovilApiItem[] = [...(firstData.Results || [])];
   onProgress?.(allItems.length, totalResults);
 
   let skip = allItems.length;
   while (skip < totalResults) {
-    const resp = await fetch(GOVIL_API_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json;charset=utf-8" },
-      body: JSON.stringify({
-        DynamicTemplateID: GOVIL_TEMPLATE_ID,
-        QueryFilters: {},
-        From: skip,
-        Quantity: pageSize,
-      }),
-    });
-    if (!resp.ok) break;
-    const data = await resp.json();
+    const data = await govilProxyFetch(skip, pageSize);
     const results: GovilApiItem[] = data.Results || [];
     if (results.length === 0) break;
     allItems.push(...results);
