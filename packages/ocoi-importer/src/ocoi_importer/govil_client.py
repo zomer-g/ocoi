@@ -110,22 +110,32 @@ class GovilClient:
             timeout=30, follow_redirects=True, headers=headers
         ) as client:
             first = await self._httpx_fetch(client, 0, quantity=page_size)
-            total = first.get("TotalResults", 0)
+            total_reported = first.get("TotalResults", 0)
             all_items = list(first.get("Results", []))
-            logger.info(f"Direct API: {total} total records, got {len(all_items)}")
+            logger.info(
+                f"Direct API: TotalResults={total_reported}, "
+                f"first page returned {len(all_items)} items"
+            )
 
-            skip = page_size
-            while skip < total:
+            # Always probe next pages (TotalResults may undercount)
+            skip = len(all_items)
+            empty_pages = 0
+            while empty_pages < 2:  # stop after 2 consecutive empty pages
+                if skip >= 10000:  # safety cap
+                    break
                 data = await self._httpx_fetch(client, skip, quantity=page_size)
                 results = data.get("Results", [])
                 if not results:
-                    break
+                    empty_pages += 1
+                    skip += page_size
+                    continue
+                empty_pages = 0
                 all_items.extend(results)
-                logger.info(f"Direct API: fetched {len(all_items)}/{total}")
-                skip += page_size
+                logger.info(f"Direct API: fetched {len(all_items)} records (skip={skip})")
+                skip += len(results)
 
         records = [r for item in all_items if (r := self._parse_item(item))]
-        logger.info(f"Direct API: parsed {len(records)} records")
+        logger.info(f"Direct API: parsed {len(records)} records total")
         return records
 
     async def _httpx_fetch(self, client: httpx.AsyncClient, skip: int, quantity: int = 100) -> dict:
@@ -133,7 +143,7 @@ class GovilClient:
             GOVIL_API_URL,
             json={
                 "DynamicTemplateID": GOVIL_TEMPLATE_ID,
-                "QueryFilters": {"skip": {"Query": skip}},
+                "QueryFilters": {},
                 "From": skip,
                 "Quantity": quantity,
             },
@@ -304,7 +314,7 @@ class GovilClient:
                     headers: {'Content-Type': 'application/json;charset=utf-8'},
                     body: JSON.stringify({
                         DynamicTemplateID: params.templateId,
-                        QueryFilters: {skip: {Query: params.skip}},
+                        QueryFilters: {},
                         From: params.skip,
                         Quantity: params.quantity
                     })

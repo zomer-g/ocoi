@@ -1,11 +1,19 @@
 """Import service — CKAN search + selective import, Gov.il bulk import."""
 
+import hashlib
+import logging
 from datetime import datetime, timezone
+from pathlib import Path
+
+import httpx
 
 from sqlalchemy import select
+from ocoi_common.config import settings
 from ocoi_db.engine import async_session_factory
 from ocoi_db.crud import get_or_create_source, create_document
 from ocoi_db.models import Document
+
+logger = logging.getLogger("ocoi.api.import")
 
 # Module-level state for Gov.il bulk import progress polling
 _import_state: dict = {
@@ -173,7 +181,7 @@ async def run_govil_import(limit: int = 0) -> dict:
 
 
 async def _import_govil(limit: int):
-    """Import documents from Gov.il using Playwright headless browser."""
+    """Import documents from Gov.il — fetch metadata, download PDFs, convert to markdown."""
     from ocoi_importer.govil_client import GovilClient
 
     client = GovilClient()
@@ -204,7 +212,7 @@ async def _import_govil(limit: int):
     _import_state["new_to_import"] = len(new_records)
     _import_state["total"] = len(new_records)
 
-    # Phase 3: Import only new records
+    # Phase 3: Import new records — save to DB, download PDF, convert to markdown
     imported_at = datetime.now(timezone.utc).isoformat()
     async with async_session_factory() as session:
         for record in new_records:
@@ -226,7 +234,7 @@ async def _import_govil(limit: int):
                     url=doc_info.file_url,
                     metadata_json=metadata,
                 )
-                await create_document(
+                db_doc = await create_document(
                     session,
                     source_id=src.id,
                     title=doc_info.title,
@@ -234,6 +242,21 @@ async def _import_govil(limit: int):
                     file_format="pdf",
                     file_size=doc_info.file_size,
                 )
+
+                # Download PDF and convert to markdown
+                md_text = await _download_and_convert_pdf(
+                    file_url=doc_info.file_url,
+                    doc_id=str(db_doc.id),
+                )
+                if md_text:
+                    db_doc.markdown_content = md_text
+                    db_doc.conversion_status = "converted"
+                    db_doc.file_path = str(
+                        settings.pdf_dir / f"{db_doc.id}.pdf"
+                    )
+                else:
+                    db_doc.conversion_status = "failed"
+
                 _import_state["imported"] += 1
 
             except Exception as e:
@@ -244,3 +267,34 @@ async def _import_govil(limit: int):
                     )
 
         await session.commit()
+
+
+async def _download_and_convert_pdf(file_url: str, doc_id: str) -> str | None:
+    """Download a PDF from URL, save to disk, convert to markdown."""
+    try:
+        import pymupdf4llm
+
+        # Download PDF
+        pdf_path = settings.pdf_dir / f"{doc_id}.pdf"
+        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as http:
+            resp = await http.get(file_url)
+            resp.raise_for_status()
+            pdf_path.write_bytes(resp.content)
+
+        logger.info(f"Downloaded PDF: {pdf_path.name} ({len(resp.content)} bytes)")
+
+        # Convert to markdown
+        md_text = pymupdf4llm.to_markdown(str(pdf_path))
+        if md_text and len(md_text.strip()) > 50:
+            # Save markdown file
+            md_path = settings.markdown_dir / f"{doc_id}.md"
+            md_path.write_text(md_text, encoding="utf-8")
+            logger.info(f"Converted to markdown: {md_path.name} ({len(md_text)} chars)")
+            return md_text
+        else:
+            logger.warning(f"PDF conversion produced empty/short text for {doc_id}")
+            return None
+
+    except Exception as e:
+        logger.error(f"PDF download/convert failed for {file_url}: {e}")
+        return None
