@@ -23,6 +23,9 @@ COPY packages/ocoi-common/ ./packages/ocoi-common/
 COPY packages/ocoi-db/ ./packages/ocoi-db/
 COPY packages/ocoi-api/ ./packages/ocoi-api/
 
+# Strip [tool.uv.sources] workspace refs (not needed outside workspace)
+RUN sed -i '/^\[tool\.uv/,$d' packages/*/pyproject.toml
+
 # Install via pip (bypasses workspace resolution — no torch/transformers)
 RUN uv pip install ./packages/ocoi-common ./packages/ocoi-db ./packages/ocoi-api
 
