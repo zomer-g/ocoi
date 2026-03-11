@@ -283,9 +283,9 @@ async def _import_govil(limit: int):
 
 
 async def _download_and_convert_pdf(file_url: str, doc_id: str) -> str | None:
-    """Download a PDF from URL, save to disk, convert to markdown."""
+    """Download a PDF from URL, save to disk, extract text with pdfplumber (lightweight)."""
     try:
-        import pymupdf4llm
+        import pdfplumber
 
         # Download PDF
         pdf_path = settings.pdf_dir / f"{doc_id}.pdf"
@@ -296,10 +296,16 @@ async def _download_and_convert_pdf(file_url: str, doc_id: str) -> str | None:
 
         logger.info(f"Downloaded PDF: {pdf_path.name} ({len(resp.content)} bytes)")
 
-        # Convert to markdown
-        md_text = pymupdf4llm.to_markdown(str(pdf_path))
+        # Extract text page by page (memory-efficient)
+        pages = []
+        with pdfplumber.open(str(pdf_path)) as pdf:
+            for i, page in enumerate(pdf.pages):
+                text = page.extract_text()
+                if text:
+                    pages.append(f"## עמוד {i + 1}\n\n{text}")
+
+        md_text = "\n\n---\n\n".join(pages)
         if md_text and len(md_text.strip()) > 50:
-            # Save markdown file
             md_path = settings.markdown_dir / f"{doc_id}.md"
             md_path.write_text(md_text, encoding="utf-8")
             logger.info(f"Converted to markdown: {md_path.name} ({len(md_text)} chars)")

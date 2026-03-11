@@ -47,25 +47,23 @@ async def lifespan(app: FastAPI):
             else:
                 print(f"DB connection failed after 5 attempts: {e}. Starting anyway.")
 
-    # Cleanup: remove metadata-only documents (no PDF content)
+    # Cleanup: bulk-delete metadata-only documents (no PDF content)
     try:
-        from sqlalchemy import select, delete
+        from sqlalchemy import select, delete, func
         from ocoi_db.engine import async_session_factory
         from ocoi_db.models import Document, ExtractionRun, EntityRelationship
         async with async_session_factory() as session:
-            result = await session.execute(
-                select(Document).where(
-                    (Document.markdown_content.is_(None)) | (Document.markdown_content == "")
-                )
-            )
-            docs = result.scalars().all()
-            if docs:
-                for d in docs:
-                    await session.execute(delete(ExtractionRun).where(ExtractionRun.document_id == d.id))
-                    await session.execute(delete(EntityRelationship).where(EntityRelationship.document_id == d.id))
-                    await session.execute(delete(Document).where(Document.id == d.id))
+            # Get IDs only (not full objects) to minimize memory
+            empty_filter = (Document.markdown_content.is_(None)) | (Document.markdown_content == "")
+            count_result = await session.execute(select(func.count()).select_from(Document).where(empty_filter))
+            count = count_result.scalar() or 0
+            if count > 0:
+                id_subq = select(Document.id).where(empty_filter)
+                await session.execute(delete(ExtractionRun).where(ExtractionRun.document_id.in_(id_subq)))
+                await session.execute(delete(EntityRelationship).where(EntityRelationship.document_id.in_(id_subq)))
+                await session.execute(delete(Document).where(empty_filter))
                 await session.commit()
-                print(f"Startup cleanup: deleted {len(docs)} metadata-only documents")
+                print(f"Startup cleanup: deleted {count} metadata-only documents")
     except Exception as e:
         print(f"Startup cleanup skipped: {e}")
 
