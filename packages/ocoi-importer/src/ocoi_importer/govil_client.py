@@ -90,9 +90,7 @@ class GovilClient:
 
     async def _fetch_direct(self, per_page: int) -> list[GovilRecord]:
         """Fetch via direct httpx POST to the DynamicCollector API."""
-        # Gov.il API may cap results per request at ~20, so use small page size
-        # and paginate through all results step by step
-        page_size = 20
+        page_size = 20  # Gov.il API caps at 20 results per request
         headers = {
             "Content-Type": "application/json;charset=utf-8",
             "Accept": "application/json, text/plain, */*",
@@ -119,36 +117,44 @@ class GovilClient:
                 f"first page returned {len(all_items)} items"
             )
 
-            # Paginate: always probe next pages regardless of TotalResults
+            # Paginate — don't trust TotalResults (Cloudflare may return wrong value)
+            # Keep fetching until we get an empty page or error
             skip = len(all_items)
-            empty_streak = 0
-            while empty_streak < 3:  # stop after 3 consecutive empty pages
+            consecutive_failures = 0
+            while True:
                 if skip >= 10000:  # safety cap
                     break
-                data = await self._httpx_fetch(client, skip, quantity=page_size)
+                # Delay between requests to avoid Cloudflare rate-limiting
+                await asyncio.sleep(1.5)
+                try:
+                    data = await self._httpx_fetch(client, skip, quantity=page_size)
+                    consecutive_failures = 0
+                except Exception as e:
+                    consecutive_failures += 1
+                    logger.warning(f"Page fetch failed at skip={skip} (fail #{consecutive_failures}): {e}")
+                    if consecutive_failures >= 3:
+                        logger.error("3 consecutive failures, stopping pagination")
+                        break
+                    await asyncio.sleep(3 * consecutive_failures)
+                    continue
                 results = data.get("Results", [])
                 if not results:
-                    empty_streak += 1
-                    skip += page_size
-                    logger.info(f"Direct API: empty page at skip={skip} (streak={empty_streak})")
-                    continue
-                empty_streak = 0
+                    logger.info(f"Direct API: empty page at skip={skip}, done")
+                    break
                 all_items.extend(results)
                 skip += len(results)
-                logger.info(f"Direct API: fetched {len(all_items)} records total (skip={skip})")
+                logger.info(f"Direct API: fetched {len(all_items)} records so far (skip={skip})")
 
         records = [r for item in all_items if (r := self._parse_item(item))]
         logger.info(f"Direct API: parsed {len(records)} records total")
         return records
 
     async def _httpx_fetch(self, client: httpx.AsyncClient, skip: int, quantity: int = 20) -> dict:
-        # Gov.il pagination uses skip inside QueryFilters (matches ?skip=N in URL)
-        query_filters = {"skip": {"Query": str(skip)}} if skip > 0 else {}
         resp = await client.post(
             GOVIL_API_URL,
             json={
                 "DynamicTemplateID": GOVIL_TEMPLATE_ID,
-                "QueryFilters": query_filters,
+                "QueryFilters": {},
                 "From": skip,
                 "Quantity": quantity,
             },
@@ -314,15 +320,12 @@ class GovilClient:
         """Make the DynamicCollector API call from within the browser context."""
         return await page.evaluate(
             """async (params) => {
-                const qf = params.skip > 0
-                    ? {skip: {Query: String(params.skip)}}
-                    : {};
                 const resp = await fetch('/he/api/DynamicCollector', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json;charset=utf-8'},
                     body: JSON.stringify({
                         DynamicTemplateID: params.templateId,
-                        QueryFilters: qf,
+                        QueryFilters: {},
                         From: params.skip,
                         Quantity: params.quantity
                     })
