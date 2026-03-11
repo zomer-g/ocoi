@@ -335,7 +335,8 @@ async def ckan_import(body: dict):
 
 @router.post("/import/govil/proxy")
 async def govil_proxy(request: Request):
-    """Proxy a single Gov.il API page request (avoids browser CORS)."""
+    """Proxy a single Gov.il API page request — retries with delays on failure."""
+    import asyncio
     import httpx as hx
     body = await request.json()
     headers = {
@@ -345,11 +346,25 @@ async def govil_proxy(request: Request):
         "Origin": "https://www.gov.il",
         "Referer": "https://www.gov.il/he/departments/dynamiccollectors/ministers_conflict",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
     }
+    last_error = None
     async with hx.AsyncClient(timeout=30, follow_redirects=True, headers=headers) as client:
-        resp = await client.post("https://www.gov.il/he/api/DynamicCollector", json=body)
-        resp.raise_for_status()
-        return resp.json()
+        for attempt in range(3):
+            try:
+                if attempt > 0:
+                    await asyncio.sleep(2 * attempt)
+                resp = await client.post("https://www.gov.il/he/api/DynamicCollector", json=body)
+                resp.raise_for_status()
+                return resp.json()
+            except Exception as e:
+                last_error = e
+    raise HTTPException(502, f"Gov.il API unavailable after 3 attempts: {last_error}")
 
 
 @router.post("/import/govil/trigger")

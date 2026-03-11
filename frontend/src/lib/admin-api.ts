@@ -158,11 +158,16 @@ async function govilProxyFetch(skip: number, quantity: number = 20) {
       Quantity: quantity,
     }),
   });
-  if (!res.ok) throw new Error(`Proxy error: ${res.status}`);
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`שגיאה בגישה ל-Gov.il (${res.status}): ${body.slice(0, 100)}`);
+  }
   return res.json();
 }
 
-/** Fetch all Gov.il records page by page via backend proxy. */
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Fetch all Gov.il records page by page via backend proxy with retries. */
 export async function fetchGovilFromBrowser(
   onProgress?: (fetched: number, total: number) => void
 ): Promise<GovilApiItem[]> {
@@ -173,13 +178,27 @@ export async function fetchGovilFromBrowser(
   onProgress?.(allItems.length, totalResults);
 
   let skip = allItems.length;
+  let consecutiveFailures = 0;
   while (skip < totalResults) {
-    const data = await govilProxyFetch(skip, pageSize);
-    const results: GovilApiItem[] = data.Results || [];
-    if (results.length === 0) break;
-    allItems.push(...results);
-    skip += results.length;
-    onProgress?.(allItems.length, totalResults);
+    // Small delay between pages to avoid rate-limiting
+    await sleep(500);
+    try {
+      const data = await govilProxyFetch(skip, pageSize);
+      const results: GovilApiItem[] = data.Results || [];
+      if (results.length === 0) break;
+      allItems.push(...results);
+      skip += results.length;
+      consecutiveFailures = 0;
+      onProgress?.(allItems.length, totalResults);
+    } catch {
+      consecutiveFailures++;
+      if (consecutiveFailures >= 3) {
+        // Return what we have so far instead of failing completely
+        if (allItems.length > 0) break;
+        throw new Error("Gov.il לא זמין כרגע. נסה שוב מאוחר יותר.");
+      }
+      await sleep(3000 * consecutiveFailures);
+    }
   }
   return allItems;
 }
