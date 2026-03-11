@@ -16,6 +16,7 @@ venv/
 # Database
 *.db
 data/
+!data/govil_records.json
 
 # Caches
 .ruff_cache/

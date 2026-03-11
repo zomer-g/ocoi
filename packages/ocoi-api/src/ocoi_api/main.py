@@ -67,6 +67,21 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"Startup cleanup skipped: {e}")
 
+    # One-shot Gov.il import: if govil_records.json exists, import and delete
+    import json
+    govil_file = Path("/app/data/govil_records.json")
+    if govil_file.exists():
+        print(f"Found govil_records.json — starting one-shot import...")
+        try:
+            raw_items = json.loads(govil_file.read_text(encoding="utf-8"))
+            print(f"Loaded {len(raw_items)} Gov.il records, starting background import...")
+            from ocoi_api.services.import_service import run_govil_with_records
+            asyncio.ensure_future(run_govil_with_records(raw_items))
+            govil_file.unlink()
+            print("govil_records.json deleted (import running in background)")
+        except Exception as e:
+            print(f"Gov.il one-shot import failed: {e}")
+
     yield
 
 
