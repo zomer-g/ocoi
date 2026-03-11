@@ -17,8 +17,8 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 COPY pyproject.toml ./
 COPY packages/ ./packages/
 
-# Install Python dependencies
-RUN uv sync --no-dev --no-editable
+# Install only API + its deps (skip heavy extractor/converter packages)
+RUN uv sync --no-dev --no-editable --package ocoi-api
 
 # Copy built frontend from stage 1
 COPY --from=frontend-build /app/frontend/out /app/static
