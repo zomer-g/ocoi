@@ -15,8 +15,15 @@ const NAV_ITEMS = [
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AdminUser | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isLoginPage, setIsLoginPage] = useState(false);
 
   useEffect(() => {
+    // Skip auth guard on the login page itself to avoid redirect loop
+    if (window.location.pathname.startsWith("/admin/login")) {
+      setIsLoginPage(true);
+      setLoading(false);
+      return;
+    }
     getMe().then((u) => {
       if (!u) {
         window.location.href = "/admin/login";
@@ -29,6 +36,11 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
 
   if (loading) {
     return <div className="min-h-screen flex items-center justify-center text-gray-400">טוען...</div>;
+  }
+
+  // Render login page without the sidebar layout
+  if (isLoginPage) {
+    return <>{children}</>;
   }
 
   return (
