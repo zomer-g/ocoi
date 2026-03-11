@@ -120,10 +120,22 @@ export function importCkanDatasets(datasetIds: string[]) {
   });
 }
 
-// Import — Gov.il bulk
-export function triggerGovilImport(limit: number = 0) {
-  const params = new URLSearchParams({ limit: String(limit) });
-  return adminFetch(`/import/govil/trigger?${params}`, { method: "POST" });
+// Import — Gov.il browser-extracted records
+export interface GovilRecord {
+  name: string;
+  position_type_id: string;
+  ministry_id: string;
+  date: string;
+  pdf_url: string;
+  pdf_display: string;
+  pdf_size: number;
+}
+
+export function importGovilRecords(records: GovilRecord[]) {
+  return adminFetch<{ status: string; data: ImportStats }>("/import/govil/records", {
+    method: "POST",
+    body: JSON.stringify({ records }),
+  });
 }
 
 export interface ImportStatus {

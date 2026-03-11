@@ -308,21 +308,18 @@ async def ckan_import(body: dict):
     return {"status": "ok", "data": stats}
 
 
-# ── Gov.il: bulk import ──────────────────────────────────────────────────
+# ── Gov.il: browser-extracted import ─────────────────────────────────────
 
-@router.post("/import/govil/trigger")
-async def govil_trigger(
-    background_tasks: BackgroundTasks,
-    limit: int = Query(0, ge=0),
-):
-    from ocoi_api.services.import_service import get_import_status, run_govil_import
+@router.post("/import/govil/records")
+async def govil_import_records(body: dict):
+    """Import Gov.il records that were extracted client-side from the browser."""
+    from ocoi_api.services.import_service import import_govil_records
 
-    status = get_import_status()
-    if status["running"]:
-        raise HTTPException(409, "Import already running")
-
-    background_tasks.add_task(run_govil_import, limit=limit)
-    return {"status": "ok", "message": "Gov.il import started"}
+    records = body.get("records", [])
+    if not records:
+        raise HTTPException(400, "No records provided")
+    stats = await import_govil_records(records)
+    return {"status": "ok", "data": stats}
 
 
 @router.get("/import/status")

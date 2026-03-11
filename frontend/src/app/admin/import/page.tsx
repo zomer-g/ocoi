@@ -1,13 +1,12 @@
 "use client";
 
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useState } from "react";
 import {
   searchCkan,
   importCkanDatasets,
-  triggerGovilImport,
-  getImportStatus,
+  importGovilRecords,
   type CkanSearchResult,
-  type ImportStatus,
+  type GovilRecord,
   type ImportStats,
 } from "@/lib/admin-api";
 
@@ -254,127 +253,175 @@ function CkanTab() {
   );
 }
 
-// ── Gov.il Tab: Bulk import ─────────────────────────────────────────────
+// ── Gov.il Tab: Browser extraction + Import ───────────────────────────
+
+const GOVIL_EXTRACT_SCRIPT = `(async()=>{const a=[];const tp=document.querySelector('[ng-repeat]');let s=angular.element(tp).scope();while(s&&!s.dynamicCtrl)s=s.$parent;const ctrl=s.dynamicCtrl;const totalPages=ctrl.ViewModel.totalPages;function extract(){const links=document.querySelectorAll('a[href$=".pdf"]');const urls=Array.from(links).map(l=>l.href);return ctrl.ViewModel.dataResults.map((r,i)=>{const d=r.Data;const f=d.file&&d.file[0]?d.file[0]:{};return{name:d.function||'',position_type_id:d.list?d.list[0]:'',ministry_id:d.government_ministry?d.government_ministry[0]:'',date:d.date||'',pdf_url:urls[i]||'',pdf_display:f.DisplayName||'',pdf_size:parseInt(f.FileSize||'0')}})}a.push(...extract());for(let p=2;p<=totalPages;p++){ctrl.Events.goToPage(p);s.$apply();await new Promise(r=>setTimeout(r,2000));a.push(...extract())}const j=JSON.stringify(a);await navigator.clipboard.writeText(j);alert('הועתקו '+a.length+' רשומות ללוח!')})();`;
 
 function GovilTab() {
-  const [launching, setLaunching] = useState(false);
-  const [importStatus, setImportStatus] = useState<ImportStatus | null>(null);
-  const [error, setError] = useState("");
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [pastedData, setPastedData] = useState("");
+  const [records, setRecords] = useState<GovilRecord[]>([]);
+  const [parseError, setParseError] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState<ImportStats | null>(null);
+  const [copied, setCopied] = useState(false);
 
-  const fetchStatus = useCallback(async () => {
+  const handleCopyScript = async () => {
     try {
-      const res = await getImportStatus();
-      setImportStatus(res.data);
-      if (!res.data.running && pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
+      await navigator.clipboard.writeText(GOVIL_EXTRACT_SCRIPT);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 3000);
     } catch {
-      // ignore
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchStatus();
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [fetchStatus]);
-
-  const handleTrigger = async () => {
-    setLaunching(true);
-    setError("");
-    try {
-      await triggerGovilImport();
-      if (pollRef.current) clearInterval(pollRef.current);
-      pollRef.current = setInterval(fetchStatus, 2000);
-      await fetchStatus();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "";
-      setError(msg.includes("409") ? "ייבוא כבר רץ ברקע." : "שגיאה בהפעלת הייבוא");
-    } finally {
-      setLaunching(false);
+      // Fallback: select the text
+      const ta = document.createElement("textarea");
+      ta.value = GOVIL_EXTRACT_SCRIPT;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 3000);
     }
   };
 
-  const isRunning = importStatus?.running ?? false;
-  const progress = importStatus && importStatus.total > 0
-    ? Math.round(((importStatus.imported + importStatus.skipped + importStatus.errors) / importStatus.total) * 100)
-    : 0;
+  const handlePaste = (text: string) => {
+    setPastedData(text);
+    setParseError("");
+    setImportResult(null);
+    if (!text.trim()) {
+      setRecords([]);
+      return;
+    }
+    try {
+      const parsed = JSON.parse(text);
+      if (!Array.isArray(parsed)) throw new Error("Expected array");
+      if (parsed.length === 0) throw new Error("Empty array");
+      // Validate first record has expected fields
+      const first = parsed[0];
+      if (!first.pdf_url && !first.name) throw new Error("Missing fields");
+      setRecords(parsed);
+    } catch (e) {
+      setParseError(`שגיאה בפענוח JSON: ${e instanceof Error ? e.message : "unknown"}`);
+      setRecords([]);
+    }
+  };
+
+  const doImport = async () => {
+    if (records.length === 0) return;
+    setImporting(true);
+    setImportResult(null);
+    try {
+      const res = await importGovilRecords(records);
+      setImportResult(res.data);
+    } catch {
+      setImportResult({ imported: 0, skipped: 0, errors: 1, error_messages: ["שגיאה בייבוא"] });
+    } finally {
+      setImporting(false);
+    }
+  };
 
   return (
     <div>
-      <div className="bg-white rounded-lg border border-gray-200 p-6 mb-6">
+      {/* Instructions */}
+      <div className="bg-white rounded-lg border border-gray-200 p-6 mb-4">
+        <h2 className="text-lg font-semibold text-gray-800 mb-3">ייבוא מ-Gov.il</h2>
         <p className="text-sm text-gray-600 mb-4">
-          ייבוא הסדרי ניגוד עניינים של שרים ונושאי משרה מאתר Gov.il.
-          הייבוא רץ ברקע ומייבא את כל הרשומות. מסמכים קיימים לא ייכפלו.
+          אתר Gov.il חוסם גישה אוטומטית. כדי לייבא, צריך לחלץ את הנתונים מהדפדפן:
         </p>
-        <button
-          onClick={handleTrigger}
-          disabled={launching || isRunning}
-          className="px-6 py-3 bg-primary-700 text-white rounded-lg hover:bg-primary-800 transition-colors font-medium disabled:opacity-50"
-        >
-          {launching ? "מפעיל..." : isRunning ? "ייבוא פעיל..." : "הפעל ייבוא Gov.il"}
-        </button>
-        {error && (
-          <div className="mt-3 p-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">{error}</div>
+        <ol className="text-sm text-gray-700 space-y-2 mb-4 list-decimal list-inside" dir="rtl">
+          <li>
+            פתח את{" "}
+            <a
+              href="https://www.gov.il/he/departments/dynamiccollectors/ministers_conflict?skip=0"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-primary-700 underline hover:text-primary-900"
+            >
+              דף הסדרי ניגוד עניינים ב-Gov.il
+            </a>
+            {" "}בטאב חדש
+          </li>
+          <li>פתח את כלי המפתח (F12) ועבור ללשונית Console</li>
+          <li>
+            <button
+              onClick={handleCopyScript}
+              className="inline-flex items-center gap-1 px-3 py-1 bg-gray-100 border border-gray-300 rounded text-xs font-mono hover:bg-gray-200 transition-colors"
+            >
+              {copied ? "✓ הועתק!" : "העתק סקריפט"}
+            </button>
+            {" "}— הדבק ב-Console ולחץ Enter. הסקריפט עובר על כל הדפים ומעתיק את הנתונים ללוח.
+          </li>
+          <li>חזור לכאן והדבק (Ctrl+V) את הנתונים בתיבה למטה</li>
+        </ol>
+      </div>
+
+      {/* Paste area */}
+      <div className="bg-white rounded-lg border border-gray-200 p-4 mb-4">
+        <label className="block text-sm font-medium text-gray-700 mb-2">הדבק נתונים (JSON):</label>
+        <textarea
+          value={pastedData}
+          onChange={(e) => handlePaste(e.target.value)}
+          placeholder='הדבק כאן את ה-JSON שחולץ מ-Gov.il...'
+          className="w-full h-32 px-3 py-2 border border-gray-300 rounded-lg text-xs font-mono focus:outline-none focus:border-primary-500 resize-y"
+          dir="ltr"
+        />
+        {parseError && (
+          <div className="mt-2 text-sm text-red-600">{parseError}</div>
+        )}
+        {records.length > 0 && (
+          <div className="mt-2 flex items-center justify-between">
+            <span className="text-sm text-green-700 font-medium">
+              ✓ {records.length} רשומות זוהו
+            </span>
+            <button
+              onClick={doImport}
+              disabled={importing}
+              className="px-6 py-2.5 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium disabled:opacity-50"
+            >
+              {importing ? "מייבא..." : `ייבא ${records.length} רשומות`}
+            </button>
+          </div>
         )}
       </div>
 
-      {/* Progress */}
-      {importStatus && (importStatus.running || importStatus.finished_at) && (
-        <div className="bg-white rounded-lg border border-gray-200 p-6">
-          <h2 className="text-lg font-semibold text-gray-800 mb-3">
-            {isRunning ? "ייבוא פעיל" : "תוצאות ייבוא אחרון"}
-          </h2>
-
-          {isRunning && importStatus.total > 0 && (
-            <div className="mb-4">
-              <div className="flex justify-between text-sm text-gray-600 mb-1">
-                <span>התקדמות</span>
-                <span>{progress}%</span>
-              </div>
-              <div className="w-full bg-gray-200 rounded-full h-3">
-                <div className="bg-primary-600 h-3 rounded-full transition-all duration-500" style={{ width: `${progress}%` }} />
+      {/* Preview first few records */}
+      {records.length > 0 && !importResult && (
+        <div className="bg-white rounded-lg border border-gray-200 mb-4">
+          <div className="p-3 border-b border-gray-100">
+            <span className="text-sm font-medium text-gray-700">תצוגה מקדימה ({Math.min(5, records.length)} מתוך {records.length})</span>
+          </div>
+          {records.slice(0, 5).map((r, i) => (
+            <div key={i} className="p-3 border-b border-gray-50 text-sm">
+              <div className="font-medium text-gray-900">{r.pdf_display || r.name}</div>
+              <div className="text-xs text-gray-400 mt-0.5">
+                {r.date && <span>{new Date(r.date).toLocaleDateString("he-IL")} · </span>}
+                <span className="font-mono">{r.pdf_url.split("/").pop()}</span>
               </div>
             </div>
-          )}
+          ))}
+        </div>
+      )}
 
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4">
-            <div className="bg-gray-50 rounded-lg p-3 text-center">
-              <div className="text-2xl font-bold text-gray-900">{importStatus.total}</div>
-              <div className="text-xs text-gray-500">נמצאו</div>
-            </div>
-            <div className="bg-green-50 rounded-lg p-3 text-center">
-              <div className="text-2xl font-bold text-green-700">{importStatus.imported}</div>
+      {/* Import result */}
+      {importResult && (
+        <div className="bg-white rounded-lg border border-gray-200 p-4 mb-4">
+          <h3 className="font-semibold text-gray-800 mb-2">תוצאות ייבוא</h3>
+          <div className="grid grid-cols-3 gap-3">
+            <div className="bg-green-50 rounded-lg p-2 text-center">
+              <div className="text-xl font-bold text-green-700">{importResult.imported}</div>
               <div className="text-xs text-gray-500">יובאו</div>
             </div>
-            <div className="bg-yellow-50 rounded-lg p-3 text-center">
-              <div className="text-2xl font-bold text-yellow-700">{importStatus.skipped}</div>
+            <div className="bg-yellow-50 rounded-lg p-2 text-center">
+              <div className="text-xl font-bold text-yellow-700">{importResult.skipped}</div>
               <div className="text-xs text-gray-500">דולגו (כפילויות)</div>
             </div>
-            <div className="bg-red-50 rounded-lg p-3 text-center">
-              <div className="text-2xl font-bold text-red-700">{importStatus.errors}</div>
+            <div className="bg-red-50 rounded-lg p-2 text-center">
+              <div className="text-xl font-bold text-red-700">{importResult.errors}</div>
               <div className="text-xs text-gray-500">שגיאות</div>
             </div>
           </div>
-
-          <div className="text-sm text-gray-500 space-y-1">
-            {importStatus.started_at && (
-              <div>התחלה: <span className="font-medium text-gray-700">{new Date(importStatus.started_at).toLocaleString("he-IL")}</span></div>
-            )}
-            {importStatus.finished_at && (
-              <div>סיום: <span className="font-medium text-gray-700">{new Date(importStatus.finished_at).toLocaleString("he-IL")}</span></div>
-            )}
-          </div>
-
-          {importStatus.error_messages.length > 0 && (
-            <div className="mt-4">
-              <h3 className="text-sm font-semibold text-red-700 mb-2">שגיאות ({importStatus.error_messages.length})</h3>
-              <div className="bg-red-50 rounded-lg p-3 max-h-40 overflow-y-auto">
-                {importStatus.error_messages.map((msg, i) => (
-                  <div key={i} className="text-xs text-red-600 mb-1 font-mono">{msg}</div>
-                ))}
-              </div>
+          {importResult.error_messages.length > 0 && (
+            <div className="mt-2 text-xs text-red-600 font-mono">
+              {importResult.error_messages.map((m, i) => <div key={i}>{m}</div>)}
             </div>
           )}
         </div>

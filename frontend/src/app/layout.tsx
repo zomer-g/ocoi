@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "אינטרסים לעם",
+  title: "ניגוד עניינים לעם",
   description: "מפת ניגודי עניינים של בעלי תפקידים ציבוריים בישראל",
 };
 
@@ -10,6 +10,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="he" dir="rtl">
       <head>
+        <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
         <meta name="theme-color" content="#06607C" />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
@@ -32,7 +33,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <svg xmlns="http://www.w3.org/2000/svg" className="w-7 h-7 sm:w-8 sm:h-8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
               </svg>
-              <span className="text-lg sm:text-xl font-bold">אינטרסים לעם</span>
+              <span className="text-lg sm:text-xl font-bold">ניגוד עניינים לעם</span>
             </a>
             <div className="flex gap-1">
               <a
@@ -70,7 +71,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
         <footer className="bg-primary-900 text-primary-100 py-6 text-center text-sm">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            אינטרסים לעם — שקיפות ניגודי עניינים של בעלי תפקידים ציבוריים בישראל
+            ניגוד עניינים לעם — שקיפות ניגודי עניינים של בעלי תפקידים ציבוריים בישראל
           </div>
         </footer>
       </body>
