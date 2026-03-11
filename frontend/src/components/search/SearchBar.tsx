@@ -2,37 +2,28 @@
 
 import { useState } from "react";
 
-const ENTITY_TYPES = [
-  { value: "", label: "הכל" },
-  { value: "person", label: "אנשים" },
-  { value: "company", label: "חברות" },
-  { value: "association", label: "עמותות" },
-  { value: "domain", label: "תחומים" },
-];
-
 interface SearchBarProps {
-  onSearch: (query: string, type?: string) => void;
+  onSearch: (query: string) => void;
 }
 
 export function SearchBar({ onSearch }: SearchBarProps) {
   const [query, setQuery] = useState("");
-  const [type, setType] = useState("");
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (query.trim()) {
-      onSearch(query.trim(), type || undefined);
+      onSearch(query.trim());
     }
   };
 
   return (
-    <form onSubmit={handleSubmit} className="flex gap-2 max-w-2xl mx-auto">
-      <div className="relative flex-1">
+    <form onSubmit={handleSubmit} className="max-w-2xl mx-auto">
+      <div className="relative">
         <input
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="חיפוש אנשים, חברות, עמותות..."
+          placeholder="חפשו אירוע, נושא או שם..."
           className="w-full pr-12 pl-4 py-4 rounded-xl text-lg text-gray-900
                      shadow-lg focus:outline-none focus:ring-2 focus:ring-primary-300
                      focus:ring-offset-2 focus:ring-offset-primary-700"
@@ -52,23 +43,6 @@ export function SearchBar({ onSearch }: SearchBarProps) {
           <path d="m21 21-4.35-4.35" />
         </svg>
       </div>
-      <select
-        value={type}
-        onChange={(e) => setType(e.target.value)}
-        className="px-3 py-3 border border-gray-300 rounded-xl bg-white text-sm shadow-lg"
-      >
-        {ENTITY_TYPES.map((t) => (
-          <option key={t.value} value={t.value}>
-            {t.label}
-          </option>
-        ))}
-      </select>
-      <button
-        type="submit"
-        className="px-6 py-3 bg-primary-700 text-white rounded-xl hover:bg-primary-800 transition-colors shadow-lg font-medium"
-      >
-        חיפוש
-      </button>
     </form>
   );
 }

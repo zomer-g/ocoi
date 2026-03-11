@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
-from ocoi_api.routers import search, entities, connections, documents, external
+from ocoi_api.routers import search, entities, connections, documents, external, auth, admin
 from ocoi_common.config import settings
 
 
@@ -73,8 +73,8 @@ def create_app() -> FastAPI:
         app.add_middleware(
             CORSMiddleware,
             allow_origins=allowed_origins,
-            allow_credentials=False,
-            allow_methods=["GET", "POST", "OPTIONS"],
+            allow_credentials=True,
+            allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
             allow_headers=["Content-Type", "Authorization"],
         )
 
@@ -84,6 +84,8 @@ def create_app() -> FastAPI:
     app.include_router(connections.router, prefix="/api/v1")
     app.include_router(documents.router, prefix="/api/v1")
     app.include_router(external.router, prefix="/api/v1")
+    app.include_router(auth.router, prefix="/api/v1")
+    app.include_router(admin.router, prefix="/api/v1")
 
     @app.get("/api/health")
     async def health():

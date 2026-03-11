@@ -46,6 +46,30 @@ class Settings(BaseSettings):
     # API
     api_host: str = "0.0.0.0"
     api_port: int = 8000
+    env: str = "development"
+
+    # Google OAuth
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    google_redirect_uri: str = "http://localhost:8000/api/v1/auth/callback"
+
+    # JWT
+    jwt_secret_key: str = "change-me-to-a-random-secret"
+    jwt_algorithm: str = "HS256"
+    jwt_expire_minutes: int = 480  # 8 hours
+
+    # Admin whitelist (comma-separated Google email addresses)
+    admin_emails: str = ""
+
+    @property
+    def admin_email_set(self) -> set[str]:
+        if not self.admin_emails:
+            return set()
+        return {e.strip().lower() for e in self.admin_emails.split(",") if e.strip()}
+
+    @property
+    def is_production(self) -> bool:
+        return self.env == "production"
 
     # CKAN source
     ckan_base_url: str = "https://www.odata.org.il"

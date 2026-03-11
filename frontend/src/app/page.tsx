@@ -11,12 +11,12 @@ export default function HomePage() {
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState("");
 
-  const handleSearch = async (q: string, type?: string) => {
+  const handleSearch = async (q: string) => {
     setQuery(q);
     setLoading(true);
     try {
       const res = await fetch(
-        `/api/v1/search?q=${encodeURIComponent(q)}${type ? `&type=${type}` : ""}&limit=20`
+        `/api/v1/search?q=${encodeURIComponent(q)}&limit=20`
       );
       const data = await res.json();
       setResults(data.data || []);
