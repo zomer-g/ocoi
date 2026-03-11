@@ -1,7 +1,7 @@
 """Admin CRUD routes — protected with Google OAuth JWT."""
 
 import uuid
-from fastapi import APIRouter, BackgroundTasks, Depends, Query, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, HTTPException, Request
 from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -346,6 +346,27 @@ async def govil_trigger(
 
     background_tasks.add_task(run_govil_import, limit=limit)
     return {"status": "ok", "message": "Gov.il import started"}
+
+
+@router.post("/import/govil/submit")
+async def govil_submit(
+    request: Request,
+    background_tasks: BackgroundTasks,
+):
+    """Accept pre-fetched Gov.il API items from the browser and process them."""
+    from ocoi_api.services.import_service import get_import_status, run_govil_with_records
+
+    status = get_import_status()
+    if status["running"]:
+        raise HTTPException(409, "Import already running")
+
+    body = await request.json()
+    records = body.get("records", [])
+    if not records:
+        raise HTTPException(400, "No records provided")
+
+    background_tasks.add_task(run_govil_with_records, raw_items=records)
+    return {"status": "ok", "message": f"Processing {len(records)} records from browser"}
 
 
 @router.get("/import/status")

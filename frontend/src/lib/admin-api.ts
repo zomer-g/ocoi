@@ -123,10 +123,71 @@ export function importCkanDatasets(datasetIds: string[]) {
   });
 }
 
-// Import — Gov.il automated bulk import
+// Import — Gov.il: browser-side fetch + server-side processing
 export function triggerGovilImport(limit: number = 0) {
   const params = new URLSearchParams({ limit: String(limit) });
   return adminFetch(`/import/govil/trigger?${params}`, { method: "POST" });
+}
+
+// Send pre-fetched Gov.il records from the browser to backend for processing
+export function submitGovilRecords(records: GovilApiItem[]) {
+  return adminFetch<{ status: string; message: string }>("/import/govil/submit", {
+    method: "POST",
+    body: JSON.stringify({ records }),
+  });
+}
+
+export interface GovilApiItem {
+  Data: Record<string, unknown>;
+  UrlName: string;
+  [key: string]: unknown;
+}
+
+const GOVIL_API_URL = "https://www.gov.il/he/api/DynamicCollector";
+const GOVIL_TEMPLATE_ID = "c6e0f53e-02c0-4db1-ae89-76590f0f502e";
+
+/** Fetch all Gov.il records directly from the user's browser (bypasses Cloudflare). */
+export async function fetchGovilFromBrowser(
+  onProgress?: (fetched: number, total: number) => void
+): Promise<GovilApiItem[]> {
+  const pageSize = 20;
+  const firstResp = await fetch(GOVIL_API_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json;charset=utf-8" },
+    body: JSON.stringify({
+      DynamicTemplateID: GOVIL_TEMPLATE_ID,
+      QueryFilters: {},
+      From: 0,
+      Quantity: pageSize,
+    }),
+  });
+  if (!firstResp.ok) throw new Error(`Gov.il API error: ${firstResp.status}`);
+  const firstData = await firstResp.json();
+  const totalResults: number = firstData.TotalResults || 0;
+  const allItems: GovilApiItem[] = [...(firstData.Results || [])];
+  onProgress?.(allItems.length, totalResults);
+
+  let skip = allItems.length;
+  while (skip < totalResults) {
+    const resp = await fetch(GOVIL_API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json;charset=utf-8" },
+      body: JSON.stringify({
+        DynamicTemplateID: GOVIL_TEMPLATE_ID,
+        QueryFilters: {},
+        From: skip,
+        Quantity: pageSize,
+      }),
+    });
+    if (!resp.ok) break;
+    const data = await resp.json();
+    const results: GovilApiItem[] = data.Results || [];
+    if (results.length === 0) break;
+    allItems.push(...results);
+    skip += results.length;
+    onProgress?.(allItems.length, totalResults);
+  }
+  return allItems;
 }
 
 export interface ImportStatus {

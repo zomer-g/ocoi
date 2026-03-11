@@ -180,6 +180,68 @@ async def run_govil_import(limit: int = 0) -> dict:
     return get_import_status()
 
 
+async def run_govil_with_records(raw_items: list[dict]) -> dict:
+    """Process pre-fetched Gov.il API items (sent from user's browser). Updates _import_state."""
+    global _import_state
+
+    if _import_state["running"]:
+        return {"status": "error", "message": "Import already running"}
+
+    _import_state.update({
+        "running": True,
+        "source": "govil",
+        "total_on_website": len(raw_items),
+        "already_in_db": 0,
+        "new_to_import": 0,
+        "total": 0,
+        "imported": 0,
+        "skipped": 0,
+        "errors": 0,
+        "error_messages": [],
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "finished_at": None,
+    })
+
+    try:
+        from ocoi_importer.govil_client import GovilClient
+        client = GovilClient()
+
+        # Parse raw API items into GovilRecord objects
+        records = [r for item in raw_items if (r := client._parse_item(item))]
+        _import_state["total_on_website"] = len(records)
+
+        # Check which are already in DB
+        new_records = []
+        async with async_session_factory() as session:
+            for record in records:
+                doc_info = client.record_to_document(record)
+                if not doc_info:
+                    _import_state["skipped"] += 1
+                    continue
+                existing = await session.execute(
+                    select(Document).where(Document.file_url == doc_info.file_url)
+                )
+                if existing.scalar_one_or_none():
+                    _import_state["already_in_db"] += 1
+                else:
+                    new_records.append(record)
+
+        _import_state["new_to_import"] = len(new_records)
+        _import_state["total"] = len(new_records)
+
+        # Import new records (same logic as _import_govil phase 3)
+        await _process_new_records(client, new_records)
+
+    except Exception as e:
+        _import_state["error_messages"].append(f"Fatal: {str(e)}")
+        _import_state["errors"] += 1
+    finally:
+        _import_state["running"] = False
+        _import_state["finished_at"] = datetime.now(timezone.utc).isoformat()
+
+    return get_import_status()
+
+
 async def _import_govil(limit: int):
     """Import documents from Gov.il — fetch metadata, download PDFs, convert to markdown."""
     from ocoi_importer.govil_client import GovilClient
@@ -212,7 +274,12 @@ async def _import_govil(limit: int):
     _import_state["new_to_import"] = len(new_records)
     _import_state["total"] = len(new_records)
 
-    # Phase 3: Import new records — download PDF first, only save to DB if content obtained
+    # Phase 3: Import new records
+    await _process_new_records(client, new_records)
+
+
+async def _process_new_records(client, new_records: list) -> None:
+    """Download PDFs, convert to markdown, save to DB. Only saves docs with actual content."""
     imported_at = datetime.now(timezone.utc).isoformat()
     async with async_session_factory() as session:
         for record in new_records:

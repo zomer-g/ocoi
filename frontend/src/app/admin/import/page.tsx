@@ -5,6 +5,8 @@ import {
   searchCkan,
   importCkanDatasets,
   triggerGovilImport,
+  submitGovilRecords,
+  fetchGovilFromBrowser,
   getImportStatus,
   getExtractionPrompt,
   updateExtractionPrompt,
@@ -278,7 +280,8 @@ function CkanTab() {
 
 function GovilTab() {
   const [status, setStatus] = useState<ImportStatus | null>(null);
-  const [triggering, setTriggering] = useState(false);
+  const [phase, setPhase] = useState<"idle" | "fetching" | "processing">("idle");
+  const [fetchProgress, setFetchProgress] = useState({ fetched: 0, total: 0 });
   const [error, setError] = useState("");
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -293,12 +296,13 @@ function GovilTab() {
     try {
       const res = await getImportStatus();
       setStatus(res.data);
-      if (!res.data.running) stopPolling();
+      if (!res.data.running) { stopPolling(); setPhase("idle"); }
     } catch { /* ignore */ }
   }, [stopPolling]);
 
   const startPolling = useCallback(() => {
     stopPolling();
+    setPhase("processing");
     pollStatus();
     pollingRef.current = setInterval(pollStatus, 2000);
   }, [stopPolling, pollStatus]);
@@ -309,20 +313,32 @@ function GovilTab() {
   }, [pollStatus, stopPolling]);
 
   const handleTrigger = async () => {
-    setTriggering(true);
+    setPhase("fetching");
     setError("");
+    setFetchProgress({ fetched: 0, total: 0 });
     try {
-      await triggerGovilImport(0);
+      // Phase 1: Fetch all records from Gov.il using the user's browser (bypasses Cloudflare)
+      const records = await fetchGovilFromBrowser((fetched, total) => {
+        setFetchProgress({ fetched, total });
+      });
+
+      if (records.length === 0) {
+        setError("לא נמצאו רשומות באתר Gov.il");
+        setPhase("idle");
+        return;
+      }
+
+      // Phase 2: Send records to backend for processing
+      await submitGovilRecords(records);
       startPolling();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "שגיאה בהפעלת הייבוא");
-    } finally {
-      setTriggering(false);
+      setError(e instanceof Error ? e.message : "שגיאה בייבוא מ-Gov.il");
+      setPhase("idle");
     }
   };
 
-  const isRunning = status?.running === true;
-  const isFinished = status?.finished_at && !isRunning;
+  const isRunning = phase === "processing" || status?.running === true;
+  const isFinished = status?.finished_at && !isRunning && phase === "idle";
   const progressPct = status && status.total > 0
     ? Math.round(((status.imported + status.errors) / status.total) * 100)
     : 0;
@@ -333,24 +349,37 @@ function GovilTab() {
       <div className="bg-white rounded-lg border border-gray-200 p-6 mb-4">
         <h2 className="text-lg font-semibold text-gray-800 mb-2">ייבוא מ-Gov.il</h2>
         <p className="text-sm text-gray-600 mb-4">
-          ייבוא אוטומטי של הסדרי ניגוד עניינים של שרים וסגני שרים מאתר Gov.il.
+          ייבוא הסדרי ניגוד עניינים של שרים וסגני שרים מאתר Gov.il.
           <br />
           <span className="text-xs text-gray-400">
-            המערכת סורקת את כל הדפים, מזהה מסמכים חדשים, ומייבאת רק מה שעדיין לא קיים במערכת.
+            הדפדפן שלך סורק את כל הדפים ישירות מהאתר, ושולח את הנתונים לשרת לעיבוד.
           </span>
         </p>
         <button
           onClick={handleTrigger}
-          disabled={triggering || isRunning}
+          disabled={phase !== "idle" || isRunning}
           className="px-6 py-3 bg-primary-700 text-white rounded-lg hover:bg-primary-800 transition-colors text-sm font-medium disabled:opacity-50"
         >
-          {triggering ? "מפעיל..." : isRunning ? "ייבוא פעיל..." : "התחל ייבוא"}
+          {phase === "fetching" ? "סורק את Gov.il..." : isRunning ? "מעבד מסמכים..." : "התחל ייבוא"}
         </button>
         {error && <div className="mt-3 text-sm text-red-600">{error}</div>}
       </div>
 
+      {/* Browser fetch progress */}
+      {phase === "fetching" && (
+        <div className="bg-blue-50 rounded-lg border border-blue-100 p-4 mb-4">
+          <div className="flex items-center gap-2 mb-2">
+            <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
+            <span className="text-sm font-medium text-blue-800">סורק דפים מאתר Gov.il...</span>
+          </div>
+          <div className="text-lg font-bold text-blue-700">
+            {fetchProgress.fetched} / {fetchProgress.total || "?"} רשומות
+          </div>
+        </div>
+      )}
+
       {/* Summary: what's on the website vs DB */}
-      {status && (status.total_on_website > 0 || isRunning) && (
+      {status && (status.total_on_website > 0 || isRunning) && phase !== "fetching" && (
         <div className="bg-blue-50 rounded-lg border border-blue-100 p-4 mb-4">
           <div className="grid grid-cols-3 gap-3 text-center">
             <div>
@@ -373,7 +402,7 @@ function GovilTab() {
       {isRunning && status && status.total > 0 && (
         <div className="bg-white rounded-lg border border-gray-200 p-4 mb-4">
           <div className="flex items-center justify-between mb-3">
-            <h3 className="font-semibold text-gray-800">מייבא מסמכים חדשים...</h3>
+            <h3 className="font-semibold text-gray-800">מוריד ומעבד מסמכים...</h3>
             <div className="flex items-center gap-2">
               <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
               <span className="text-xs text-gray-500">פעיל</span>
@@ -381,17 +410,21 @@ function GovilTab() {
           </div>
           <div className="mb-3">
             <div className="flex justify-between text-xs text-gray-500 mb-1">
-              <span>{status.imported + status.errors} / {status.total}</span>
+              <span>{status.imported + status.skipped + status.errors} / {status.total}</span>
               <span>{progressPct}%</span>
             </div>
             <div className="w-full bg-gray-200 rounded-full h-2.5">
               <div className="bg-primary-700 h-2.5 rounded-full transition-all duration-500" style={{ width: `${progressPct}%` }} />
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-3 gap-3">
             <div className="bg-green-50 rounded-lg p-2 text-center">
               <div className="text-xl font-bold text-green-700">{status.imported}</div>
               <div className="text-xs text-gray-500">יובאו</div>
+            </div>
+            <div className="bg-yellow-50 rounded-lg p-2 text-center">
+              <div className="text-xl font-bold text-yellow-700">{status.skipped}</div>
+              <div className="text-xs text-gray-500">דולגו</div>
             </div>
             <div className="bg-red-50 rounded-lg p-2 text-center">
               <div className="text-xl font-bold text-red-700">{status.errors}</div>
