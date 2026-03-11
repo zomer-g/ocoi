@@ -1,7 +1,8 @@
 """Client for the gov.il DynamicCollector API (ministers' conflict of interest).
 
-Uses Playwright headless browser to bypass Cloudflare protection.
-Includes retry logic for resilience against transient failures.
+Uses Playwright headless browser with stealth anti-detection patches to
+bypass Cloudflare protection. Intercepts the page's own API responses
+as the primary data source, with direct API calls as fallback.
 """
 
 import asyncio
@@ -15,7 +16,52 @@ GOVIL_TEMPLATE_ID = "c6e0f53e-02c0-4db1-ae89-76590f0f502e"
 GOVIL_BLOB_BASE = "https://www.gov.il/BlobFolder/dynamiccollectorresultitem"
 
 MAX_RETRIES = 3
-RETRY_DELAY = 5  # seconds
+RETRY_DELAY = 8  # seconds between retries
+
+# Stealth init script — removes common headless browser fingerprints
+_STEALTH_SCRIPT = """
+// Remove webdriver flag (main Cloudflare detection signal)
+Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+delete navigator.__proto__.webdriver;
+
+// Chrome runtime object (missing in headless)
+window.chrome = { runtime: {}, loadTimes: () => {}, csi: () => {} };
+
+// Realistic plugins array
+Object.defineProperty(navigator, 'plugins', {
+    get: () => {
+        const plugins = [
+            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+            { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+            { name: 'Native Client', filename: 'internal-nacl-plugin' },
+        ];
+        plugins.length = 3;
+        return plugins;
+    }
+});
+
+// Languages
+Object.defineProperty(navigator, 'languages', {
+    get: () => ['he-IL', 'he', 'en-US', 'en']
+});
+
+// Permissions API override
+if (navigator.permissions) {
+    const origQuery = navigator.permissions.query.bind(navigator.permissions);
+    navigator.permissions.query = (params) =>
+        params.name === 'notifications'
+            ? Promise.resolve({ state: Notification.permission })
+            : origQuery(params);
+}
+
+// WebGL vendor/renderer (headless gives "Google SwiftShader")
+const getParameter = WebGLRenderingContext.prototype.getParameter;
+WebGLRenderingContext.prototype.getParameter = function(param) {
+    if (param === 37445) return 'Intel Inc.';
+    if (param === 37446) return 'Intel Iris OpenGL Engine';
+    return getParameter.call(this, param);
+};
+"""
 
 
 class GovilClient:
@@ -36,46 +82,132 @@ class GovilClient:
         raise RuntimeError(f"Gov.il fetch failed after {MAX_RETRIES} attempts: {last_error}")
 
     async def _fetch_with_browser(self, per_page: int) -> list[GovilRecord]:
-        """Single attempt to fetch all records via Playwright headless browser."""
+        """Single attempt to fetch all records via stealth Playwright browser."""
         from playwright.async_api import async_playwright
 
+        captured_api_data: list[dict] = []
+
         async with async_playwright() as p:
-            logger.info("Launching headless Chromium...")
+            logger.info("Launching stealth Chromium...")
             browser = await p.chromium.launch(
                 headless=True,
-                args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-features=IsolateOrigins,site-per-process",
+                    "--window-size=1920,1080",
+                ],
             )
             try:
-                context = await browser.new_context(locale="he-IL")
+                context = await browser.new_context(
+                    locale="he-IL",
+                    user_agent=(
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/123.0.0.0 Safari/537.36"
+                    ),
+                    viewport={"width": 1920, "height": 1080},
+                    java_script_enabled=True,
+                )
+
+                # Apply stealth patches before any page loads
+                await context.add_init_script(_STEALTH_SCRIPT)
                 page = await context.new_page()
 
-                # Navigate to page first — resolves Cloudflare JS challenges
-                logger.info("Navigating to Gov.il page (may take time for Cloudflare)...")
-                await page.goto(GOVIL_PAGE_URL, wait_until="networkidle", timeout=90000)
-                logger.info("Page loaded successfully, fetching records via API...")
+                # Intercept DynamicCollector API responses from the page itself
+                async def on_response(response):
+                    if "DynamicCollector" in response.url and response.status == 200:
+                        try:
+                            body = await response.json()
+                            captured_api_data.append(body)
+                        except Exception:
+                            pass
 
-                # Fetch first page to get total count
-                first = await self._browser_fetch(page, 0)
-                total = first.get("TotalResults", 0)
-                all_items = list(first.get("Results", []))
-                logger.info(f"Gov.il: {total} total records, first page has {len(all_items)}")
+                page.on("response", on_response)
 
-                # Fetch remaining pages
-                skip = per_page
-                while skip < total:
-                    data = await self._browser_fetch(page, skip)
-                    results = data.get("Results", [])
-                    if not results:
-                        break
-                    all_items.extend(results)
-                    logger.info(f"Fetched {len(all_items)}/{total} gov.il records")
-                    skip += per_page
+                # Navigate to the page
+                logger.info("Navigating to Gov.il page...")
+                await page.goto(GOVIL_PAGE_URL, wait_until="domcontentloaded", timeout=90000)
+
+                # Check for Cloudflare challenge
+                title = await page.title()
+                logger.info(f"Page title after load: '{title}'")
+
+                if self._is_cloudflare_challenge(title):
+                    logger.info("Cloudflare challenge detected, waiting for resolution...")
+                    try:
+                        await page.wait_for_function(
+                            """() => {
+                                const t = document.title.toLowerCase();
+                                return !t.includes('just a moment')
+                                    && !t.includes('checking')
+                                    && !t.includes('attention required');
+                            }""",
+                            timeout=30000,
+                        )
+                        title = await page.title()
+                        logger.info(f"Challenge resolved! Title: '{title}'")
+                    except Exception:
+                        raise RuntimeError(
+                            f"Cloudflare challenge not resolved (title: '{await page.title()}'). "
+                            "The server IP may be blocked by Cloudflare."
+                        )
+
+                # Wait for network to settle and page data to load
+                await page.wait_for_load_state("networkidle", timeout=30000)
+                # Brief pause for any late API responses
+                await asyncio.sleep(2)
+
+                # Strategy 1: Use intercepted API responses from the page's own loading
+                if captured_api_data:
+                    logger.info(f"Captured {len(captured_api_data)} API response(s) from page load")
+                    first = captured_api_data[0]
+                    total = first.get("TotalResults", 0)
+                    all_items = list(first.get("Results", []))
+                    logger.info(f"Gov.il: {total} total records, first page has {len(all_items)}")
+
+                    # Fetch remaining pages via direct API calls (reusing browser cookies)
+                    skip = per_page
+                    while skip < total:
+                        data = await self._browser_fetch(page, skip)
+                        results = data.get("Results", [])
+                        if not results:
+                            break
+                        all_items.extend(results)
+                        logger.info(f"Fetched {len(all_items)}/{total} gov.il records")
+                        skip += per_page
+
+                # Strategy 2: Fallback — make our own API calls
+                else:
+                    logger.info("No intercepted responses, making direct API calls...")
+                    first = await self._browser_fetch(page, 0)
+                    total = first.get("TotalResults", 0)
+                    all_items = list(first.get("Results", []))
+                    logger.info(f"Gov.il: {total} total records, first page has {len(all_items)}")
+
+                    skip = per_page
+                    while skip < total:
+                        data = await self._browser_fetch(page, skip)
+                        results = data.get("Results", [])
+                        if not results:
+                            break
+                        all_items.extend(results)
+                        logger.info(f"Fetched {len(all_items)}/{total} gov.il records")
+                        skip += per_page
 
                 records = [r for item in all_items if (r := self._parse_item(item))]
                 logger.info(f"Parsed {len(records)} valid records from {len(all_items)} items")
                 return records
             finally:
                 await browser.close()
+
+    @staticmethod
+    def _is_cloudflare_challenge(title: str) -> bool:
+        """Check if the page title indicates a Cloudflare challenge."""
+        t = title.lower()
+        return any(s in t for s in ["just a moment", "checking", "attention required", "cloudflare"])
 
     async def _browser_fetch(self, page, skip: int) -> dict:
         """Make the DynamicCollector API call from within the browser context."""
