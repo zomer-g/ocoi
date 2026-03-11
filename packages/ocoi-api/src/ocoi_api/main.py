@@ -31,10 +31,21 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Create database tables on startup (for local SQLite dev)."""
+    """Create database tables on startup. Retries on cold-start when DB may still be waking up."""
+    import asyncio
     settings.ensure_dirs()
     from ocoi_db.engine import create_all_tables
-    await create_all_tables()
+    for attempt in range(5):
+        try:
+            await create_all_tables()
+            break
+        except Exception as e:
+            if attempt < 4:
+                wait = 2 ** attempt
+                print(f"DB connect attempt {attempt + 1}/5 failed: {e}. Retrying in {wait}s...")
+                await asyncio.sleep(wait)
+            else:
+                print(f"DB connection failed after 5 attempts: {e}. Starting anyway.")
     yield
 
 
