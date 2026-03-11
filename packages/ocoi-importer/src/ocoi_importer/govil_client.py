@@ -142,11 +142,13 @@ class GovilClient:
         return records
 
     async def _httpx_fetch(self, client: httpx.AsyncClient, skip: int, quantity: int = 20) -> dict:
+        # Gov.il pagination uses skip inside QueryFilters (matches ?skip=N in URL)
+        query_filters = {"skip": {"Query": str(skip)}} if skip > 0 else {}
         resp = await client.post(
             GOVIL_API_URL,
             json={
                 "DynamicTemplateID": GOVIL_TEMPLATE_ID,
-                "QueryFilters": {},
+                "QueryFilters": query_filters,
                 "From": skip,
                 "Quantity": quantity,
             },
@@ -308,16 +310,19 @@ class GovilClient:
             for s in ["just a moment", "checking", "attention required", "cloudflare"]
         )
 
-    async def _browser_fetch(self, page, skip: int, quantity: int = 100) -> dict:
+    async def _browser_fetch(self, page, skip: int, quantity: int = 20) -> dict:
         """Make the DynamicCollector API call from within the browser context."""
         return await page.evaluate(
             """async (params) => {
+                const qf = params.skip > 0
+                    ? {skip: {Query: String(params.skip)}}
+                    : {};
                 const resp = await fetch('/he/api/DynamicCollector', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json;charset=utf-8'},
                     body: JSON.stringify({
                         DynamicTemplateID: params.templateId,
-                        QueryFilters: {},
+                        QueryFilters: qf,
                         From: params.skip,
                         Quantity: params.quantity
                     })
