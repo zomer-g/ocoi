@@ -11,6 +11,9 @@ from ocoi_db.models import Document
 _import_state: dict = {
     "running": False,
     "source": None,
+    "total_on_website": 0,
+    "already_in_db": 0,
+    "new_to_import": 0,
     "total": 0,
     "imported": 0,
     "skipped": 0,
@@ -82,7 +85,6 @@ async def import_ckan_datasets(dataset_ids: list[str]) -> dict:
     async with async_session_factory() as session:
         for ds_id in dataset_ids:
             try:
-                # Fetch the specific dataset
                 datasets = await client.search_datasets(query=f"id:{ds_id}", rows=1)
                 if not datasets:
                     stats["errors"] += 1
@@ -93,7 +95,6 @@ async def import_ckan_datasets(dataset_ids: list[str]) -> dict:
                 docs = client.extract_documents(ds)
 
                 for doc in docs:
-                    # Check if already exists
                     existing = await session.execute(
                         select(Document).where(Document.file_url == doc.file_url)
                     )
@@ -147,6 +148,9 @@ async def run_govil_import(limit: int = 0) -> dict:
     _import_state.update({
         "running": True,
         "source": "govil",
+        "total_on_website": 0,
+        "already_in_db": 0,
+        "new_to_import": 0,
         "total": 0,
         "imported": 0,
         "skipped": 0,
@@ -169,31 +173,44 @@ async def run_govil_import(limit: int = 0) -> dict:
 
 
 async def _import_govil(limit: int):
-    """Import documents from Gov.il using curl_cffi (Cloudflare bypass)."""
+    """Import documents from Gov.il using Playwright headless browser."""
     from ocoi_importer.govil_client import GovilClient
 
     client = GovilClient()
 
+    # Phase 1: Fetch all records from website
     records = await client.fetch_all_records()
+    _import_state["total_on_website"] = len(records)
+
     if limit > 0:
         records = records[:limit]
 
-    _import_state["total"] = len(records)
-    imported_at = datetime.now(timezone.utc).isoformat()
-
+    # Phase 2: Check which records are already in DB
+    new_records = []
     async with async_session_factory() as session:
         for record in records:
+            doc_info = client.record_to_document(record)
+            if not doc_info:
+                _import_state["skipped"] += 1
+                continue
+            existing = await session.execute(
+                select(Document).where(Document.file_url == doc_info.file_url)
+            )
+            if existing.scalar_one_or_none():
+                _import_state["already_in_db"] += 1
+            else:
+                new_records.append(record)
+
+    _import_state["new_to_import"] = len(new_records)
+    _import_state["total"] = len(new_records)
+
+    # Phase 3: Import only new records
+    imported_at = datetime.now(timezone.utc).isoformat()
+    async with async_session_factory() as session:
+        for record in new_records:
             try:
                 doc_info = client.record_to_document(record)
                 if not doc_info:
-                    _import_state["skipped"] += 1
-                    continue
-
-                # Check if document already exists
-                existing = await session.execute(
-                    select(Document).where(Document.file_url == doc_info.file_url)
-                )
-                if existing.scalar_one_or_none():
                     _import_state["skipped"] += 1
                     continue
 

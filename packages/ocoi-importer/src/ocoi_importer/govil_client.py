@@ -1,9 +1,10 @@
 """Client for the gov.il DynamicCollector API (ministers' conflict of interest).
 
 Uses Playwright headless browser to bypass Cloudflare protection.
-Falls back to curl_cffi for environments without a browser installed.
+Includes retry logic for resilience against transient failures.
 """
 
+import asyncio
 from ocoi_common.logging import setup_logging
 from ocoi_common.models import GovilRecord, ImportedDocument
 
@@ -13,35 +14,53 @@ GOVIL_PAGE_URL = "https://www.gov.il/he/departments/dynamiccollectors/ministers_
 GOVIL_TEMPLATE_ID = "c6e0f53e-02c0-4db1-ae89-76590f0f502e"
 GOVIL_BLOB_BASE = "https://www.gov.il/BlobFolder/dynamiccollectorresultitem"
 
+MAX_RETRIES = 3
+RETRY_DELAY = 5  # seconds
+
 
 class GovilClient:
     """Fetches ministers' conflict of interest agreements from gov.il."""
 
     async def fetch_all_records(self, per_page: int = 20) -> list[GovilRecord]:
-        """Fetch all records using headless browser to bypass Cloudflare."""
+        """Fetch all records using headless browser. Retries on failure."""
+        last_error = None
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                return await self._fetch_with_browser(per_page)
+            except Exception as e:
+                last_error = e
+                logger.warning(f"Gov.il fetch attempt {attempt}/{MAX_RETRIES} failed: {e}")
+                if attempt < MAX_RETRIES:
+                    logger.info(f"Retrying in {RETRY_DELAY}s...")
+                    await asyncio.sleep(RETRY_DELAY)
+        raise RuntimeError(f"Gov.il fetch failed after {MAX_RETRIES} attempts: {last_error}")
+
+    async def _fetch_with_browser(self, per_page: int) -> list[GovilRecord]:
+        """Single attempt to fetch all records via Playwright headless browser."""
         from playwright.async_api import async_playwright
 
         async with async_playwright() as p:
+            logger.info("Launching headless Chromium...")
             browser = await p.chromium.launch(
                 headless=True,
-                args=["--no-sandbox", "--disable-setuid-sandbox"],
+                args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
             )
             try:
                 context = await browser.new_context(locale="he-IL")
                 page = await context.new_page()
 
-                # Navigate to the page first — this resolves Cloudflare challenges
-                logger.info("Opening Gov.il page in headless browser...")
-                await page.goto(GOVIL_PAGE_URL, wait_until="networkidle", timeout=60000)
-                logger.info("Page loaded, fetching records via API...")
+                # Navigate to page first — resolves Cloudflare JS challenges
+                logger.info("Navigating to Gov.il page (may take time for Cloudflare)...")
+                await page.goto(GOVIL_PAGE_URL, wait_until="networkidle", timeout=90000)
+                logger.info("Page loaded successfully, fetching records via API...")
 
                 # Fetch first page to get total count
                 first = await self._browser_fetch(page, 0)
                 total = first.get("TotalResults", 0)
                 all_items = list(first.get("Results", []))
-                logger.info(f"Gov.il: {total} total records, fetched first {len(all_items)}")
+                logger.info(f"Gov.il: {total} total records, first page has {len(all_items)}")
 
-                # Remaining pages
+                # Fetch remaining pages
                 skip = per_page
                 while skip < total:
                     data = await self._browser_fetch(page, skip)
@@ -52,7 +71,9 @@ class GovilClient:
                     logger.info(f"Fetched {len(all_items)}/{total} gov.il records")
                     skip += per_page
 
-                return [r for item in all_items if (r := self._parse_item(item))]
+                records = [r for item in all_items if (r := self._parse_item(item))]
+                logger.info(f"Parsed {len(records)} valid records from {len(all_items)} items")
+                return records
             finally:
                 await browser.close()
 
@@ -82,22 +103,18 @@ class GovilClient:
         data = item.get("Data", {})
         url_name = item.get("UrlName", "")
 
-        # Extract PDF info from the 'file' array
         files = data.get("file", [])
         pdf_file = files[0] if files else {}
         pdf_filename = pdf_file.get("FileName", "")
         pdf_display = pdf_file.get("DisplayName", "")
         pdf_size = int(pdf_file.get("FileSize", 0) or 0)
 
-        # Build full PDF URL
         pdf_url = None
         if pdf_filename and url_name:
             pdf_url = f"{GOVIL_BLOB_BASE}/{url_name}/he/{pdf_filename}"
 
-        # Map list IDs to position types
         position_ids = data.get("list", [])
         position_type = self._map_position_type(position_ids[0] if position_ids else "")
-
         ministry_ids = data.get("government_ministry", [])
 
         return GovilRecord(
@@ -117,17 +134,13 @@ class GovilClient:
 
     @staticmethod
     def _map_position_type(type_id: str) -> str:
-        """Map position type ID to Hebrew label."""
         return {"1": "שר", "2": "סגן שר"}.get(str(type_id), str(type_id))
 
     def record_to_document(self, record: GovilRecord) -> ImportedDocument | None:
-        """Convert a GovilRecord to an ImportedDocument."""
         if not record.pdf_url:
             return None
-
         pdf_display = record.raw_data.get("pdf_display", "")
         title = pdf_display or f"הסדר ניגוד עניינים - {record.name}"
-
         return ImportedDocument(
             source_type="govil",
             source_id=f"govil_{record.name}_{record.date or 'unknown'}",

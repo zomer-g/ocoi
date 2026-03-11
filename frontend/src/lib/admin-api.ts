@@ -129,6 +129,9 @@ export function triggerGovilImport(limit: number = 0) {
 export interface ImportStatus {
   running: boolean;
   source: string | null;
+  total_on_website: number;
+  already_in_db: number;
+  new_to_import: number;
   total: number;
   imported: number;
   skipped: number;
@@ -140,6 +143,46 @@ export interface ImportStatus {
 
 export function getImportStatus() {
   return adminFetch<{ status: string; data: ImportStatus }>("/import/status");
+}
+
+// Extraction — DeepSeek entity extraction
+export interface ExtractionPrompt {
+  system_prompt: string;
+  user_prompt: string;
+}
+
+export interface ExtractionStatus {
+  running: boolean;
+  total: number;
+  processed: number;
+  entities_found: number;
+  relationships_found: number;
+  errors: number;
+  error_messages: string[];
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export function getExtractionPrompt() {
+  return adminFetch<{ status: string; data: ExtractionPrompt }>("/extraction/prompt");
+}
+
+export function updateExtractionPrompt(system_prompt: string, user_prompt: string) {
+  return adminFetch("/extraction/prompt", {
+    method: "PUT",
+    body: JSON.stringify({ system_prompt, user_prompt }),
+  });
+}
+
+export function triggerExtraction(documentIds?: string[]) {
+  return adminFetch("/extraction/trigger", {
+    method: "POST",
+    body: JSON.stringify(documentIds ? { document_ids: documentIds } : {}),
+  });
+}
+
+export function getExtractionStatus() {
+  return adminFetch<{ status: string; data: ExtractionStatus }>("/extraction/status");
 }
 
 // Users

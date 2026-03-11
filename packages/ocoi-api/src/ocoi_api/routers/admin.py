@@ -331,6 +331,42 @@ async def import_status():
     return {"status": "ok", "data": get_import_status()}
 
 
+# ── Entity extraction (DeepSeek LLM) ─────────────────────────────────────
+
+@router.get("/extraction/prompt")
+async def get_prompt():
+    from ocoi_api.services.extraction_service import get_extraction_prompt
+    return {"status": "ok", "data": get_extraction_prompt()}
+
+
+@router.put("/extraction/prompt")
+async def update_prompt(body: dict):
+    from ocoi_api.services.extraction_service import set_extraction_prompt
+    system_prompt = body.get("system_prompt", "")
+    user_prompt = body.get("user_prompt", "")
+    if not system_prompt or not user_prompt:
+        raise HTTPException(400, "Both system_prompt and user_prompt required")
+    set_extraction_prompt(system_prompt, user_prompt)
+    return {"status": "ok"}
+
+
+@router.post("/extraction/trigger")
+async def trigger_extraction(background_tasks: BackgroundTasks, body: dict = {}):
+    from ocoi_api.services.extraction_service import get_extraction_status, run_extraction
+    status = get_extraction_status()
+    if status["running"]:
+        raise HTTPException(409, "Extraction already running")
+    document_ids = body.get("document_ids")
+    background_tasks.add_task(run_extraction, document_ids)
+    return {"status": "ok", "message": "Extraction started"}
+
+
+@router.get("/extraction/status")
+async def extraction_status():
+    from ocoi_api.services.extraction_service import get_extraction_status
+    return {"status": "ok", "data": get_extraction_status()}
+
+
 # ── Admin users (read-only from env) ──────────────────────────────────────
 
 @router.get("/users")
