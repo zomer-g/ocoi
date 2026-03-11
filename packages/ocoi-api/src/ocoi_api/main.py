@@ -46,6 +46,29 @@ async def lifespan(app: FastAPI):
                 await asyncio.sleep(wait)
             else:
                 print(f"DB connection failed after 5 attempts: {e}. Starting anyway.")
+
+    # Cleanup: remove metadata-only documents (no PDF content)
+    try:
+        from sqlalchemy import select, delete
+        from ocoi_db.engine import async_session_factory
+        from ocoi_db.models import Document, ExtractionRun, EntityRelationship
+        async with async_session_factory() as session:
+            result = await session.execute(
+                select(Document).where(
+                    (Document.markdown_content.is_(None)) | (Document.markdown_content == "")
+                )
+            )
+            docs = result.scalars().all()
+            if docs:
+                for d in docs:
+                    await session.execute(delete(ExtractionRun).where(ExtractionRun.document_id == d.id))
+                    await session.execute(delete(EntityRelationship).where(EntityRelationship.document_id == d.id))
+                    await session.execute(delete(Document).where(Document.id == d.id))
+                await session.commit()
+                print(f"Startup cleanup: deleted {len(docs)} metadata-only documents")
+    except Exception as e:
+        print(f"Startup cleanup skipped: {e}")
+
     yield
 
 
