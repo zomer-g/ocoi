@@ -13,12 +13,18 @@ WORKDIR /app
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-# Copy Python project files
-COPY pyproject.toml ./
-COPY packages/ ./packages/
+# Create venv
+RUN uv venv /app/.venv
+ENV PATH="/app/.venv/bin:$PATH"
+ENV VIRTUAL_ENV="/app/.venv"
 
-# Install only API + its deps (skip heavy extractor/converter packages)
-RUN uv sync --no-dev --no-editable --package ocoi-api
+# Copy ONLY the packages the API needs (skip heavy extractor/converter/importer)
+COPY packages/ocoi-common/ ./packages/ocoi-common/
+COPY packages/ocoi-db/ ./packages/ocoi-db/
+COPY packages/ocoi-api/ ./packages/ocoi-api/
+
+# Install via pip (bypasses workspace resolution — no torch/transformers)
+RUN uv pip install ./packages/ocoi-common ./packages/ocoi-db ./packages/ocoi-api
 
 # Copy built frontend from stage 1
 COPY --from=frontend-build /app/frontend/out /app/static
@@ -34,4 +40,5 @@ ENV API_PORT=8000
 
 EXPOSE 8000
 
-CMD ["uv", "run", "uvicorn", "ocoi_api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run uvicorn directly (no uv run which triggers re-sync)
+CMD ["uvicorn", "ocoi_api.main:app", "--host", "0.0.0.0", "--port", "8000"]
