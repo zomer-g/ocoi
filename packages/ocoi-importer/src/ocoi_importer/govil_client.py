@@ -90,7 +90,9 @@ class GovilClient:
 
     async def _fetch_direct(self, per_page: int) -> list[GovilRecord]:
         """Fetch via direct httpx POST to the DynamicCollector API."""
-        page_size = 100  # request 100 per page for faster fetching
+        # Gov.il API may cap results per request at ~20, so use small page size
+        # and paginate through all results step by step
+        page_size = 20
         headers = {
             "Content-Type": "application/json;charset=utf-8",
             "Accept": "application/json, text/plain, */*",
@@ -117,28 +119,29 @@ class GovilClient:
                 f"first page returned {len(all_items)} items"
             )
 
-            # Always probe next pages (TotalResults may undercount)
+            # Paginate: always probe next pages regardless of TotalResults
             skip = len(all_items)
-            empty_pages = 0
-            while empty_pages < 2:  # stop after 2 consecutive empty pages
+            empty_streak = 0
+            while empty_streak < 3:  # stop after 3 consecutive empty pages
                 if skip >= 10000:  # safety cap
                     break
                 data = await self._httpx_fetch(client, skip, quantity=page_size)
                 results = data.get("Results", [])
                 if not results:
-                    empty_pages += 1
+                    empty_streak += 1
                     skip += page_size
+                    logger.info(f"Direct API: empty page at skip={skip} (streak={empty_streak})")
                     continue
-                empty_pages = 0
+                empty_streak = 0
                 all_items.extend(results)
-                logger.info(f"Direct API: fetched {len(all_items)} records (skip={skip})")
                 skip += len(results)
+                logger.info(f"Direct API: fetched {len(all_items)} records total (skip={skip})")
 
         records = [r for item in all_items if (r := self._parse_item(item))]
         logger.info(f"Direct API: parsed {len(records)} records total")
         return records
 
-    async def _httpx_fetch(self, client: httpx.AsyncClient, skip: int, quantity: int = 100) -> dict:
+    async def _httpx_fetch(self, client: httpx.AsyncClient, skip: int, quantity: int = 20) -> dict:
         resp = await client.post(
             GOVIL_API_URL,
             json={

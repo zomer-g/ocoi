@@ -212,7 +212,7 @@ async def _import_govil(limit: int):
     _import_state["new_to_import"] = len(new_records)
     _import_state["total"] = len(new_records)
 
-    # Phase 3: Import new records — save to DB, download PDF, convert to markdown
+    # Phase 3: Import new records — download PDF first, only save to DB if content obtained
     imported_at = datetime.now(timezone.utc).isoformat()
     async with async_session_factory() as session:
         for record in new_records:
@@ -222,6 +222,18 @@ async def _import_govil(limit: int):
                     _import_state["skipped"] += 1
                     continue
 
+                # Download PDF and convert to markdown FIRST — don't save metadata-only
+                temp_id = hashlib.md5(doc_info.file_url.encode()).hexdigest()
+                md_text = await _download_and_convert_pdf(
+                    file_url=doc_info.file_url,
+                    doc_id=temp_id,
+                )
+                if not md_text:
+                    logger.warning(f"Skipping '{doc_info.title}' — PDF download/conversion failed")
+                    _import_state["skipped"] += 1
+                    continue
+
+                # PDF content obtained — now save to DB
                 metadata = dict(doc_info.metadata)
                 metadata["imported_at"] = imported_at
                 metadata.update(record.raw_data)
@@ -243,19 +255,20 @@ async def _import_govil(limit: int):
                     file_size=doc_info.file_size,
                 )
 
-                # Download PDF and convert to markdown
-                md_text = await _download_and_convert_pdf(
-                    file_url=doc_info.file_url,
-                    doc_id=str(db_doc.id),
-                )
-                if md_text:
-                    db_doc.markdown_content = md_text
-                    db_doc.conversion_status = "converted"
-                    db_doc.file_path = str(
-                        settings.pdf_dir / f"{db_doc.id}.pdf"
-                    )
-                else:
-                    db_doc.conversion_status = "failed"
+                # Rename temp files to use actual DB id
+                actual_id = str(db_doc.id)
+                temp_pdf = settings.pdf_dir / f"{temp_id}.pdf"
+                temp_md = settings.markdown_dir / f"{temp_id}.md"
+                actual_pdf = settings.pdf_dir / f"{actual_id}.pdf"
+                actual_md = settings.markdown_dir / f"{actual_id}.md"
+                if temp_pdf.exists():
+                    temp_pdf.rename(actual_pdf)
+                if temp_md.exists():
+                    temp_md.rename(actual_md)
+
+                db_doc.markdown_content = md_text
+                db_doc.conversion_status = "converted"
+                db_doc.file_path = str(actual_pdf)
 
                 _import_state["imported"] += 1
 
