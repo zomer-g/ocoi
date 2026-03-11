@@ -82,8 +82,25 @@ export function deleteDocument(id: string) {
 }
 
 // Import
-export function triggerImport() {
-  return adminFetch("/import/trigger", { method: "POST" });
+export function triggerImport(source: string = "all", limit: number = 0) {
+  const params = new URLSearchParams({ source, limit: String(limit) });
+  return adminFetch(`/import/trigger?${params}`, { method: "POST" });
+}
+
+export interface ImportStatus {
+  running: boolean;
+  source: string | null;
+  total: number;
+  imported: number;
+  skipped: number;
+  errors: number;
+  error_messages: string[];
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export function getImportStatus() {
+  return adminFetch<{ status: string; data: ImportStatus }>("/import/status");
 }
 
 // Users

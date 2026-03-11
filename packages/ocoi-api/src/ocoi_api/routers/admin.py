@@ -1,7 +1,7 @@
 """Admin CRUD routes — protected with Google OAuth JWT."""
 
 import uuid
-from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, HTTPException
 from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -285,14 +285,31 @@ async def delete_document(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db))
     return {"status": "ok"}
 
 
-# ── Import trigger (stub) ─────────────────────────────────────────────────
+# ── Import ────────────────────────────────────────────────────────────────
 
 @router.post("/import/trigger")
-async def trigger_import():
+async def trigger_import(
+    background_tasks: BackgroundTasks,
+    source: str = Query("all", regex="^(ckan|govil|all)$"),
+    limit: int = Query(0, ge=0),
+):
+    from ocoi_api.services.import_service import get_import_status, run_import
+
+    status = get_import_status()
+    if status["running"]:
+        raise HTTPException(409, "Import already running")
+
+    background_tasks.add_task(run_import, source=source, limit=limit)
     return {
         "status": "ok",
-        "message": "Import pipeline not yet connected. Add ocoi-importer to the Docker image to enable.",
+        "message": f"Import started for source: {source}",
     }
+
+
+@router.get("/import/status")
+async def import_status():
+    from ocoi_api.services.import_service import get_import_status
+    return {"status": "ok", "data": get_import_status()}
 
 
 # ── Admin users (read-only from env) ──────────────────────────────────────

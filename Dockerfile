@@ -18,22 +18,23 @@ RUN uv venv /app/.venv
 ENV PATH="/app/.venv/bin:$PATH"
 ENV VIRTUAL_ENV="/app/.venv"
 
-# Copy ONLY the packages the API needs (skip heavy extractor/converter/importer)
+# Copy packages the API needs (skip heavy extractor/converter/matcher)
 COPY packages/ocoi-common/ ./packages/ocoi-common/
 COPY packages/ocoi-db/ ./packages/ocoi-db/
 COPY packages/ocoi-api/ ./packages/ocoi-api/
+COPY packages/ocoi-importer/ ./packages/ocoi-importer/
 
 # Strip [tool.uv.sources] workspace refs (not needed outside workspace)
 RUN sed -i '/^\[tool\.uv/,$d' packages/*/pyproject.toml
 
 # Install via pip (bypasses workspace resolution — no torch/transformers)
-RUN uv pip install ./packages/ocoi-common ./packages/ocoi-db ./packages/ocoi-api
+RUN uv pip install ./packages/ocoi-common ./packages/ocoi-db ./packages/ocoi-api ./packages/ocoi-importer
 
 # Copy built frontend from stage 1
 COPY --from=frontend-build /app/frontend/out /app/static
 
-# Create data directory for SQLite (if needed)
-RUN mkdir -p /app/data
+# Create data directories
+RUN mkdir -p /app/data /app/data/pdfs /app/data/markdown
 
 # Environment
 ENV STATIC_DIR=/app/static
