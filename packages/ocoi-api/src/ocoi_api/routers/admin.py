@@ -285,25 +285,44 @@ async def delete_document(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db))
     return {"status": "ok"}
 
 
-# ── Import ────────────────────────────────────────────────────────────────
+# ── CKAN: search + selective import ───────────────────────────────────────
 
-@router.post("/import/trigger")
-async def trigger_import(
+@router.get("/import/ckan/search")
+async def ckan_search(
+    q: str = Query(..., min_length=1),
+    rows: int = Query(20, ge=1, le=100),
+    start: int = Query(0, ge=0),
+):
+    from ocoi_api.services.import_service import search_ckan
+    data = await search_ckan(query=q, rows=rows, start=start)
+    return {"status": "ok", "data": data}
+
+
+@router.post("/import/ckan/import")
+async def ckan_import(body: dict):
+    from ocoi_api.services.import_service import import_ckan_datasets
+    dataset_ids = body.get("dataset_ids", [])
+    if not dataset_ids:
+        raise HTTPException(400, "No dataset_ids provided")
+    stats = await import_ckan_datasets(dataset_ids)
+    return {"status": "ok", "data": stats}
+
+
+# ── Gov.il: bulk import ──────────────────────────────────────────────────
+
+@router.post("/import/govil/trigger")
+async def govil_trigger(
     background_tasks: BackgroundTasks,
-    source: str = Query("all", regex="^(ckan|govil|all)$"),
     limit: int = Query(0, ge=0),
 ):
-    from ocoi_api.services.import_service import get_import_status, run_import
+    from ocoi_api.services.import_service import get_import_status, run_govil_import
 
     status = get_import_status()
     if status["running"]:
         raise HTTPException(409, "Import already running")
 
-    background_tasks.add_task(run_import, source=source, limit=limit)
-    return {
-        "status": "ok",
-        "message": f"Import started for source: {source}",
-    }
+    background_tasks.add_task(run_govil_import, limit=limit)
+    return {"status": "ok", "message": "Gov.il import started"}
 
 
 @router.get("/import/status")

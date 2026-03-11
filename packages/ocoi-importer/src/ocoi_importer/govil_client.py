@@ -10,6 +10,16 @@ logger = setup_logging("ocoi.importer.govil")
 # The gov.il DynamicCollector uses a POST-based API
 GOVIL_COLLECTOR_ID = "ministers_conflict"
 
+# Browser-like headers to avoid Cloudflare 403
+_BROWSER_HEADERS = {
+    "Content-Type": "application/json",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Origin": "https://www.gov.il",
+    "Referer": "https://www.gov.il/he/departments/dynamiccollectors/ministers_conflict",
+}
+
 
 class GovilClient:
     """Fetches ministers' conflict of interest agreements from gov.il."""
@@ -25,12 +35,8 @@ class GovilClient:
             "From": skip,
             "Size": limit,
         }
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(self.base_url, json=payload, headers=headers)
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            resp = await client.post(self.base_url, json=payload, headers=_BROWSER_HEADERS)
             resp.raise_for_status()
             return resp.json()
 

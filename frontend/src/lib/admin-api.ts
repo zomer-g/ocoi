@@ -81,10 +81,49 @@ export function deleteDocument(id: string) {
   return adminFetch(`/documents/${id}`, { method: "DELETE" });
 }
 
-// Import
-export function triggerImport(source: string = "all", limit: number = 0) {
-  const params = new URLSearchParams({ source, limit: String(limit) });
-  return adminFetch(`/import/trigger?${params}`, { method: "POST" });
+// Import — CKAN search + selective import
+export interface CkanSearchResult {
+  id: string;
+  title: string;
+  notes: string | null;
+  metadata_created: string | null;
+  metadata_modified: string | null;
+  tags: string[];
+  num_resources: number;
+  num_documents: number;
+  already_imported: number;
+}
+
+export interface CkanSearchResponse {
+  total: number;
+  start: number;
+  rows: number;
+  results: CkanSearchResult[];
+}
+
+export function searchCkan(q: string, rows = 20, start = 0) {
+  const params = new URLSearchParams({ q, rows: String(rows), start: String(start) });
+  return adminFetch<{ status: string; data: CkanSearchResponse }>(`/import/ckan/search?${params}`);
+}
+
+export interface ImportStats {
+  imported: number;
+  skipped: number;
+  errors: number;
+  error_messages: string[];
+}
+
+export function importCkanDatasets(datasetIds: string[]) {
+  return adminFetch<{ status: string; data: ImportStats }>("/import/ckan/import", {
+    method: "POST",
+    body: JSON.stringify({ dataset_ids: datasetIds }),
+  });
+}
+
+// Import — Gov.il bulk
+export function triggerGovilImport(limit: number = 0) {
+  const params = new URLSearchParams({ limit: String(limit) });
+  return adminFetch(`/import/govil/trigger?${params}`, { method: "POST" });
 }
 
 export interface ImportStatus {
