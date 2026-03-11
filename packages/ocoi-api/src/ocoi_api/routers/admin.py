@@ -270,9 +270,30 @@ async def list_documents(
             "extraction_status": d.extraction_status,
             "file_url": d.file_url,
             "file_size": d.file_size,
+            "has_content": bool(d.markdown_content),
             "created_at": d.created_at.isoformat() if d.created_at else None,
         })
     return {"status": "ok", "data": data, "meta": {"total": total, "page": page, "limit": limit}}
+
+
+@router.delete("/documents/purge/metadata-only")
+async def purge_metadata_only_documents(db: AsyncSession = Depends(get_db)):
+    """Delete all documents that have no actual content (no markdown, just URL metadata)."""
+    # Find docs without content
+    result = await db.execute(
+        select(Document).where(
+            (Document.markdown_content.is_(None)) | (Document.markdown_content == "")
+        )
+    )
+    docs = result.scalars().all()
+    count = len(docs)
+    for d in docs:
+        await db.execute(delete(ExtractionRun).where(ExtractionRun.document_id == d.id))
+        await db.execute(delete(EntityRelationship).where(EntityRelationship.document_id == d.id))
+        await db.execute(delete(Document).where(Document.id == d.id))
+    # Also clean orphaned sources
+    await db.commit()
+    return {"status": "ok", "data": {"deleted": count}}
 
 
 @router.delete("/documents/{doc_id}")

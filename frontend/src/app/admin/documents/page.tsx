@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { deleteDocument } from "@/lib/admin-api";
+import { deleteDocument, purgeMetadataOnlyDocuments } from "@/lib/admin-api";
 
 interface DocItem {
   id: string;
@@ -11,6 +11,7 @@ interface DocItem {
   extraction_status: string | null;
   file_url: string | null;
   file_size: number | null;
+  has_content: boolean;
   created_at: string | null;
 }
 
@@ -44,6 +45,7 @@ export default function DocumentsPage() {
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [statusFilter, setStatusFilter] = useState("");
+  const [purging, setPurging] = useState(false);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -69,13 +71,41 @@ export default function DocumentsPage() {
     fetchData();
   };
 
+  const handlePurge = async () => {
+    if (!confirm("למחוק את כל המסמכים שאין להם תוכן בפועל (רק מטאדאטה)?")) return;
+    setPurging(true);
+    try {
+      const result = await purgeMetadataOnlyDocuments();
+      alert(`נמחקו ${result.data.deleted} מסמכים ללא תוכן`);
+      setPage(1);
+      fetchData();
+    } catch (e) {
+      alert("שגיאה במחיקה");
+    } finally {
+      setPurging(false);
+    }
+  };
+
+  const metadataOnlyCount = items.filter((i) => !i.has_content).length;
+
   return (
     <div>
-      <h1 className="text-2xl font-bold text-gray-900 mb-4">ניהול מסמכים</h1>
+      <div className="flex items-center justify-between mb-4">
+        <h1 className="text-2xl font-bold text-gray-900">ניהול מסמכים</h1>
+        {metadataOnlyCount > 0 && (
+          <button
+            onClick={handlePurge}
+            disabled={purging}
+            className="px-3 py-1.5 text-xs font-medium rounded bg-red-50 text-red-700 border border-red-200 hover:bg-red-100 transition-colors disabled:opacity-50"
+          >
+            {purging ? "מוחק..." : `מחק מסמכים ללא תוכן (${metadataOnlyCount})`}
+          </button>
+        )}
+      </div>
 
       <div className="flex items-center justify-between mb-4">
         <div className="flex gap-2">
-          {["", "pending", "extracted", "failed"].map((s) => (
+          {["", "pending", "converted", "extracted", "failed"].map((s) => (
             <button
               key={s}
               onClick={() => { setStatusFilter(s); setPage(1); }}
@@ -83,7 +113,7 @@ export default function DocumentsPage() {
                 statusFilter === s ? "bg-primary-100 text-primary-700" : "text-gray-500 hover:bg-gray-100"
               }`}
             >
-              {s === "" ? "הכל" : s === "pending" ? "ממתין" : s === "extracted" ? "חולץ" : "נכשל"}
+              {s === "" ? "הכל" : s === "pending" ? "ממתין" : s === "converted" ? "הומר" : s === "extracted" ? "חולץ" : "נכשל"}
             </button>
           ))}
         </div>
@@ -99,7 +129,7 @@ export default function DocumentsPage() {
               <tr>
                 <th className="text-start px-4 py-3 font-medium text-gray-700">כותרת</th>
                 <th className="text-start px-4 py-3 font-medium text-gray-700 w-20">מקור</th>
-                <th className="text-start px-4 py-3 font-medium text-gray-700 w-20">סטטוס</th>
+                <th className="text-start px-4 py-3 font-medium text-gray-700 w-24">תוכן</th>
                 <th className="text-start px-4 py-3 font-medium text-gray-700 w-36">תאריך ייבוא</th>
                 <th className="px-4 py-3 w-28"></th>
               </tr>
@@ -111,7 +141,7 @@ export default function DocumentsPage() {
                   color: "bg-gray-50 text-gray-600 border-gray-200",
                 };
                 return (
-                  <tr key={item.id} className="hover:bg-gray-50 group">
+                  <tr key={item.id} className={`hover:bg-gray-50 group ${!item.has_content ? "opacity-50" : ""}`}>
                     <td className="px-4 py-3">
                       <div className="text-gray-800 font-medium max-w-md truncate" title={item.title || ""}>
                         {item.title || "—"}
@@ -126,18 +156,15 @@ export default function DocumentsPage() {
                       </span>
                     </td>
                     <td className="px-4 py-3">
-                      <span className={`text-xs px-2 py-0.5 rounded-full ${
-                        item.extraction_status === "extracted"
-                          ? "bg-green-50 text-green-700"
-                          : item.extraction_status === "failed"
-                          ? "bg-red-50 text-red-700"
-                          : "bg-yellow-50 text-yellow-700"
-                      }`}>
-                        {item.extraction_status === "pending" ? "ממתין"
-                          : item.extraction_status === "extracted" ? "חולץ"
-                          : item.extraction_status === "failed" ? "נכשל"
-                          : item.extraction_status}
-                      </span>
+                      {item.has_content ? (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-green-50 text-green-700">
+                          {item.conversion_status === "converted" ? "PDF + MD" : "יש תוכן"}
+                        </span>
+                      ) : (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-orange-50 text-orange-600">
+                          מטאדאטה בלבד
+                        </span>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-xs text-gray-500">
                       {formatDate(item.created_at)}

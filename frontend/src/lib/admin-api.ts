@@ -80,6 +80,9 @@ export function getAdminDocuments(page = 1, status?: string) {
 export function deleteDocument(id: string) {
   return adminFetch(`/documents/${id}`, { method: "DELETE" });
 }
+export function purgeMetadataOnlyDocuments() {
+  return adminFetch<{ status: string; data: { deleted: number } }>("/documents/purge/metadata-only", { method: "DELETE" });
+}
 
 // Import — CKAN search + selective import
 export interface CkanSearchResult {
