@@ -31,7 +31,7 @@ export default function HomePage() {
   return (
     <>
       {/* Hero section */}
-      <section className="bg-gradient-to-b from-primary-800 to-primary-700 py-10 sm:py-14 px-4">
+      <section className="bg-gradient-to-b from-[#0A7A8B] to-[#086A78] py-10 sm:py-14 px-4">
         <div className="max-w-4xl mx-auto text-center">
           <h1 className="text-2xl sm:text-3xl lg:text-4xl font-bold text-white mb-2">
             אינטרסים לעם

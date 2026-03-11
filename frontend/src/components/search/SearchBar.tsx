@@ -24,9 +24,9 @@ export function SearchBar({ onSearch }: SearchBarProps) {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="חפשו אירוע, נושא או שם..."
-          className="w-full pr-12 pl-4 py-4 rounded-xl text-lg text-gray-900
+          className="w-full pr-12 pl-4 py-4 rounded-2xl text-lg text-gray-900
                      shadow-lg focus:outline-none focus:ring-2 focus:ring-primary-300
-                     focus:ring-offset-2 focus:ring-offset-primary-700"
+                     focus:ring-offset-2 focus:ring-offset-[#0A7A8B]"
           dir="rtl"
         />
         <svg
