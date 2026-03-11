@@ -1,122 +1,119 @@
 """Client for the gov.il DynamicCollector API (ministers' conflict of interest).
 
-Uses curl_cffi to impersonate Chrome's TLS fingerprint, bypassing Cloudflare.
+Uses Playwright headless browser to bypass Cloudflare protection.
+Falls back to curl_cffi for environments without a browser installed.
 """
 
-import asyncio
-from curl_cffi import requests as cffi_requests
 from ocoi_common.logging import setup_logging
 from ocoi_common.models import GovilRecord, ImportedDocument
 
 logger = setup_logging("ocoi.importer.govil")
 
-GOVIL_API_URL = "https://www.gov.il/he/api/DynamicCollector"
+GOVIL_PAGE_URL = "https://www.gov.il/he/departments/dynamiccollectors/ministers_conflict"
 GOVIL_TEMPLATE_ID = "c6e0f53e-02c0-4db1-ae89-76590f0f502e"
 GOVIL_BLOB_BASE = "https://www.gov.il/BlobFolder/dynamiccollectorresultitem"
-
-_HEADERS = {
-    "Accept": "application/json, text/plain, */*",
-    "Content-Type": "application/json;charset=utf-8",
-    "Origin": "https://www.gov.il",
-    "Referer": "https://www.gov.il/he/departments/dynamiccollectors/ministers_conflict",
-}
 
 
 class GovilClient:
     """Fetches ministers' conflict of interest agreements from gov.il."""
 
-    def __init__(self, api_url: str | None = None):
-        self.api_url = api_url or GOVIL_API_URL
-
-    def _fetch_page_sync(self, skip: int = 0) -> dict:
-        """Fetch a single page (synchronous, uses curl_cffi with Chrome impersonation)."""
-        payload = {
-            "DynamicTemplateID": GOVIL_TEMPLATE_ID,
-            "QueryFilters": {"skip": {"Query": skip}},
-            "From": skip,
-        }
-        resp = cffi_requests.post(
-            self.api_url,
-            json=payload,
-            headers=_HEADERS,
-            impersonate="chrome",
-            timeout=30,
-        )
-        resp.raise_for_status()
-        return resp.json()
-
-    async def fetch_page(self, skip: int = 0) -> dict:
-        """Fetch a single page (async wrapper)."""
-        return await asyncio.to_thread(self._fetch_page_sync, skip)
-
     async def fetch_all_records(self, per_page: int = 20) -> list[GovilRecord]:
-        """Fetch all records by paginating through all pages."""
-        records: list[GovilRecord] = []
+        """Fetch all records using headless browser to bypass Cloudflare."""
+        from playwright.async_api import async_playwright
 
-        # First page to get total
-        first_page = await self.fetch_page(skip=0)
-        total = first_page.get("TotalResults", 0)
-        items = self._extract_items(first_page)
-        records.extend(items)
-        logger.info(f"Gov.il: {total} total records, fetched first {len(items)}")
-
-        # Remaining pages
-        skip = per_page
-        while skip < total:
-            page_data = await self.fetch_page(skip=skip)
-            items = self._extract_items(page_data)
-            if not items:
-                break
-            records.extend(items)
-            logger.info(f"Fetched {len(records)}/{total} gov.il records")
-            skip += per_page
-
-        return records
-
-    def _extract_items(self, page_data: dict) -> list[GovilRecord]:
-        """Extract GovilRecord objects from API response."""
-        items = page_data.get("Results", [])
-        records = []
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            data = item.get("Data", {})
-            url_name = item.get("UrlName", "")
-
-            # Extract PDF info from the 'file' array
-            files = data.get("file", [])
-            pdf_file = files[0] if files else {}
-            pdf_filename = pdf_file.get("FileName", "")
-            pdf_display = pdf_file.get("DisplayName", "")
-            pdf_size = int(pdf_file.get("FileSize", 0) or 0)
-
-            # Build full PDF URL
-            pdf_url = None
-            if pdf_filename and url_name:
-                pdf_url = f"{GOVIL_BLOB_BASE}/{url_name}/he/{pdf_filename}"
-
-            # Map list IDs to position types
-            position_ids = data.get("list", [])
-            position_type = self._map_position_type(position_ids[0] if position_ids else "")
-
-            ministry_ids = data.get("government_ministry", [])
-
-            record = GovilRecord(
-                name=data.get("function", ""),
-                position_type=position_type,
-                ministry=ministry_ids[0] if ministry_ids else None,
-                date=data.get("date"),
-                pdf_url=pdf_url,
-                raw_data={
-                    "url_name": url_name,
-                    "pdf_display": pdf_display,
-                    "pdf_size": pdf_size,
-                    "position_type_id": position_ids[0] if position_ids else None,
-                    "ministry_id": ministry_ids[0] if ministry_ids else None,
-                },
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-setuid-sandbox"],
             )
-            records.append(record)
-        return records
+            try:
+                context = await browser.new_context(locale="he-IL")
+                page = await context.new_page()
+
+                # Navigate to the page first — this resolves Cloudflare challenges
+                logger.info("Opening Gov.il page in headless browser...")
+                await page.goto(GOVIL_PAGE_URL, wait_until="networkidle", timeout=60000)
+                logger.info("Page loaded, fetching records via API...")
+
+                # Fetch first page to get total count
+                first = await self._browser_fetch(page, 0)
+                total = first.get("TotalResults", 0)
+                all_items = list(first.get("Results", []))
+                logger.info(f"Gov.il: {total} total records, fetched first {len(all_items)}")
+
+                # Remaining pages
+                skip = per_page
+                while skip < total:
+                    data = await self._browser_fetch(page, skip)
+                    results = data.get("Results", [])
+                    if not results:
+                        break
+                    all_items.extend(results)
+                    logger.info(f"Fetched {len(all_items)}/{total} gov.il records")
+                    skip += per_page
+
+                return [r for item in all_items if (r := self._parse_item(item))]
+            finally:
+                await browser.close()
+
+    async def _browser_fetch(self, page, skip: int) -> dict:
+        """Make the DynamicCollector API call from within the browser context."""
+        return await page.evaluate(
+            """async (params) => {
+                const resp = await fetch('/he/api/DynamicCollector', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json;charset=utf-8'},
+                    body: JSON.stringify({
+                        DynamicTemplateID: params.templateId,
+                        QueryFilters: {skip: {Query: params.skip}},
+                        From: params.skip
+                    })
+                });
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                return resp.json();
+            }""",
+            {"templateId": GOVIL_TEMPLATE_ID, "skip": skip},
+        )
+
+    def _parse_item(self, item: dict) -> GovilRecord | None:
+        """Parse a raw API result item into a GovilRecord."""
+        if not isinstance(item, dict):
+            return None
+        data = item.get("Data", {})
+        url_name = item.get("UrlName", "")
+
+        # Extract PDF info from the 'file' array
+        files = data.get("file", [])
+        pdf_file = files[0] if files else {}
+        pdf_filename = pdf_file.get("FileName", "")
+        pdf_display = pdf_file.get("DisplayName", "")
+        pdf_size = int(pdf_file.get("FileSize", 0) or 0)
+
+        # Build full PDF URL
+        pdf_url = None
+        if pdf_filename and url_name:
+            pdf_url = f"{GOVIL_BLOB_BASE}/{url_name}/he/{pdf_filename}"
+
+        # Map list IDs to position types
+        position_ids = data.get("list", [])
+        position_type = self._map_position_type(position_ids[0] if position_ids else "")
+
+        ministry_ids = data.get("government_ministry", [])
+
+        return GovilRecord(
+            name=data.get("function", ""),
+            position_type=position_type,
+            ministry=ministry_ids[0] if ministry_ids else None,
+            date=data.get("date"),
+            pdf_url=pdf_url,
+            raw_data={
+                "url_name": url_name,
+                "pdf_display": pdf_display,
+                "pdf_size": pdf_size,
+                "position_type_id": position_ids[0] if position_ids else None,
+                "ministry_id": ministry_ids[0] if ministry_ids else None,
+            },
+        )
 
     @staticmethod
     def _map_position_type(type_id: str) -> str:

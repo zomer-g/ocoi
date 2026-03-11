@@ -30,6 +30,9 @@ RUN sed -i '/^\[tool\.uv/,$d' packages/*/pyproject.toml
 # Install via pip (bypasses workspace resolution — no torch/transformers)
 RUN uv pip install ./packages/ocoi-common ./packages/ocoi-db ./packages/ocoi-api ./packages/ocoi-importer
 
+# Install Playwright Chromium + system deps for Gov.il Cloudflare bypass
+RUN playwright install --with-deps chromium
+
 # Copy built frontend from stage 1
 COPY --from=frontend-build /app/frontend/out /app/static
 
