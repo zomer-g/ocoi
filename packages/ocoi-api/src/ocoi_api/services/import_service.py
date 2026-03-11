@@ -134,70 +134,96 @@ async def import_ckan_datasets(dataset_ids: list[str]) -> dict:
     return stats
 
 
-# ── Gov.il: Browser-extracted import ─────────────────────────────────────
+# ── Gov.il: Automated bulk import ────────────────────────────────────────
 
 
-async def import_govil_records(records: list[dict]) -> dict:
-    """Import Gov.il records that were extracted client-side from the browser.
+async def run_govil_import(limit: int = 0) -> dict:
+    """Bulk import from Gov.il. Updates _import_state for progress polling."""
+    global _import_state
 
-    Each record should have: name, date, pdf_url, pdf_display, position_type_id, ministry_id
-    """
+    if _import_state["running"]:
+        return {"status": "error", "message": "Import already running"}
+
+    _import_state.update({
+        "running": True,
+        "source": "govil",
+        "total": 0,
+        "imported": 0,
+        "skipped": 0,
+        "errors": 0,
+        "error_messages": [],
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "finished_at": None,
+    })
+
+    try:
+        await _import_govil(limit)
+    except Exception as e:
+        _import_state["error_messages"].append(f"Fatal: {str(e)}")
+        _import_state["errors"] += 1
+    finally:
+        _import_state["running"] = False
+        _import_state["finished_at"] = datetime.now(timezone.utc).isoformat()
+
+    return get_import_status()
+
+
+async def _import_govil(limit: int):
+    """Import documents from Gov.il using curl_cffi (Cloudflare bypass)."""
+    from ocoi_importer.govil_client import GovilClient
+
+    client = GovilClient()
+
+    records = await client.fetch_all_records()
+    if limit > 0:
+        records = records[:limit]
+
+    _import_state["total"] = len(records)
     imported_at = datetime.now(timezone.utc).isoformat()
-    stats = {"imported": 0, "skipped": 0, "errors": 0, "error_messages": []}
 
     async with async_session_factory() as session:
-        for rec in records:
+        for record in records:
             try:
-                pdf_url = rec.get("pdf_url", "")
-                name = rec.get("name", "")
-                if not pdf_url:
-                    stats["skipped"] += 1
+                doc_info = client.record_to_document(record)
+                if not doc_info:
+                    _import_state["skipped"] += 1
                     continue
 
-                # Check if already exists
+                # Check if document already exists
                 existing = await session.execute(
-                    select(Document).where(Document.file_url == pdf_url)
+                    select(Document).where(Document.file_url == doc_info.file_url)
                 )
                 if existing.scalar_one_or_none():
-                    stats["skipped"] += 1
+                    _import_state["skipped"] += 1
                     continue
 
-                title = rec.get("pdf_display") or f"הסדר ניגוד עניינים - {name}"
-                source_id = f"govil_{name}_{rec.get('date', 'unknown')}"
-
-                metadata = {
-                    "name": name,
-                    "position_type_id": rec.get("position_type_id"),
-                    "ministry_id": rec.get("ministry_id"),
-                    "date": rec.get("date"),
-                    "pdf_display": rec.get("pdf_display"),
-                    "pdf_size": rec.get("pdf_size"),
-                    "imported_at": imported_at,
-                }
+                metadata = dict(doc_info.metadata)
+                metadata["imported_at"] = imported_at
+                metadata.update(record.raw_data)
 
                 src = await get_or_create_source(
                     session,
                     source_type="govil",
-                    source_id=source_id,
-                    title=title,
-                    url=pdf_url,
+                    source_id=doc_info.source_id,
+                    title=doc_info.title,
+                    url=doc_info.file_url,
                     metadata_json=metadata,
                 )
                 await create_document(
                     session,
                     source_id=src.id,
-                    title=title,
-                    file_url=pdf_url,
+                    title=doc_info.title,
+                    file_url=doc_info.file_url,
                     file_format="pdf",
-                    file_size=rec.get("pdf_size"),
+                    file_size=doc_info.file_size,
                 )
-                stats["imported"] += 1
+                _import_state["imported"] += 1
 
             except Exception as e:
-                stats["errors"] += 1
-                if len(stats["error_messages"]) < 20:
-                    stats["error_messages"].append(f"Gov.il '{name[:50]}': {e}")
+                _import_state["errors"] += 1
+                if len(_import_state["error_messages"]) < 20:
+                    _import_state["error_messages"].append(
+                        f"Gov.il '{record.name[:50]}': {e}"
+                    )
 
         await session.commit()
-
-    return stats
