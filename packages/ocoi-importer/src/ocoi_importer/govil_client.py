@@ -90,6 +90,7 @@ class GovilClient:
 
     async def _fetch_direct(self, per_page: int) -> list[GovilRecord]:
         """Fetch via direct httpx POST to the DynamicCollector API."""
+        page_size = 100  # request 100 per page for faster fetching
         headers = {
             "Content-Type": "application/json;charset=utf-8",
             "Accept": "application/json, text/plain, */*",
@@ -108,32 +109,33 @@ class GovilClient:
         async with httpx.AsyncClient(
             timeout=30, follow_redirects=True, headers=headers
         ) as client:
-            first = await self._httpx_fetch(client, 0)
+            first = await self._httpx_fetch(client, 0, quantity=page_size)
             total = first.get("TotalResults", 0)
             all_items = list(first.get("Results", []))
             logger.info(f"Direct API: {total} total records, got {len(all_items)}")
 
-            skip = per_page
+            skip = page_size
             while skip < total:
-                data = await self._httpx_fetch(client, skip)
+                data = await self._httpx_fetch(client, skip, quantity=page_size)
                 results = data.get("Results", [])
                 if not results:
                     break
                 all_items.extend(results)
                 logger.info(f"Direct API: fetched {len(all_items)}/{total}")
-                skip += per_page
+                skip += page_size
 
         records = [r for item in all_items if (r := self._parse_item(item))]
         logger.info(f"Direct API: parsed {len(records)} records")
         return records
 
-    async def _httpx_fetch(self, client: httpx.AsyncClient, skip: int) -> dict:
+    async def _httpx_fetch(self, client: httpx.AsyncClient, skip: int, quantity: int = 100) -> dict:
         resp = await client.post(
             GOVIL_API_URL,
             json={
                 "DynamicTemplateID": GOVIL_TEMPLATE_ID,
                 "QueryFilters": {"skip": {"Query": skip}},
                 "From": skip,
+                "Quantity": quantity,
             },
         )
         resp.raise_for_status()
@@ -293,7 +295,7 @@ class GovilClient:
             for s in ["just a moment", "checking", "attention required", "cloudflare"]
         )
 
-    async def _browser_fetch(self, page, skip: int) -> dict:
+    async def _browser_fetch(self, page, skip: int, quantity: int = 100) -> dict:
         """Make the DynamicCollector API call from within the browser context."""
         return await page.evaluate(
             """async (params) => {
@@ -303,13 +305,14 @@ class GovilClient:
                     body: JSON.stringify({
                         DynamicTemplateID: params.templateId,
                         QueryFilters: {skip: {Query: params.skip}},
-                        From: params.skip
+                        From: params.skip,
+                        Quantity: params.quantity
                     })
                 });
                 if (!resp.ok) throw new Error('HTTP ' + resp.status);
                 return resp.json();
             }""",
-            {"templateId": GOVIL_TEMPLATE_ID, "skip": skip},
+            {"templateId": GOVIL_TEMPLATE_ID, "skip": skip, "quantity": quantity},
         )
 
     # ── Parsing ───────────────────────────────────────────────────────────

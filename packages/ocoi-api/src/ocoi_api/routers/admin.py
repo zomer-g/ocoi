@@ -251,7 +251,7 @@ async def list_documents(
     db: AsyncSession = Depends(get_db),
 ):
     offset = (page - 1) * limit
-    q = select(Document)
+    q = select(Document).join(Source, Document.source_id == Source.id)
     count_q = select(func.count()).select_from(Document)
     if status:
         q = q.where(Document.extraction_status == status)
@@ -259,17 +259,19 @@ async def list_documents(
     total = (await db.execute(count_q)).scalar()
     result = await db.execute(q.order_by(Document.created_at.desc()).offset(offset).limit(limit))
     docs = result.scalars().all()
-    data = [
-        {
+    data = []
+    for d in docs:
+        source = await db.get(Source, d.source_id) if d.source_id else None
+        data.append({
             "id": str(d.id),
             "title": d.title,
+            "source_type": source.source_type if source else None,
             "conversion_status": d.conversion_status,
             "extraction_status": d.extraction_status,
             "file_url": d.file_url,
+            "file_size": d.file_size,
             "created_at": d.created_at.isoformat() if d.created_at else None,
-        }
-        for d in docs
-    ]
+        })
     return {"status": "ok", "data": data, "meta": {"total": total, "page": page, "limit": limit}}
 
 
