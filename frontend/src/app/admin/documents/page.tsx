@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
-import { deleteDocument, purgeMetadataOnlyDocuments } from "@/lib/admin-api";
+import { useEffect, useState, useCallback, useRef } from "react";
+import { deleteDocument, purgeMetadataOnlyDocuments, uploadDocument, type UploadResult } from "@/lib/admin-api";
 
 interface DocItem {
   id: string;
@@ -15,9 +15,18 @@ interface DocItem {
   created_at: string | null;
 }
 
+interface UploadItem {
+  file: File;
+  status: "pending" | "uploading" | "done" | "error";
+  progress: number;
+  error?: string;
+  result?: UploadResult;
+}
+
 const SOURCE_LABELS: Record<string, { label: string; color: string }> = {
   govil: { label: "Gov.il", color: "bg-blue-50 text-blue-700 border-blue-200" },
   ckan: { label: "CKAN", color: "bg-purple-50 text-purple-700 border-purple-200" },
+  upload: { label: "העלאה", color: "bg-teal-50 text-teal-700 border-teal-200" },
 };
 
 function formatDate(iso: string | null) {
@@ -46,6 +55,11 @@ export default function DocumentsPage() {
   const [total, setTotal] = useState(0);
   const [statusFilter, setStatusFilter] = useState("");
   const [purging, setPurging] = useState(false);
+
+  // Upload state
+  const [uploads, setUploads] = useState<UploadItem[]>([]);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -79,14 +93,71 @@ export default function DocumentsPage() {
       alert(`נמחקו ${result.data.deleted} מסמכים ללא תוכן`);
       setPage(1);
       fetchData();
-    } catch (e) {
+    } catch {
       alert("שגיאה במחיקה");
     } finally {
       setPurging(false);
     }
   };
 
+  // ── Upload handling ──────────────────────────────────────────────────
+  const handleFilesSelected = async (files: FileList | File[]) => {
+    const pdfFiles = Array.from(files).filter(
+      (f) => f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf")
+    );
+    if (pdfFiles.length === 0) return;
+
+    const startIdx = uploads.length;
+    const newUploads: UploadItem[] = pdfFiles.map((f) => ({
+      file: f,
+      status: "pending" as const,
+      progress: 0,
+    }));
+    setUploads((prev) => [...prev, ...newUploads]);
+
+    // Upload sequentially (Render memory-friendly)
+    for (let i = 0; i < pdfFiles.length; i++) {
+      const idx = startIdx + i;
+      setUploads((prev) =>
+        prev.map((u, j) => (j === idx ? { ...u, status: "uploading" } : u))
+      );
+
+      try {
+        const result = await uploadDocument(pdfFiles[i], (loaded, total) => {
+          const progress = Math.round((loaded / total) * 100);
+          setUploads((prev) =>
+            prev.map((u, j) => (j === idx ? { ...u, progress } : u))
+          );
+        });
+        setUploads((prev) =>
+          prev.map((u, j) =>
+            j === idx ? { ...u, status: "done", progress: 100, result: result.data } : u
+          )
+        );
+      } catch (e) {
+        setUploads((prev) =>
+          prev.map((u, j) =>
+            j === idx
+              ? { ...u, status: "error", error: e instanceof Error ? e.message : "שגיאה" }
+              : u
+          )
+        );
+      }
+    }
+
+    fetchData();
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    if (e.dataTransfer.files.length > 0) {
+      handleFilesSelected(e.dataTransfer.files);
+    }
+  };
+
   const metadataOnlyCount = items.filter((i) => !i.has_content).length;
+  const activeUploads = uploads.filter((u) => u.status === "uploading" || u.status === "pending");
 
   return (
     <div>
@@ -102,6 +173,96 @@ export default function DocumentsPage() {
           </button>
         )}
       </div>
+
+      {/* Drop zone */}
+      <div
+        onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
+        onDragEnter={(e) => { e.preventDefault(); setIsDragOver(true); }}
+        onDragLeave={() => setIsDragOver(false)}
+        onDrop={handleDrop}
+        onClick={() => fileInputRef.current?.click()}
+        className={`mb-4 border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors ${
+          isDragOver
+            ? "border-primary-500 bg-primary-50"
+            : "border-gray-300 bg-gray-50 hover:border-primary-400 hover:bg-primary-50/50"
+        }`}
+      >
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".pdf"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            if (e.target.files && e.target.files.length > 0) {
+              handleFilesSelected(e.target.files);
+              e.target.value = "";
+            }
+          }}
+        />
+        <div className="text-gray-500">
+          <svg xmlns="http://www.w3.org/2000/svg" className="w-8 h-8 mx-auto mb-2 text-gray-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <polyline points="14 2 14 8 20 8" />
+            <line x1="12" y1="18" x2="12" y2="12" />
+            <line x1="9" y1="15" x2="12" y2="12" />
+            <line x1="15" y1="15" x2="12" y2="12" />
+          </svg>
+          {isDragOver ? (
+            <span className="text-sm font-medium text-primary-700">שחרר להעלאה</span>
+          ) : (
+            <span className="text-sm">גרור קבצי PDF לכאן או לחץ לבחירה</span>
+          )}
+        </div>
+      </div>
+
+      {/* Upload progress list */}
+      {uploads.length > 0 && (
+        <div className="bg-white rounded-lg border border-gray-200 mb-4 divide-y divide-gray-100">
+          {uploads.map((u, i) => (
+            <div key={i} className="flex items-center gap-3 px-4 py-2.5">
+              <span className="text-sm text-gray-700 truncate flex-1 min-w-0" title={u.file.name}>
+                {u.file.name}
+              </span>
+              <span className="text-xs text-gray-400 shrink-0">{formatSize(u.file.size)}</span>
+              <div className="w-32 shrink-0">
+                {u.status === "pending" && (
+                  <span className="text-xs text-gray-400">ממתין...</span>
+                )}
+                {u.status === "uploading" && (
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 bg-gray-200 rounded-full h-1.5">
+                      <div
+                        className="bg-primary-600 h-1.5 rounded-full transition-all"
+                        style={{ width: `${u.progress}%` }}
+                      />
+                    </div>
+                    <span className="text-xs text-gray-500 w-8">{u.progress}%</span>
+                  </div>
+                )}
+                {u.status === "done" && (
+                  <span className="text-xs text-green-600">
+                    {u.result ? `${u.result.markdown_length.toLocaleString()} תווים` : "הועלה"}
+                  </span>
+                )}
+                {u.status === "error" && (
+                  <span className="text-xs text-red-600" title={u.error}>{u.error}</span>
+                )}
+              </div>
+            </div>
+          ))}
+          {activeUploads.length === 0 && (
+            <div className="px-4 py-2 text-end">
+              <button
+                onClick={() => setUploads([])}
+                className="text-xs text-gray-400 hover:text-gray-600"
+              >
+                נקה רשימה
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="flex items-center justify-between mb-4">
         <div className="flex gap-2">
@@ -171,7 +332,7 @@ export default function DocumentsPage() {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex gap-2 items-center justify-end">
-                        {item.file_url && (
+                        {item.file_url && !item.file_url.startsWith("upload://") && (
                           <a
                             href={item.file_url}
                             target="_blank"

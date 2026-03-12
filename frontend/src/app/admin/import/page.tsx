@@ -276,7 +276,22 @@ function CkanTab() {
   );
 }
 
-// ── Gov.il Tab: Import with manual Cloudflare bypass ────────────────
+// ── Gov.il Tab: URL-based scraper + manual fallback ──────────────────
+
+const GOVIL_PRESETS = [
+  {
+    label: "הסדרי ניגוד עניינים — שרים וסגני שרים",
+    url: "https://www.gov.il/he/departments/dynamiccollectors/ministers_conflict",
+  },
+  {
+    label: "הנחיות היועץ המשפטי לממשלה",
+    url: "https://www.gov.il/he/departments/dynamiccollectors/legal-advisor-guidelines",
+  },
+  {
+    label: "החלטות ממשלה",
+    url: "https://www.gov.il/he/departments/dynamiccollectors/govdecisions",
+  },
+];
 
 const GOVIL_CONSOLE_SCRIPT = `(async () => {
   const all = [];
@@ -313,6 +328,15 @@ function tryCountRecords(json: string): string {
   }
 }
 
+function isValidGovilUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.hostname === "www.gov.il" || u.hostname === "gov.il";
+  } catch {
+    return false;
+  }
+}
+
 function GovilTab() {
   const [status, setStatus] = useState<ImportStatus | null>(null);
   const [phase, setPhase] = useState<"idle" | "fetching" | "manual" | "processing">("idle");
@@ -320,7 +344,12 @@ function GovilTab() {
   const [error, setError] = useState("");
   const [pastedData, setPastedData] = useState("");
   const [scriptCopied, setScriptCopied] = useState(false);
+  const [govilUrl, setGovilUrl] = useState(GOVIL_PRESETS[0].url);
+  const [customUrl, setCustomUrl] = useState("");
+  const [useCustomUrl, setUseCustomUrl] = useState(false);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const activeUrl = useCustomUrl ? customUrl : govilUrl;
 
   const stopPolling = useCallback(() => {
     if (pollingRef.current) {
@@ -349,8 +378,25 @@ function GovilTab() {
     return stopPolling;
   }, [pollStatus, stopPolling]);
 
-  // Try auto-fetch via backend proxy, fall back to manual on failure
-  const handleAutoTrigger = async () => {
+  // Server-side scraper (new: uses cloudscraper + Playwright fallback)
+  const handleServerScrape = async () => {
+    if (useCustomUrl && !isValidGovilUrl(customUrl)) {
+      setError("כתובת URL לא תקינה. יש להזין כתובת מאתר gov.il.");
+      return;
+    }
+    setPhase("fetching");
+    setError("");
+    try {
+      await triggerGovilImport(0, activeUrl);
+      startPolling();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "שגיאה בהפעלת הסקריפט");
+      setPhase("idle");
+    }
+  };
+
+  // Browser-side fetch via proxy (original flow)
+  const handleBrowserFetch = async () => {
     setPhase("fetching");
     setError("");
     setFetchProgress({ fetched: 0, total: 0 });
@@ -367,7 +413,6 @@ function GovilTab() {
       await submitGovilRecords(records);
       startPolling();
     } catch {
-      // Proxy failed (Cloudflare 403) → show manual import instructions
       setPhase("manual");
     }
   };
@@ -403,19 +448,82 @@ function GovilTab() {
 
   return (
     <div>
-      {/* Trigger buttons */}
+      {/* URL selection */}
       <div className="bg-white rounded-lg border border-gray-200 p-6 mb-4">
         <h2 className="text-lg font-semibold text-gray-800 mb-2">ייבוא מ-Gov.il</h2>
         <p className="text-sm text-gray-600 mb-4">
-          ייבוא הסדרי ניגוד עניינים של שרים וסגני שרים מאתר Gov.il.
+          בחר עמוד אוסף מאתר Gov.il לייבוא, או הזן כתובת URL מותאמת אישית.
         </p>
+
+        {/* Preset URLs */}
+        <div className="space-y-2 mb-4">
+          {GOVIL_PRESETS.map((preset) => (
+            <label
+              key={preset.url}
+              className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
+                !useCustomUrl && govilUrl === preset.url
+                  ? "border-primary-300 bg-primary-50"
+                  : "border-gray-200 hover:bg-gray-50"
+              }`}
+            >
+              <input
+                type="radio"
+                name="govil-url"
+                checked={!useCustomUrl && govilUrl === preset.url}
+                onChange={() => { setGovilUrl(preset.url); setUseCustomUrl(false); }}
+                className="accent-primary-700"
+              />
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium text-gray-800">{preset.label}</div>
+                <div className="text-xs text-gray-400 truncate" dir="ltr">{preset.url}</div>
+              </div>
+            </label>
+          ))}
+
+          {/* Custom URL */}
+          <label
+            className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
+              useCustomUrl
+                ? "border-primary-300 bg-primary-50"
+                : "border-gray-200 hover:bg-gray-50"
+            }`}
+          >
+            <input
+              type="radio"
+              name="govil-url"
+              checked={useCustomUrl}
+              onChange={() => setUseCustomUrl(true)}
+              className="accent-primary-700 mt-1"
+            />
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-medium text-gray-800 mb-1">כתובת URL מותאמת אישית</div>
+              <input
+                type="url"
+                value={customUrl}
+                onChange={(e) => { setCustomUrl(e.target.value); setUseCustomUrl(true); }}
+                placeholder="https://www.gov.il/he/departments/dynamiccollectors/..."
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-primary-500"
+                dir="ltr"
+              />
+            </div>
+          </label>
+        </div>
+
+        {/* Action buttons */}
         <div className="flex gap-3 flex-wrap">
           <button
-            onClick={handleAutoTrigger}
-            disabled={phase !== "idle" || isRunning}
+            onClick={handleServerScrape}
+            disabled={phase !== "idle" || isRunning || (useCustomUrl && !customUrl.trim())}
             className="px-6 py-3 bg-primary-700 text-white rounded-lg hover:bg-primary-800 transition-colors text-sm font-medium disabled:opacity-50"
           >
-            {phase === "fetching" ? "מנסה חיבור אוטומטי..." : isRunning ? "מעבד מסמכים..." : "ייבוא אוטומטי"}
+            {phase === "fetching" || isRunning ? "מעבד..." : "ייבוא אוטומטי (שרת)"}
+          </button>
+          <button
+            onClick={handleBrowserFetch}
+            disabled={phase !== "idle" || isRunning}
+            className="px-6 py-3 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors text-sm font-medium disabled:opacity-50"
+          >
+            ייבוא דרך הדפדפן (פרוקסי)
           </button>
           <button
             onClick={() => { setPhase("manual"); setError(""); }}
@@ -428,8 +536,8 @@ function GovilTab() {
         {error && phase !== "manual" && <div className="mt-3 text-sm text-red-600">{error}</div>}
       </div>
 
-      {/* Browser fetch progress (auto mode) */}
-      {phase === "fetching" && (
+      {/* Browser fetch progress */}
+      {phase === "fetching" && !status?.running && (
         <div className="bg-blue-50 rounded-lg border border-blue-100 p-4 mb-4">
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-2">
@@ -471,7 +579,7 @@ function GovilTab() {
               </a>
               {" "}בלשונית חדשה
             </li>
-            <li>לחץ <kbd className="px-1.5 py-0.5 bg-gray-200 rounded text-xs font-mono">F12</kbd> לפתיחת כלי המפתחים ← לשונית <strong>Console</strong></li>
+            <li>לחץ <kbd className="px-1.5 py-0.5 bg-gray-200 rounded text-xs font-mono">F12</kbd> לפתיחת כלי המפתחים &larr; לשונית <strong>Console</strong></li>
             <li>לחץ &quot;העתק סקריפט&quot; למטה, הדבק בקונסול ולחץ Enter</li>
             <li>המתן לסיום (תראה הודעת Done!) — הנתונים יועתקו ללוח</li>
             <li>חזור לכאן והדבק <kbd className="px-1.5 py-0.5 bg-gray-200 rounded text-xs font-mono">Ctrl+V</kbd> בתיבה למטה</li>

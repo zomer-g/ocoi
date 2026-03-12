@@ -84,6 +84,53 @@ export function purgeMetadataOnlyDocuments() {
   return adminFetch<{ status: string; data: { deleted: number } }>("/documents/purge/metadata-only", { method: "DELETE" });
 }
 
+// Upload
+export interface UploadResult {
+  id: string;
+  title: string;
+  file_size: number;
+  markdown_length: number;
+}
+
+export function uploadDocument(
+  file: File,
+  onProgress?: (loaded: number, total: number) => void
+): Promise<{ status: string; data: UploadResult }> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${ADMIN_BASE}/documents/upload`);
+    xhr.withCredentials = true;
+
+    xhr.upload.addEventListener("progress", (e) => {
+      if (e.lengthComputable && onProgress) onProgress(e.loaded, e.total);
+    });
+
+    xhr.addEventListener("load", () => {
+      if (xhr.status === 401) {
+        window.location.href = "/admin/login";
+        reject(new Error("Not authenticated"));
+        return;
+      }
+      if (xhr.status >= 400) {
+        try {
+          const body = JSON.parse(xhr.responseText);
+          reject(new Error(body.detail || `Upload failed (${xhr.status})`));
+        } catch {
+          reject(new Error(`Upload failed (${xhr.status})`));
+        }
+        return;
+      }
+      resolve(JSON.parse(xhr.responseText));
+    });
+
+    xhr.addEventListener("error", () => reject(new Error("שגיאת רשת")));
+    xhr.send(formData);
+  });
+}
+
 // Import — CKAN search + selective import
 export interface CkanSearchResult {
   id: string;
@@ -124,9 +171,12 @@ export function importCkanDatasets(datasetIds: string[]) {
 }
 
 // Import — Gov.il: browser-side fetch + server-side processing
-export function triggerGovilImport(limit: number = 0) {
+export function triggerGovilImport(limit: number = 0, url: string = "") {
   const params = new URLSearchParams({ limit: String(limit) });
-  return adminFetch(`/import/govil/trigger?${params}`, { method: "POST" });
+  return adminFetch(`/import/govil/trigger?${params}`, {
+    method: "POST",
+    body: JSON.stringify({ url }),
+  });
 }
 
 // Send pre-fetched Gov.il records from the browser to backend for processing

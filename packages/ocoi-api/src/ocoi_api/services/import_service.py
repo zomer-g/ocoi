@@ -146,7 +146,7 @@ async def import_ckan_datasets(dataset_ids: list[str]) -> dict:
 # ── Gov.il: Automated bulk import ────────────────────────────────────────
 
 
-async def run_govil_import(limit: int = 0) -> dict:
+async def run_govil_import(limit: int = 0, url: str = "") -> dict:
     """Bulk import from Gov.il. Updates _import_state for progress polling."""
     global _import_state
 
@@ -169,7 +169,7 @@ async def run_govil_import(limit: int = 0) -> dict:
     })
 
     try:
-        await _import_govil(limit)
+        await _import_govil(limit, url=url)
     except Exception as e:
         _import_state["error_messages"].append(f"Fatal: {str(e)}")
         _import_state["errors"] += 1
@@ -242,11 +242,11 @@ async def run_govil_with_records(raw_items: list[dict]) -> dict:
     return get_import_status()
 
 
-async def _import_govil(limit: int):
+async def _import_govil(limit: int, url: str = ""):
     """Import documents from Gov.il — fetch metadata, download PDFs, convert to markdown."""
     from ocoi_importer.govil_client import GovilClient
 
-    client = GovilClient()
+    client = GovilClient(url=url) if url else GovilClient()
 
     # Phase 1: Fetch all records from website
     records = await client.fetch_all_records()
@@ -349,12 +349,31 @@ async def _process_new_records(client, new_records: list) -> None:
         await session.commit()
 
 
-async def _download_and_convert_pdf(file_url: str, doc_id: str) -> str | None:
-    """Download a PDF from URL, save to disk, extract text with pdfplumber (lightweight)."""
-    try:
-        import pdfplumber
+def convert_pdf_to_markdown(pdf_path: Path, doc_id: str) -> str | None:
+    """Extract text from a local PDF file using pdfplumber. Returns markdown or None."""
+    import pdfplumber
 
-        # Download PDF
+    pages = []
+    with pdfplumber.open(str(pdf_path)) as pdf:
+        for i, page in enumerate(pdf.pages):
+            text = page.extract_text()
+            if text:
+                pages.append(f"## עמוד {i + 1}\n\n{text}")
+
+    md_text = "\n\n---\n\n".join(pages)
+    if md_text and len(md_text.strip()) > 50:
+        md_path = settings.markdown_dir / f"{doc_id}.md"
+        md_path.write_text(md_text, encoding="utf-8")
+        logger.info(f"Converted to markdown: {md_path.name} ({len(md_text)} chars)")
+        return md_text
+    else:
+        logger.warning(f"PDF conversion produced empty/short text for {doc_id}")
+        return None
+
+
+async def _download_and_convert_pdf(file_url: str, doc_id: str) -> str | None:
+    """Download a PDF from URL, save to disk, extract text with pdfplumber."""
+    try:
         pdf_path = settings.pdf_dir / f"{doc_id}.pdf"
         async with httpx.AsyncClient(timeout=60, follow_redirects=True) as http:
             resp = await http.get(file_url)
@@ -362,24 +381,7 @@ async def _download_and_convert_pdf(file_url: str, doc_id: str) -> str | None:
             pdf_path.write_bytes(resp.content)
 
         logger.info(f"Downloaded PDF: {pdf_path.name} ({len(resp.content)} bytes)")
-
-        # Extract text page by page (memory-efficient)
-        pages = []
-        with pdfplumber.open(str(pdf_path)) as pdf:
-            for i, page in enumerate(pdf.pages):
-                text = page.extract_text()
-                if text:
-                    pages.append(f"## עמוד {i + 1}\n\n{text}")
-
-        md_text = "\n\n---\n\n".join(pages)
-        if md_text and len(md_text.strip()) > 50:
-            md_path = settings.markdown_dir / f"{doc_id}.md"
-            md_path.write_text(md_text, encoding="utf-8")
-            logger.info(f"Converted to markdown: {md_path.name} ({len(md_text)} chars)")
-            return md_text
-        else:
-            logger.warning(f"PDF conversion produced empty/short text for {doc_id}")
-            return None
+        return convert_pdf_to_markdown(pdf_path, doc_id)
 
     except Exception as e:
         logger.error(f"PDF download/convert failed for {file_url}: {e}")

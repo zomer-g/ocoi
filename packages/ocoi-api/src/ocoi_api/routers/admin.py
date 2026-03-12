@@ -1,7 +1,7 @@
 """Admin CRUD routes — protected with Google OAuth JWT."""
 
 import uuid
-from fastapi import APIRouter, BackgroundTasks, Depends, Query, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, HTTPException, Request, UploadFile, File
 from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -296,6 +296,82 @@ async def purge_metadata_only_documents(db: AsyncSession = Depends(get_db)):
     return {"status": "ok", "data": {"deleted": count}}
 
 
+@router.post("/documents/upload")
+async def upload_document(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload a PDF file, convert to markdown, and create a document record."""
+    from ocoi_api.services.import_service import convert_pdf_to_markdown
+    from ocoi_db.crud import get_or_create_source, create_document
+
+    # Validate file type
+    filename = file.filename or "document.pdf"
+    if not filename.lower().endswith(".pdf"):
+        raise HTTPException(400, "רק קבצי PDF נתמכים")
+
+    # Read and validate size (20MB limit)
+    content = await file.read()
+    if len(content) > 20 * 1024 * 1024:
+        raise HTTPException(400, "הקובץ גדול מדי (מקסימום 20MB)")
+    if len(content) == 0:
+        raise HTTPException(400, "הקובץ ריק")
+
+    # Save PDF to temp file
+    temp_id = str(uuid.uuid4())
+    pdf_path = settings.pdf_dir / f"{temp_id}.pdf"
+    pdf_path.write_bytes(content)
+
+    # Convert to markdown
+    md_text = convert_pdf_to_markdown(pdf_path, temp_id)
+    if not md_text:
+        pdf_path.unlink(missing_ok=True)
+        raise HTTPException(422, "לא ניתן לחלץ טקסט מה-PDF")
+
+    # Create source and document
+    doc_url = f"upload://{temp_id}"
+    src = await get_or_create_source(
+        db,
+        source_type="upload",
+        source_id=filename,
+        title=filename,
+        url=doc_url,
+    )
+    db_doc = await create_document(
+        db,
+        source_id=src.id,
+        title=filename.rsplit(".", 1)[0],
+        file_url=doc_url,
+        file_format="pdf",
+        file_size=len(content),
+    )
+
+    # Rename temp files to actual DB id
+    actual_id = str(db_doc.id)
+    actual_pdf = settings.pdf_dir / f"{actual_id}.pdf"
+    actual_md = settings.markdown_dir / f"{actual_id}.md"
+    temp_md = settings.markdown_dir / f"{temp_id}.md"
+    if pdf_path.exists() and str(pdf_path) != str(actual_pdf):
+        pdf_path.rename(actual_pdf)
+    if temp_md.exists():
+        temp_md.rename(actual_md)
+
+    db_doc.markdown_content = md_text
+    db_doc.conversion_status = "converted"
+    db_doc.file_path = str(actual_pdf)
+    await db.commit()
+
+    return {
+        "status": "ok",
+        "data": {
+            "id": str(db_doc.id),
+            "title": db_doc.title,
+            "file_size": len(content),
+            "markdown_length": len(md_text),
+        },
+    }
+
+
 @router.delete("/documents/{doc_id}")
 async def delete_document(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Document).where(Document.id == doc_id))
@@ -369,6 +445,7 @@ async def govil_proxy(request: Request):
 
 @router.post("/import/govil/trigger")
 async def govil_trigger(
+    request: Request,
     background_tasks: BackgroundTasks,
     limit: int = Query(0, ge=0),
 ):
@@ -378,7 +455,15 @@ async def govil_trigger(
     if status["running"]:
         raise HTTPException(409, "Import already running")
 
-    background_tasks.add_task(run_govil_import, limit=limit)
+    # Accept optional URL from request body
+    url = ""
+    try:
+        body = await request.json()
+        url = body.get("url", "")
+    except Exception:
+        pass
+
+    background_tasks.add_task(run_govil_import, limit=limit, url=url)
     return {"status": "ok", "message": "Gov.il import started"}
 
 
