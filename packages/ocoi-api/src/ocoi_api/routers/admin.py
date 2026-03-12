@@ -399,10 +399,18 @@ async def ckan_search(
 
 @router.post("/import/ckan/import")
 async def ckan_import(body: dict):
-    from ocoi_api.services.import_service import import_ckan_datasets
+    from ocoi_api.services.import_service import import_ckan_datasets, import_ckan_resources
+
+    # Resource-level import (new)
+    resources = body.get("resources", [])
+    if resources:
+        stats = await import_ckan_resources(resources)
+        return {"status": "ok", "data": stats}
+
+    # Dataset-level import (legacy)
     dataset_ids = body.get("dataset_ids", [])
     if not dataset_ids:
-        raise HTTPException(400, "No dataset_ids provided")
+        raise HTTPException(400, "No dataset_ids or resources provided")
     stats = await import_ckan_datasets(dataset_ids)
     return {"status": "ok", "data": stats}
 

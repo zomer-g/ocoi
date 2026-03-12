@@ -9,6 +9,7 @@ import httpx
 
 from sqlalchemy import select
 from ocoi_common.config import settings
+from ocoi_common.models import ImportedDocument
 from ocoi_db.engine import async_session_factory
 from ocoi_db.crud import get_or_create_source, create_document
 from ocoi_db.models import Document
@@ -41,26 +42,37 @@ def get_import_status() -> dict:
 
 
 async def search_ckan(query: str, rows: int = 20, start: int = 0) -> dict:
-    """Search CKAN datasets and return results with existing-in-DB status."""
+    """Search CKAN datasets and return results with resource-level details."""
     from ocoi_importer.ckan_client import CkanClient
 
     client = CkanClient()
     datasets = await client.search_datasets(query=query, rows=rows, start=start)
     total = await client.get_total_count(query=query)
 
-    # Check which datasets already have documents imported
+    # Check which resources already have documents imported
     async with async_session_factory() as session:
         results = []
         for ds in datasets:
             docs = client.extract_documents(ds)
-            # Check how many of these doc URLs already exist
-            existing_count = 0
+
+            # Build resource-level info with import status
+            resources = []
+            already_imported = 0
             for doc in docs:
                 existing = await session.execute(
                     select(Document).where(Document.file_url == doc.file_url)
                 )
-                if existing.scalar_one_or_none():
-                    existing_count += 1
+                is_imported = existing.scalar_one_or_none() is not None
+                if is_imported:
+                    already_imported += 1
+                resources.append({
+                    "url": doc.file_url,
+                    "title": doc.title,
+                    "format": doc.file_format,
+                    "size": doc.file_size,
+                    "resource_id": doc.metadata.get("resource_id"),
+                    "already_imported": is_imported,
+                })
 
             results.append({
                 "id": ds.id,
@@ -71,7 +83,8 @@ async def search_ckan(query: str, rows: int = 20, start: int = 0) -> dict:
                 "tags": [t.get("name", "") for t in ds.tags],
                 "num_resources": len(ds.resources),
                 "num_documents": len(docs),
-                "already_imported": existing_count,
+                "already_imported": already_imported,
+                "resources": resources,
             })
 
     return {
@@ -83,7 +96,7 @@ async def search_ckan(query: str, rows: int = 20, start: int = 0) -> dict:
 
 
 async def import_ckan_datasets(dataset_ids: list[str]) -> dict:
-    """Import specific CKAN datasets by their IDs."""
+    """Import ALL resources from specific CKAN datasets by their IDs."""
     from ocoi_importer.ckan_client import CkanClient
 
     client = CkanClient()
@@ -103,35 +116,7 @@ async def import_ckan_datasets(dataset_ids: list[str]) -> dict:
                 docs = client.extract_documents(ds)
 
                 for doc in docs:
-                    existing = await session.execute(
-                        select(Document).where(Document.file_url == doc.file_url)
-                    )
-                    if existing.scalar_one_or_none():
-                        stats["skipped"] += 1
-                        continue
-
-                    metadata = dict(doc.metadata)
-                    metadata["imported_at"] = imported_at
-                    metadata["metadata_created"] = ds.metadata_created
-                    metadata["metadata_modified"] = ds.metadata_modified
-
-                    src = await get_or_create_source(
-                        session,
-                        source_type="ckan",
-                        source_id=doc.source_id,
-                        title=metadata.get("dataset_title", doc.title),
-                        url=doc.file_url,
-                        metadata_json=metadata,
-                    )
-                    await create_document(
-                        session,
-                        source_id=src.id,
-                        title=doc.title,
-                        file_url=doc.file_url,
-                        file_format=doc.file_format,
-                        file_size=doc.file_size,
-                    )
-                    stats["imported"] += 1
+                    await _import_single_ckan_doc(session, doc, ds, imported_at, stats)
 
             except Exception as e:
                 stats["errors"] += 1
@@ -141,6 +126,96 @@ async def import_ckan_datasets(dataset_ids: list[str]) -> dict:
         await session.commit()
 
     return stats
+
+
+async def import_ckan_resources(resource_urls: list[dict]) -> dict:
+    """Import specific CKAN resources by their URLs.
+
+    Each item in resource_urls should have: dataset_id, url, title, format, size.
+    """
+    from ocoi_importer.ckan_client import CkanClient
+
+    client = CkanClient()
+    imported_at = datetime.now(timezone.utc).isoformat()
+    stats = {"imported": 0, "skipped": 0, "errors": 0, "error_messages": []}
+
+    # Group by dataset_id to minimize API calls
+    by_dataset: dict[str, list[dict]] = {}
+    for r in resource_urls:
+        ds_id = r.get("dataset_id", "")
+        if ds_id not in by_dataset:
+            by_dataset[ds_id] = []
+        by_dataset[ds_id].append(r)
+
+    async with async_session_factory() as session:
+        for ds_id, resources in by_dataset.items():
+            try:
+                datasets = await client.search_datasets(query=f"id:{ds_id}", rows=1)
+                ds = datasets[0] if datasets else None
+
+                for res in resources:
+                    url = res.get("url", "")
+                    if not url:
+                        continue
+
+                    doc = ImportedDocument(
+                        source_type="ckan",
+                        source_id=ds_id,
+                        title=res.get("title", ""),
+                        file_url=url,
+                        file_format=res.get("format", "pdf"),
+                        file_size=res.get("size"),
+                        metadata={
+                            "dataset_title": ds.title if ds else "",
+                            "dataset_notes": ds.notes if ds else None,
+                            "resource_id": res.get("resource_id"),
+                            "tags": [t.get("name", "") for t in ds.tags] if ds else [],
+                        },
+                    )
+                    await _import_single_ckan_doc(session, doc, ds, imported_at, stats)
+
+            except Exception as e:
+                stats["errors"] += 1
+                if len(stats["error_messages"]) < 20:
+                    stats["error_messages"].append(f"Dataset {ds_id}: {e}")
+
+        await session.commit()
+
+    return stats
+
+
+async def _import_single_ckan_doc(session, doc, ds, imported_at: str, stats: dict):
+    """Import a single CKAN document into the database."""
+    existing = await session.execute(
+        select(Document).where(Document.file_url == doc.file_url)
+    )
+    if existing.scalar_one_or_none():
+        stats["skipped"] += 1
+        return
+
+    metadata = dict(doc.metadata)
+    metadata["imported_at"] = imported_at
+    if ds:
+        metadata["metadata_created"] = ds.metadata_created
+        metadata["metadata_modified"] = ds.metadata_modified
+
+    src = await get_or_create_source(
+        session,
+        source_type="ckan",
+        source_id=doc.source_id,
+        title=metadata.get("dataset_title", doc.title),
+        url=doc.file_url,
+        metadata_json=metadata,
+    )
+    await create_document(
+        session,
+        source_id=src.id,
+        title=doc.title,
+        file_url=doc.file_url,
+        file_format=doc.file_format,
+        file_size=doc.file_size,
+    )
+    stats["imported"] += 1
 
 
 # ── Gov.il: Automated bulk import ────────────────────────────────────────

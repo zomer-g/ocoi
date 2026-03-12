@@ -132,6 +132,15 @@ export function uploadDocument(
 }
 
 // Import — CKAN search + selective import
+export interface CkanResource {
+  url: string;
+  title: string;
+  format: string;
+  size: number | null;
+  resource_id: string | null;
+  already_imported: boolean;
+}
+
 export interface CkanSearchResult {
   id: string;
   title: string;
@@ -142,6 +151,7 @@ export interface CkanSearchResult {
   num_resources: number;
   num_documents: number;
   already_imported: number;
+  resources: CkanResource[];
 }
 
 export interface CkanSearchResponse {
@@ -167,6 +177,22 @@ export function importCkanDatasets(datasetIds: string[]) {
   return adminFetch<{ status: string; data: ImportStats }>("/import/ckan/import", {
     method: "POST",
     body: JSON.stringify({ dataset_ids: datasetIds }),
+  });
+}
+
+export interface CkanResourceImport {
+  dataset_id: string;
+  url: string;
+  title: string;
+  format: string;
+  size: number | null;
+  resource_id: string | null;
+}
+
+export function importCkanResources(resources: CkanResourceImport[]) {
+  return adminFetch<{ status: string; data: ImportStats }>("/import/ckan/import", {
+    method: "POST",
+    body: JSON.stringify({ resources }),
   });
 }
 

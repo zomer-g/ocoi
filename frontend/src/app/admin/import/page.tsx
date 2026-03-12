@@ -3,7 +3,7 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import {
   searchCkan,
-  importCkanDatasets,
+  importCkanResources,
   triggerGovilImport,
   submitGovilRecords,
   fetchGovilFromBrowser,
@@ -13,6 +13,8 @@ import {
   triggerExtraction,
   getExtractionStatus,
   type CkanSearchResult,
+  type CkanResource,
+  type CkanResourceImport,
   type ImportStatus,
   type ImportStats,
   type ExtractionStatus,
@@ -53,7 +55,30 @@ export default function ImportPage() {
   );
 }
 
-// ── CKAN Tab: Search + Select + Import ──────────────────────────────────
+// ── CKAN Tab: Search + Resource-level Select + Import ─────────────────
+
+function formatResourceSize(size: number | null) {
+  if (!size) return "";
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(0)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+const FORMAT_COLORS: Record<string, string> = {
+  pdf: "bg-red-50 text-red-700 border-red-200",
+  docx: "bg-blue-50 text-blue-700 border-blue-200",
+  doc: "bg-blue-50 text-blue-700 border-blue-200",
+  xlsx: "bg-green-50 text-green-700 border-green-200",
+  csv: "bg-green-50 text-green-700 border-green-200",
+  jpeg: "bg-purple-50 text-purple-700 border-purple-200",
+  jpg: "bg-purple-50 text-purple-700 border-purple-200",
+  png: "bg-purple-50 text-purple-700 border-purple-200",
+};
+
+// Unique key for a resource: dataset_id + url
+function resourceKey(datasetId: string, url: string) {
+  return `${datasetId}::${url}`;
+}
 
 function CkanTab() {
   const [query, setQuery] = useState("ניגוד עניינים");
@@ -61,7 +86,10 @@ function CkanTab() {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
   const [searching, setSearching] = useState(false);
+  // Selected resources (key = datasetId::url)
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // Expanded datasets (show resources)
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<ImportStats | null>(null);
   const [hideImported, setHideImported] = useState(true);
@@ -76,6 +104,7 @@ function CkanTab() {
       setTotal(res.data.total);
       setPage(start);
       setSelected(new Set());
+      setExpanded(new Set());
     } catch {
       // ignore
     } finally {
@@ -83,11 +112,36 @@ function CkanTab() {
     }
   };
 
-  const toggleSelect = (id: string) => {
-    setSelected((prev) => {
+  const toggleExpand = (id: string) => {
+    setExpanded((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleResource = (datasetId: string, url: string) => {
+    const key = resourceKey(datasetId, url);
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const toggleAllInDataset = (ds: CkanSearchResult) => {
+    const availableResources = ds.resources.filter((r) => !hideImported || !r.already_imported);
+    const allKeys = availableResources.map((r) => resourceKey(ds.id, r.url));
+    const allSelected = allKeys.every((k) => selected.has(k));
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (allSelected) {
+        allKeys.forEach((k) => next.delete(k));
+      } else {
+        allKeys.forEach((k) => next.add(k));
+      }
       return next;
     });
   };
@@ -97,20 +151,36 @@ function CkanTab() {
     : results;
   const hiddenCount = results.length - filteredResults.length;
 
-  const selectAll = () => {
-    if (selected.size === filteredResults.length) {
-      setSelected(new Set());
-    } else {
-      setSelected(new Set(filteredResults.map((r) => r.id)));
+  // Count selected resources
+  const selectedCount = selected.size;
+
+  // Build resource import list from selection
+  const buildImportList = (): CkanResourceImport[] => {
+    const list: CkanResourceImport[] = [];
+    for (const ds of results) {
+      for (const res of ds.resources) {
+        if (selected.has(resourceKey(ds.id, res.url))) {
+          list.push({
+            dataset_id: ds.id,
+            url: res.url,
+            title: res.title,
+            format: res.format,
+            size: res.size,
+            resource_id: res.resource_id,
+          });
+        }
+      }
     }
+    return list;
   };
 
   const doImport = async () => {
-    if (selected.size === 0) return;
+    const resources = buildImportList();
+    if (resources.length === 0) return;
     setImporting(true);
     setImportResult(null);
     try {
-      const res = await importCkanDatasets(Array.from(selected));
+      const res = await importCkanResources(resources);
       setImportResult(res.data);
       await doSearch(page);
     } catch {
@@ -165,63 +235,137 @@ function CkanTab() {
       {/* Results */}
       {filteredResults.length > 0 && (
         <div className="bg-white rounded-lg border border-gray-200 mb-4">
+          {/* Import bar */}
           <div className="flex items-center justify-between p-3 border-b border-gray-100">
             <div className="flex items-center gap-3">
-              <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={selected.size === filteredResults.length && filteredResults.length > 0}
-                  onChange={selectAll}
-                  className="rounded"
-                />
-                בחר הכל
-              </label>
-              {selected.size > 0 && (
-                <span className="text-xs text-primary-700 font-medium">{selected.size} נבחרו</span>
+              {selectedCount > 0 && (
+                <span className="text-xs text-primary-700 font-medium">{selectedCount} משאבים נבחרו</span>
               )}
             </div>
             <button
               onClick={doImport}
-              disabled={selected.size === 0 || importing}
+              disabled={selectedCount === 0 || importing}
               className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium disabled:opacity-50"
             >
-              {importing ? "מייבא..." : `ייבא ${selected.size > 0 ? `(${selected.size})` : ""}`}
+              {importing ? "מייבא..." : `ייבא ${selectedCount > 0 ? `(${selectedCount})` : ""}`}
             </button>
           </div>
 
-          {filteredResults.map((ds) => (
-            <div
-              key={ds.id}
-              className={`flex items-start gap-3 p-3 border-b border-gray-50 hover:bg-gray-50 transition-colors ${
-                ds.already_imported === ds.num_documents && ds.num_documents > 0 ? "opacity-60" : ""
-              }`}
-            >
-              <input
-                type="checkbox"
-                checked={selected.has(ds.id)}
-                onChange={() => toggleSelect(ds.id)}
-                className="mt-1 rounded"
-              />
-              <div className="flex-1 min-w-0">
-                <div className="font-medium text-gray-900 text-sm">{ds.title}</div>
-                {ds.notes && (
-                  <div className="text-xs text-gray-500 mt-0.5 line-clamp-2">{ds.notes}</div>
-                )}
-                <div className="flex flex-wrap gap-3 mt-1.5 text-xs text-gray-400">
-                  <span>{ds.num_documents} מסמכים</span>
-                  {ds.already_imported > 0 && (
-                    <span className="text-yellow-600">{ds.already_imported} כבר יובאו</span>
-                  )}
-                  {ds.metadata_modified && (
-                    <span>עודכן: {new Date(ds.metadata_modified).toLocaleDateString("he-IL")}</span>
-                  )}
-                  {ds.tags.length > 0 && (
-                    <span>{ds.tags.slice(0, 3).join(", ")}</span>
-                  )}
+          {filteredResults.map((ds) => {
+            const isExpanded = expanded.has(ds.id);
+            const visibleResources = hideImported
+              ? ds.resources.filter((r) => !r.already_imported)
+              : ds.resources;
+            const selectedInDs = ds.resources.filter((r) =>
+              selected.has(resourceKey(ds.id, r.url))
+            ).length;
+            const allFullyImported = ds.already_imported === ds.num_documents && ds.num_documents > 0;
+
+            return (
+              <div key={ds.id} className={`border-b border-gray-50 ${allFullyImported ? "opacity-60" : ""}`}>
+                {/* Dataset header */}
+                <div
+                  className="flex items-start gap-3 p-3 hover:bg-gray-50 transition-colors cursor-pointer"
+                  onClick={() => toggleExpand(ds.id)}
+                >
+                  <button className="mt-0.5 text-gray-400 hover:text-gray-600 shrink-0">
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      className={`w-4 h-4 transition-transform ${isExpanded ? "rotate-90" : ""}`}
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <polyline points="9 18 15 12 9 6" />
+                    </svg>
+                  </button>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium text-gray-900 text-sm">{ds.title}</span>
+                      {selectedInDs > 0 && (
+                        <span className="text-xs bg-primary-100 text-primary-700 px-1.5 py-0.5 rounded">
+                          {selectedInDs} נבחרו
+                        </span>
+                      )}
+                    </div>
+                    {ds.notes && (
+                      <div className="text-xs text-gray-500 mt-0.5 line-clamp-2">{ds.notes}</div>
+                    )}
+                    <div className="flex flex-wrap gap-3 mt-1.5 text-xs text-gray-400">
+                      <span>{ds.num_documents} מסמכים</span>
+                      {ds.already_imported > 0 && (
+                        <span className="text-yellow-600">{ds.already_imported} כבר יובאו</span>
+                      )}
+                      {ds.metadata_modified && (
+                        <span>עודכן: {new Date(ds.metadata_modified).toLocaleDateString("he-IL")}</span>
+                      )}
+                      {ds.tags.length > 0 && (
+                        <span>{ds.tags.slice(0, 3).join(", ")}</span>
+                      )}
+                    </div>
+                  </div>
                 </div>
+
+                {/* Resources list (expanded) */}
+                {isExpanded && (
+                  <div className="bg-gray-50/50 border-t border-gray-100">
+                    {/* Select all in dataset */}
+                    {visibleResources.length > 1 && (
+                      <div className="px-10 py-2 border-b border-gray-100">
+                        <label className="flex items-center gap-2 text-xs text-gray-500 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={visibleResources.length > 0 && visibleResources.every((r) => selected.has(resourceKey(ds.id, r.url)))}
+                            onChange={() => toggleAllInDataset(ds)}
+                            className="rounded"
+                          />
+                          בחר הכל ({visibleResources.length})
+                        </label>
+                      </div>
+                    )}
+                    {visibleResources.map((res) => {
+                      const key = resourceKey(ds.id, res.url);
+                      const fmtColor = FORMAT_COLORS[res.format] || "bg-gray-50 text-gray-600 border-gray-200";
+                      return (
+                        <label
+                          key={key}
+                          className={`flex items-center gap-3 px-10 py-2.5 hover:bg-gray-100/50 transition-colors cursor-pointer ${
+                            res.already_imported ? "opacity-50" : ""
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selected.has(key)}
+                            onChange={() => toggleResource(ds.id, res.url)}
+                            disabled={res.already_imported}
+                            className="rounded"
+                          />
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded border uppercase font-medium shrink-0 ${fmtColor}`}>
+                            {res.format}
+                          </span>
+                          <span className="text-sm text-gray-700 truncate flex-1 min-w-0" title={res.title}>
+                            {res.title}
+                          </span>
+                          {res.size && (
+                            <span className="text-xs text-gray-400 shrink-0">{formatResourceSize(res.size)}</span>
+                          )}
+                          {res.already_imported && (
+                            <span className="text-xs text-yellow-600 shrink-0">יובא</span>
+                          )}
+                        </label>
+                      );
+                    })}
+                    {visibleResources.length === 0 && (
+                      <div className="px-10 py-3 text-xs text-gray-400">כל המשאבים כבר יובאו</div>
+                    )}
+                  </div>
+                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
 
           {totalPages > 1 && (
             <div className="flex items-center justify-center gap-2 p-3">
@@ -442,8 +586,9 @@ function GovilTab() {
 
   const isRunning = phase === "processing" || status?.running === true;
   const isFinished = status?.finished_at && !isRunning && phase === "idle";
+  const processed = status ? status.imported + status.skipped + status.errors : 0;
   const progressPct = status && status.total > 0
-    ? Math.round(((status.imported + status.errors) / status.total) * 100)
+    ? Math.round((processed / status.total) * 100)
     : 0;
 
   return (
