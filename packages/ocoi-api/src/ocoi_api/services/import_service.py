@@ -57,6 +57,24 @@ def reset_import_state() -> None:
     })
 
 
+def _load_cached_govil_records() -> list[dict] | None:
+    """Try to load pre-fetched Gov.il records from data/govil_records.json."""
+    import json
+    for path in [
+        Path("/app/data/govil_records.json"),           # Docker
+        settings.base_dir / "data" / "govil_records.json",  # Local dev
+        Path(__file__).resolve().parents[5] / "data" / "govil_records.json",
+    ]:
+        if path.exists():
+            try:
+                records = json.loads(path.read_text(encoding="utf-8"))
+                logger.info(f"Loaded {len(records)} cached Gov.il records from {path}")
+                return records
+            except Exception as e:
+                logger.warning(f"Failed to load cached records from {path}: {e}")
+    return None
+
+
 # ── CKAN: Search + selective import ──────────────────────────────────────
 
 
@@ -338,12 +356,22 @@ async def run_govil_with_records(raw_items: list[dict]) -> dict:
 
 async def _import_govil(limit: int, url: str = ""):
     """Import documents from Gov.il — fetch metadata, download PDFs, convert to markdown."""
+    import json
     from ocoi_importer.govil_client import GovilClient
 
     client = GovilClient(url=url) if url else GovilClient()
 
-    # Phase 1: Fetch all records from website
-    records = await client.fetch_all_records()
+    # Phase 1: Fetch all records from website (with fallback to cached file)
+    try:
+        records = await client.fetch_all_records()
+    except Exception as e:
+        logger.warning(f"Live Gov.il scraping failed: {e}, trying cached records...")
+        cached = _load_cached_govil_records()
+        if cached:
+            records = [r for item in cached if (r := client._parse_item(item))]
+            logger.info(f"Loaded {len(records)} records from cached file")
+        else:
+            raise
     _import_state["total_on_website"] = len(records)
 
     if limit > 0:

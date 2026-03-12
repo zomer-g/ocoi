@@ -196,6 +196,11 @@ export function importCkanResources(resources: CkanResourceImport[]) {
   });
 }
 
+// Import — Gov.il: cached records check
+export function getGovilCachedRecords() {
+  return adminFetch<{ status: string; data: { records: GovilApiItem[]; count: number } }>("/import/govil/cached");
+}
+
 // Import — Gov.il: browser-side fetch + server-side processing
 export function triggerGovilImport(limit: number = 0, url: string = "") {
   const params = new URLSearchParams({ limit: String(limit) });

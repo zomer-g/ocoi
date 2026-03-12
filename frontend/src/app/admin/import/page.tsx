@@ -7,6 +7,7 @@ import {
   triggerGovilImport,
   submitGovilRecords,
   fetchGovilFromBrowser,
+  getGovilCachedRecords,
   getImportStatus,
   resetImportState,
   getExtractionPrompt,
@@ -554,6 +555,26 @@ function GovilTab() {
     }
   };
 
+  // Use pre-fetched cached records
+  const handleUseCached = async () => {
+    setPhase("fetching");
+    setError("");
+    try {
+      const res = await getGovilCachedRecords();
+      const records = res.data.records;
+      if (!records || records.length === 0) {
+        setError("אין רשומות שמורות בשרת.");
+        setPhase("idle");
+        return;
+      }
+      await submitGovilRecords(records);
+      startPolling();
+    } catch {
+      setError("לא נמצאו רשומות שמורות. נסה ייבוא ידני.");
+      setPhase("idle");
+    }
+  };
+
   const handleCopyScript = () => {
     navigator.clipboard.writeText(GOVIL_CONSOLE_SCRIPT);
     setScriptCopied(true);
@@ -662,6 +683,13 @@ function GovilTab() {
             className="px-6 py-3 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors text-sm font-medium disabled:opacity-50"
           >
             ייבוא דרך הדפדפן (פרוקסי)
+          </button>
+          <button
+            onClick={handleUseCached}
+            disabled={phase !== "idle" || isRunning}
+            className="px-6 py-3 border border-green-300 text-green-700 rounded-lg hover:bg-green-50 transition-colors text-sm font-medium disabled:opacity-50"
+          >
+            ייבוא מנתונים שמורים
           </button>
           <button
             onClick={() => { setPhase("manual"); setError(""); }}

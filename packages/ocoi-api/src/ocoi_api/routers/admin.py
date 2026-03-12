@@ -419,36 +419,50 @@ async def ckan_import(body: dict):
 
 @router.post("/import/govil/proxy")
 async def govil_proxy(request: Request):
-    """Proxy a single Gov.il API page request — retries with delays on failure."""
+    """Proxy a single Gov.il API page request via cloudscraper (Cloudflare bypass)."""
     import asyncio
-    import httpx as hx
+    import json as json_mod
+    import cloudscraper
     body = await request.json()
-    headers = {
-        "Content-Type": "application/json;charset=utf-8",
+    scraper = cloudscraper.create_scraper(
+        browser={"browser": "chrome", "platform": "windows", "desktop": True},
+        delay=10,
+    )
+    scraper.headers.update({
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7",
         "Origin": "https://www.gov.il",
         "Referer": "https://www.gov.il/he/departments/dynamiccollectors/ministers_conflict",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": '"Windows"',
-        "sec-fetch-dest": "empty",
-        "sec-fetch-mode": "cors",
-        "sec-fetch-site": "same-origin",
-    }
+    })
     last_error = None
-    async with hx.AsyncClient(timeout=30, follow_redirects=True, headers=headers) as client:
-        for attempt in range(3):
-            try:
-                if attempt > 0:
-                    await asyncio.sleep(2 * attempt)
-                resp = await client.post("https://www.gov.il/he/api/DynamicCollector", json=body)
-                resp.raise_for_status()
+    for attempt in range(3):
+        try:
+            if attempt == 0:
+                # Warm session by visiting the homepage first
+                await asyncio.to_thread(scraper.get, "https://www.gov.il/he")
+            elif attempt > 0:
+                await asyncio.sleep(2 * attempt)
+            resp = await asyncio.to_thread(
+                scraper.post,
+                "https://www.gov.il/he/api/DynamicCollector",
+                json=body,
+            )
+            if resp.status_code == 200:
                 return resp.json()
-            except Exception as e:
-                last_error = e
+            last_error = f"Status {resp.status_code}"
+        except Exception as e:
+            last_error = e
     raise HTTPException(502, f"Gov.il API unavailable after 3 attempts: {last_error}")
+
+
+@router.get("/import/govil/cached")
+async def govil_cached():
+    """Return pre-fetched Gov.il records from data/govil_records.json if available."""
+    from ocoi_api.services.import_service import _load_cached_govil_records
+    records = _load_cached_govil_records()
+    if records is None:
+        raise HTTPException(404, "No cached Gov.il records found")
+    return {"status": "ok", "data": {"records": records, "count": len(records)}}
 
 
 @router.post("/import/govil/trigger")
