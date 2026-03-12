@@ -38,6 +38,25 @@ def get_import_status() -> dict:
     return dict(_import_state)
 
 
+def reset_import_state() -> None:
+    """Force-reset import state (useful when import gets stuck)."""
+    global _import_state
+    _import_state.update({
+        "running": False,
+        "source": None,
+        "total_on_website": 0,
+        "already_in_db": 0,
+        "new_to_import": 0,
+        "total": 0,
+        "imported": 0,
+        "skipped": 0,
+        "errors": 0,
+        "error_messages": [],
+        "started_at": None,
+        "finished_at": None,
+    })
+
+
 # ── CKAN: Search + selective import ──────────────────────────────────────
 
 

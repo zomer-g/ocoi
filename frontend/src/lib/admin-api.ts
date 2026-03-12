@@ -298,6 +298,10 @@ export function getImportStatus() {
   return adminFetch<{ status: string; data: ImportStatus }>("/import/status");
 }
 
+export function resetImportState() {
+  return adminFetch<{ status: string; message: string }>("/import/reset", { method: "POST" });
+}
+
 // Extraction — DeepSeek entity extraction
 export interface ExtractionPrompt {
   system_prompt: string;

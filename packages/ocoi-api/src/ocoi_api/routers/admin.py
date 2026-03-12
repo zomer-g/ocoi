@@ -502,6 +502,13 @@ async def import_status():
     return {"status": "ok", "data": get_import_status()}
 
 
+@router.post("/import/reset")
+async def import_reset():
+    from ocoi_api.services.import_service import reset_import_state
+    reset_import_state()
+    return {"status": "ok", "message": "Import state reset"}
+
+
 # ── Entity extraction (DeepSeek LLM) ─────────────────────────────────────
 
 @router.get("/extraction/prompt")

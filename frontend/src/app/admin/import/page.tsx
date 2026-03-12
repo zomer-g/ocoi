@@ -8,6 +8,7 @@ import {
   submitGovilRecords,
   fetchGovilFromBrowser,
   getImportStatus,
+  resetImportState,
   getExtractionPrompt,
   updateExtractionPrompt,
   triggerExtraction,
@@ -427,14 +428,6 @@ const GOVIL_PRESETS = [
     label: "הסדרי ניגוד עניינים — שרים וסגני שרים",
     url: "https://www.gov.il/he/departments/dynamiccollectors/ministers_conflict",
   },
-  {
-    label: "הנחיות היועץ המשפטי לממשלה",
-    url: "https://www.gov.il/he/departments/dynamiccollectors/legal-advisor-guidelines",
-  },
-  {
-    label: "החלטות ממשלה",
-    url: "https://www.gov.il/he/departments/dynamiccollectors/govdecisions",
-  },
 ];
 
 const GOVIL_CONSOLE_SCRIPT = `(async () => {
@@ -678,6 +671,14 @@ function GovilTab() {
             ייבוא ידני (מעקף Cloudflare)
           </button>
         </div>
+        {isRunning && (
+          <button
+            onClick={async () => { await resetImportState(); setPhase("idle"); setStatus(null); }}
+            className="px-4 py-2 border border-red-300 text-red-600 rounded-lg hover:bg-red-50 transition-colors text-sm"
+          >
+            אפס תהליך תקוע
+          </button>
+        )}
         {error && phase !== "manual" && <div className="mt-3 text-sm text-red-600">{error}</div>}
       </div>
 
@@ -796,6 +797,12 @@ function GovilTab() {
           <div className="flex items-center justify-between mb-3">
             <h3 className="font-semibold text-gray-800">מוריד ומעבד מסמכים...</h3>
             <div className="flex items-center gap-2">
+              <button
+                onClick={async () => { await resetImportState(); setPhase("idle"); setStatus(null); }}
+                className="text-xs text-red-500 hover:text-red-700 underline"
+              >
+                אפס ייבוא
+              </button>
               <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
               <span className="text-xs text-gray-500">פעיל</span>
             </div>
