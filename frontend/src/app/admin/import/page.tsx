@@ -95,6 +95,9 @@ function CkanTab() {
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<ImportStats | null>(null);
   const [hideImported, setHideImported] = useState(true);
+  const [hideOcr, setHideOcr] = useState(true);
+  // Shift-click range selection
+  const lastClickedRef = useRef<string | null>(null);
 
   const doSearch = async (start = 0) => {
     if (!query.trim()) return;
@@ -123,8 +126,49 @@ function CkanTab() {
     });
   };
 
-  const toggleResource = (datasetId: string, url: string) => {
+  const isOcrFile = (title: string) => title.includes("לאחר עיבוד OCR");
+
+  // Get visible resources for a dataset (respecting filters)
+  const getVisibleResources = (ds: CkanSearchResult) => {
+    return ds.resources.filter((r) => {
+      if (hideImported && r.already_imported) return false;
+      if (hideOcr && isOcrFile(r.title)) return false;
+      return true;
+    });
+  };
+
+  const filteredResults = hideImported
+    ? results.filter((r) => !(r.already_imported === r.num_documents && r.num_documents > 0))
+    : results;
+  const hiddenCount = results.length - filteredResults.length;
+
+  // Build a flat list of all visible resource keys (for shift-click)
+  const allVisibleKeys = filteredResults.flatMap((ds) =>
+    getVisibleResources(ds).filter((r) => !r.already_imported).map((r) => resourceKey(ds.id, r.url))
+  );
+
+  const toggleResource = (datasetId: string, url: string, shiftKey = false) => {
     const key = resourceKey(datasetId, url);
+
+    if (shiftKey && lastClickedRef.current && lastClickedRef.current !== key) {
+      // Shift-click: select range
+      const fromIdx = allVisibleKeys.indexOf(lastClickedRef.current);
+      const toIdx = allVisibleKeys.indexOf(key);
+      if (fromIdx >= 0 && toIdx >= 0) {
+        const start = Math.min(fromIdx, toIdx);
+        const end = Math.max(fromIdx, toIdx);
+        const rangeKeys = allVisibleKeys.slice(start, end + 1);
+        setSelected((prev) => {
+          const next = new Set(prev);
+          rangeKeys.forEach((k) => next.add(k));
+          return next;
+        });
+        lastClickedRef.current = key;
+        return;
+      }
+    }
+
+    lastClickedRef.current = key;
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
@@ -134,9 +178,9 @@ function CkanTab() {
   };
 
   const toggleAllInDataset = (ds: CkanSearchResult) => {
-    const availableResources = ds.resources.filter((r) => !hideImported || !r.already_imported);
+    const availableResources = getVisibleResources(ds).filter((r) => !r.already_imported);
     const allKeys = availableResources.map((r) => resourceKey(ds.id, r.url));
-    const allSelected = allKeys.every((k) => selected.has(k));
+    const allSelected = allKeys.length > 0 && allKeys.every((k) => selected.has(k));
     setSelected((prev) => {
       const next = new Set(prev);
       if (allSelected) {
@@ -147,11 +191,6 @@ function CkanTab() {
       return next;
     });
   };
-
-  const filteredResults = hideImported
-    ? results.filter((r) => !(r.already_imported === r.num_documents && r.num_documents > 0))
-    : results;
-  const hiddenCount = results.length - filteredResults.length;
 
   // Count selected resources
   const selectedCount = selected.size;
@@ -220,16 +259,27 @@ function CkanTab() {
         {total > 0 && (
           <div className="flex items-center justify-between mt-2">
             <div className="text-xs text-gray-500">{total} תוצאות נמצאו</div>
-            <label className="flex items-center gap-2 text-xs text-gray-500 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={hideImported}
-                onChange={(e) => setHideImported(e.target.checked)}
-                className="rounded"
-              />
-              הסתר פריטים שיובאו
-              {hiddenCount > 0 && <span className="text-yellow-600">({hiddenCount} מוסתרים)</span>}
-            </label>
+            <div className="flex items-center gap-4">
+              <label className="flex items-center gap-2 text-xs text-gray-500 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={hideImported}
+                  onChange={(e) => setHideImported(e.target.checked)}
+                  className="rounded"
+                />
+                הסתר פריטים שיובאו
+                {hiddenCount > 0 && <span className="text-yellow-600">({hiddenCount} מוסתרים)</span>}
+              </label>
+              <label className="flex items-center gap-2 text-xs text-gray-500 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={hideOcr}
+                  onChange={(e) => setHideOcr(e.target.checked)}
+                  className="rounded"
+                />
+                הסתר עותקי OCR
+              </label>
+            </div>
           </div>
         )}
       </div>
@@ -255,9 +305,7 @@ function CkanTab() {
 
           {filteredResults.map((ds) => {
             const isExpanded = expanded.has(ds.id);
-            const visibleResources = hideImported
-              ? ds.resources.filter((r) => !r.already_imported)
-              : ds.resources;
+            const visibleResources = getVisibleResources(ds);
             const selectedInDs = ds.resources.filter((r) =>
               selected.has(resourceKey(ds.id, r.url))
             ).length;
@@ -337,11 +385,17 @@ function CkanTab() {
                           className={`flex items-center gap-3 px-10 py-2.5 hover:bg-gray-100/50 transition-colors cursor-pointer ${
                             res.already_imported ? "opacity-50" : ""
                           }`}
+                          onClick={(e) => {
+                            if (!res.already_imported) {
+                              e.preventDefault();
+                              toggleResource(ds.id, res.url, e.shiftKey);
+                            }
+                          }}
                         >
                           <input
                             type="checkbox"
                             checked={selected.has(key)}
-                            onChange={() => toggleResource(ds.id, res.url)}
+                            onChange={() => {}}
                             disabled={res.already_imported}
                             className="rounded"
                           />
