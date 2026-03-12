@@ -70,6 +70,12 @@ export function deleteDomain(id: string) {
 export function deleteRelationship(id: string) {
   return adminFetch(`/relationships/${id}`, { method: "DELETE" });
 }
+export function deleteRelationshipsBulk(ids: string[]) {
+  return adminFetch(`/relationships/bulk-delete`, {
+    method: "POST",
+    body: JSON.stringify({ ids }),
+  });
+}
 
 // Documents
 export function getAdminDocuments(page = 1, status?: string) {

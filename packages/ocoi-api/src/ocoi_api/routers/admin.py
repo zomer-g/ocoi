@@ -195,30 +195,79 @@ async def delete_domain(domain_id: uuid.UUID, db: AsyncSession = Depends(get_db)
 
 # ── Relationships CRUD ────────────────────────────────────────────────────
 
+_ENTITY_TABLE = {"person": Person, "company": Company, "association": Association, "domain": Domain}
+
+
+async def _resolve_entity_name(db: AsyncSession, entity_type: str, entity_id: str) -> str:
+    """Resolve entity UUID to its Hebrew name."""
+    model = _ENTITY_TABLE.get(entity_type.lower())
+    if not model:
+        return entity_type
+    result = await db.execute(select(model).where(model.id == entity_id))
+    entity = result.scalar_one_or_none()
+    if entity:
+        return getattr(entity, "name_hebrew", "") or str(entity_id)[:8]
+    return str(entity_id)[:8]
+
+
 @router.get("/relationships")
 async def list_relationships(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ):
+    from sqlalchemy.orm import selectinload
+
     offset = (page - 1) * limit
     total_q = await db.execute(select(func.count()).select_from(EntityRelationship))
     total = total_q.scalar()
-    result = await db.execute(select(EntityRelationship).offset(offset).limit(limit))
+    result = await db.execute(
+        select(EntityRelationship)
+        .order_by(EntityRelationship.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+    )
     rels = result.scalars().all()
-    data = [
-        {
+
+    # Resolve entity names and document info
+    data = []
+    for r in rels:
+        source_name = await _resolve_entity_name(db, r.source_entity_type, str(r.source_entity_id))
+        target_name = await _resolve_entity_name(db, r.target_entity_type, str(r.target_entity_id))
+
+        # Get document and source info
+        doc_title = ""
+        source_title = ""
+        source_date = None
+        doc_result = await db.execute(
+            select(Document).where(Document.id == r.document_id)
+        )
+        doc = doc_result.scalar_one_or_none()
+        if doc:
+            doc_title = doc.title or ""
+            src_result = await db.execute(
+                select(Source).where(Source.id == doc.source_id)
+            )
+            src = src_result.scalar_one_or_none()
+            if src:
+                source_title = src.title or ""
+                source_date = (src.metadata_json or {}).get("date") if src.metadata_json else None
+
+        data.append({
             "id": str(r.id),
-            "source_entity_type": r.source_entity_type,
-            "source_entity_id": str(r.source_entity_id),
-            "target_entity_type": r.target_entity_type,
-            "target_entity_id": str(r.target_entity_id),
+            "entity1_name": source_name,
+            "entity1_type": r.source_entity_type,
+            "entity2_name": target_name,
+            "entity2_type": r.target_entity_type,
             "relationship_type": r.relationship_type,
             "details": r.details,
             "confidence": r.confidence,
-        }
-        for r in rels
-    ]
+            "document_id": str(r.document_id),
+            "document_title": doc_title,
+            "source_name": source_title,
+            "source_date": source_date,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        })
     return {"status": "ok", "data": data, "meta": {"total": total, "page": page, "limit": limit}}
 
 
@@ -232,13 +281,24 @@ async def create_relationship(body: RelationshipCreate, db: AsyncSession = Depen
 
 
 @router.delete("/relationships/{rel_id}")
-async def delete_relationship(rel_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def delete_relationship_single(rel_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(EntityRelationship).where(EntityRelationship.id == rel_id))
     if not result.scalar_one_or_none():
         raise HTTPException(404, "Relationship not found")
     await db.execute(delete(EntityRelationship).where(EntityRelationship.id == rel_id))
     await db.commit()
     return {"status": "ok"}
+
+
+@router.post("/relationships/bulk-delete")
+async def delete_relationships_bulk(body: dict, db: AsyncSession = Depends(get_db)):
+    ids = body.get("ids", [])
+    if not ids:
+        raise HTTPException(400, "No ids provided")
+    uuids = [uuid.UUID(i) for i in ids]
+    await db.execute(delete(EntityRelationship).where(EntityRelationship.id.in_(uuids)))
+    await db.commit()
+    return {"status": "ok", "deleted": len(uuids)}
 
 
 # ── Documents management ──────────────────────────────────────────────────

@@ -62,7 +62,7 @@ def _load_cached_govil_records() -> list[dict] | None:
     import json
     for path in [
         Path("/app/data/govil_records.json"),           # Docker
-        settings.base_dir / "data" / "govil_records.json",  # Local dev
+        settings.data_dir / "govil_records.json",       # Local dev
         Path(__file__).resolve().parents[5] / "data" / "govil_records.json",
     ]:
         if path.exists():
