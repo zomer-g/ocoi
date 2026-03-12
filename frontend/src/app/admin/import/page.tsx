@@ -303,122 +303,79 @@ function CkanTab() {
             </button>
           </div>
 
+          {/* Select all on page */}
+          <div className="px-4 py-2 border-b border-gray-100">
+            <label className="flex items-center gap-2 text-xs text-gray-500 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={allVisibleKeys.length > 0 && allVisibleKeys.every((k) => selected.has(k))}
+                onChange={() => {
+                  const allSelected = allVisibleKeys.length > 0 && allVisibleKeys.every((k) => selected.has(k));
+                  setSelected((prev) => {
+                    const next = new Set(prev);
+                    if (allSelected) {
+                      allVisibleKeys.forEach((k) => next.delete(k));
+                    } else {
+                      allVisibleKeys.forEach((k) => next.add(k));
+                    }
+                    return next;
+                  });
+                }}
+                className="rounded"
+              />
+              בחר הכל בעמוד ({allVisibleKeys.length})
+            </label>
+          </div>
+
+          {/* Flat resource list */}
           {filteredResults.map((ds) => {
-            const isExpanded = expanded.has(ds.id);
             const visibleResources = getVisibleResources(ds);
-            const selectedInDs = ds.resources.filter((r) =>
-              selected.has(resourceKey(ds.id, r.url))
-            ).length;
-            const allFullyImported = ds.already_imported === ds.num_documents && ds.num_documents > 0;
+            if (visibleResources.length === 0) return null;
 
             return (
-              <div key={ds.id} className={`border-b border-gray-50 ${allFullyImported ? "opacity-60" : ""}`}>
-                {/* Dataset header */}
-                <div
-                  className="flex items-start gap-3 p-3 hover:bg-gray-50 transition-colors cursor-pointer"
-                  onClick={() => toggleExpand(ds.id)}
-                >
-                  <button className="mt-0.5 text-gray-400 hover:text-gray-600 shrink-0">
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      className={`w-4 h-4 transition-transform ${isExpanded ? "rotate-90" : ""}`}
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    >
-                      <polyline points="9 18 15 12 9 6" />
-                    </svg>
-                  </button>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium text-gray-900 text-sm">{ds.title}</span>
-                      {selectedInDs > 0 && (
-                        <span className="text-xs bg-primary-100 text-primary-700 px-1.5 py-0.5 rounded">
-                          {selectedInDs} נבחרו
-                        </span>
-                      )}
-                    </div>
-                    {ds.notes && (
-                      <div className="text-xs text-gray-500 mt-0.5 line-clamp-2">{ds.notes}</div>
-                    )}
-                    <div className="flex flex-wrap gap-3 mt-1.5 text-xs text-gray-400">
-                      <span>{ds.num_documents} מסמכים</span>
-                      {ds.already_imported > 0 && (
-                        <span className="text-yellow-600">{ds.already_imported} כבר יובאו</span>
-                      )}
-                      {ds.metadata_modified && (
-                        <span>עודכן: {new Date(ds.metadata_modified).toLocaleDateString("he-IL")}</span>
-                      )}
-                      {ds.tags.length > 0 && (
-                        <span>{ds.tags.slice(0, 3).join(", ")}</span>
-                      )}
-                    </div>
-                  </div>
+              <div key={ds.id}>
+                {/* Dataset name as group header */}
+                <div className="px-4 py-1.5 bg-gray-50 border-b border-gray-100">
+                  <span className="text-xs font-medium text-gray-500">{ds.title}</span>
                 </div>
-
-                {/* Resources list (expanded) */}
-                {isExpanded && (
-                  <div className="bg-gray-50/50 border-t border-gray-100">
-                    {/* Select all in dataset */}
-                    {visibleResources.length > 1 && (
-                      <div className="px-10 py-2 border-b border-gray-100">
-                        <label className="flex items-center gap-2 text-xs text-gray-500 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={visibleResources.length > 0 && visibleResources.every((r) => selected.has(resourceKey(ds.id, r.url)))}
-                            onChange={() => toggleAllInDataset(ds)}
-                            className="rounded"
-                          />
-                          בחר הכל ({visibleResources.length})
-                        </label>
-                      </div>
-                    )}
-                    {visibleResources.map((res) => {
-                      const key = resourceKey(ds.id, res.url);
-                      const fmtColor = FORMAT_COLORS[res.format] || "bg-gray-50 text-gray-600 border-gray-200";
-                      return (
-                        <label
-                          key={key}
-                          className={`flex items-center gap-3 px-10 py-2.5 hover:bg-gray-100/50 transition-colors cursor-pointer ${
-                            res.already_imported ? "opacity-50" : ""
-                          }`}
-                          onClick={(e) => {
-                            if (!res.already_imported) {
-                              e.preventDefault();
-                              toggleResource(ds.id, res.url, e.shiftKey);
-                            }
-                          }}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={selected.has(key)}
-                            onChange={() => {}}
-                            disabled={res.already_imported}
-                            className="rounded"
-                          />
-                          <span className={`text-[10px] px-1.5 py-0.5 rounded border uppercase font-medium shrink-0 ${fmtColor}`}>
-                            {res.format}
-                          </span>
-                          <span className="text-sm text-gray-700 truncate flex-1 min-w-0" title={res.title}>
-                            {res.title}
-                          </span>
-                          {res.size && (
-                            <span className="text-xs text-gray-400 shrink-0">{formatResourceSize(res.size)}</span>
-                          )}
-                          {res.already_imported && (
-                            <span className="text-xs text-yellow-600 shrink-0">יובא</span>
-                          )}
-                        </label>
-                      );
-                    })}
-                    {visibleResources.length === 0 && (
-                      <div className="px-10 py-3 text-xs text-gray-400">כל המשאבים כבר יובאו</div>
-                    )}
-                  </div>
-                )}
+                {visibleResources.map((res) => {
+                  const key = resourceKey(ds.id, res.url);
+                  const fmtColor = FORMAT_COLORS[res.format] || "bg-gray-50 text-gray-600 border-gray-200";
+                  return (
+                    <label
+                      key={key}
+                      className={`flex items-center gap-3 px-4 py-2 border-b border-gray-50 hover:bg-gray-50 transition-colors cursor-pointer ${
+                        res.already_imported ? "opacity-50" : ""
+                      } ${selected.has(key) ? "bg-primary-50/50" : ""}`}
+                      onClick={(e) => {
+                        if (!res.already_imported) {
+                          e.preventDefault();
+                          toggleResource(ds.id, res.url, e.shiftKey);
+                        }
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selected.has(key)}
+                        onChange={() => {}}
+                        disabled={res.already_imported}
+                        className="rounded shrink-0"
+                      />
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded border uppercase font-medium shrink-0 ${fmtColor}`}>
+                        {res.format}
+                      </span>
+                      <span className="text-sm text-gray-700 truncate flex-1 min-w-0" title={res.title}>
+                        {res.title}
+                      </span>
+                      {res.size > 0 && (
+                        <span className="text-xs text-gray-400 shrink-0">{formatResourceSize(res.size)}</span>
+                      )}
+                      {res.already_imported && (
+                        <span className="text-xs text-yellow-600 shrink-0">יובא</span>
+                      )}
+                    </label>
+                  );
+                })}
               </div>
             );
           })}
