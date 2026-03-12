@@ -367,7 +367,7 @@ function CkanTab() {
                       <span className="text-sm text-gray-700 truncate flex-1 min-w-0" title={res.title}>
                         {res.title}
                       </span>
-                      {res.size > 0 && (
+                      {(res.size ?? 0) > 0 && (
                         <span className="text-xs text-gray-400 shrink-0">{formatResourceSize(res.size)}</span>
                       )}
                       {res.already_imported && (
