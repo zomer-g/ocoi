@@ -34,10 +34,11 @@ async def lifespan(app: FastAPI):
     """Create database tables on startup. Retries on cold-start when DB may still be waking up."""
     import asyncio
     settings.ensure_dirs()
-    from ocoi_db.engine import create_all_tables
+    from ocoi_db.engine import create_all_tables, run_migrations
     for attempt in range(5):
         try:
             await create_all_tables()
+            await run_migrations()
             break
         except Exception as e:
             if attempt < 4:

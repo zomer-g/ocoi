@@ -237,7 +237,7 @@ async def _import_single_ckan_doc(session, doc, ds, imported_at: str, stats: dic
 
     # Download PDF and convert to markdown FIRST — don't save metadata-only
     temp_id = hashlib.md5(doc.file_url.encode()).hexdigest()
-    md_text = await _download_and_convert_pdf(
+    md_text, pdf_bytes = await _download_and_convert_pdf(
         file_url=doc.file_url,
         doc_id=temp_id,
     )
@@ -285,6 +285,7 @@ async def _import_single_ckan_doc(session, doc, ds, imported_at: str, stats: dic
         temp_md.rename(actual_md)
 
     db_doc.markdown_content = md_text
+    db_doc.pdf_content = pdf_bytes
     db_doc.conversion_status = "converted"
     db_doc.file_path = str(actual_pdf)
 
@@ -449,7 +450,7 @@ async def _process_new_records(client, new_records: list) -> None:
 
                 # Download PDF and convert to markdown FIRST — don't save metadata-only
                 temp_id = hashlib.md5(doc_info.file_url.encode()).hexdigest()
-                md_text = await _download_and_convert_pdf(
+                md_text, pdf_bytes = await _download_and_convert_pdf(
                     file_url=doc_info.file_url,
                     doc_id=temp_id,
                 )
@@ -492,6 +493,7 @@ async def _process_new_records(client, new_records: list) -> None:
                     temp_md.rename(actual_md)
 
                 db_doc.markdown_content = md_text
+                db_doc.pdf_content = pdf_bytes
                 db_doc.conversion_status = "converted"
                 db_doc.file_path = str(actual_pdf)
 
@@ -540,18 +542,20 @@ def convert_pdf_to_markdown(pdf_path: Path, doc_id: str) -> str | None:
         return None
 
 
-async def _download_and_convert_pdf(file_url: str, doc_id: str) -> str | None:
-    """Download a PDF from URL, save to disk, extract text with pdfplumber."""
+async def _download_and_convert_pdf(file_url: str, doc_id: str) -> tuple[str | None, bytes | None]:
+    """Download a PDF from URL, extract text. Returns (markdown, pdf_bytes)."""
     try:
         pdf_path = settings.pdf_dir / f"{doc_id}.pdf"
         async with httpx.AsyncClient(timeout=60, follow_redirects=True) as http:
             resp = await http.get(file_url)
             resp.raise_for_status()
-            pdf_path.write_bytes(resp.content)
+            pdf_bytes = resp.content
+            pdf_path.write_bytes(pdf_bytes)
 
-        logger.info(f"Downloaded PDF: {pdf_path.name} ({len(resp.content)} bytes)")
-        return convert_pdf_to_markdown(pdf_path, doc_id)
+        logger.info(f"Downloaded PDF: {pdf_path.name} ({len(pdf_bytes)} bytes)")
+        md_text = convert_pdf_to_markdown(pdf_path, doc_id)
+        return md_text, pdf_bytes
 
     except Exception as e:
         logger.error(f"PDF download/convert failed for {file_url}: {e}")
-        return None
+        return None, None

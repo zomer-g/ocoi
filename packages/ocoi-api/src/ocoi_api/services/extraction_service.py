@@ -364,16 +364,32 @@ async def _run_extraction(document_ids: list[str] | None):
 
 
 async def _download_and_convert(doc: Document) -> str | None:
-    """Download PDF from file_url and extract text using pymupdf (RTL-safe)."""
+    """Get PDF bytes (from DB, disk, or URL) and extract text using pymupdf (RTL-safe)."""
     try:
         import pymupdf
 
-        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as http:
-            resp = await http.get(doc.file_url)
-            resp.raise_for_status()
+        # Get PDF bytes: DB → disk → download
+        pdf_bytes = None
+        if doc.pdf_content:
+            pdf_bytes = doc.pdf_content
+        else:
+            pdf_path = Path(settings.pdf_dir) / f"{doc.id}.pdf"
+            if pdf_path.exists():
+                pdf_bytes = pdf_path.read_bytes()
+
+        if not pdf_bytes and doc.file_url and not doc.file_url.startswith("upload://"):
+            async with httpx.AsyncClient(timeout=60, follow_redirects=True) as http:
+                resp = await http.get(doc.file_url)
+                resp.raise_for_status()
+                pdf_bytes = resp.content
+                # Store in DB for next time
+                doc.pdf_content = pdf_bytes
+
+        if not pdf_bytes:
+            return None
 
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-            tmp.write(resp.content)
+            tmp.write(pdf_bytes)
             tmp_path = tmp.name
 
         try:
@@ -386,11 +402,8 @@ async def _download_and_convert(doc: Document) -> str | None:
                     if b[6] == 0:  # text block (not image)
                         text = b[4].strip()
                         if text:
-                            # Replace RTL/LTR marks with space (they act as word separators)
                             text = re.sub(r"[\u200f\u200e]+", " ", text)
-                            # Join fragmented lines within a block
                             text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)
-                            # Clean up multiple spaces
                             text = re.sub(r" +", " ", text)
                             paragraphs.append(text)
                 if paragraphs:

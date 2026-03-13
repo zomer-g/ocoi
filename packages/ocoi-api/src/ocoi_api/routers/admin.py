@@ -432,14 +432,16 @@ async def get_document_detail(doc_id: uuid.UUID, db: AsyncSession = Depends(get_
 
 @router.get("/documents/{doc_id}/pdf")
 async def serve_document_pdf(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """Serve the PDF file for a document."""
+    """Serve the PDF file for a document (from disk or DB)."""
     from pathlib import Path
-    from fastapi.responses import FileResponse as FR
+    from fastapi.responses import FileResponse as FR, Response
 
     result = await db.execute(select(Document).where(Document.id == doc_id))
     doc = result.scalar_one_or_none()
     if not doc:
         raise HTTPException(404, "Document not found")
+
+    filename = f"{doc.title or doc.id}.pdf"
 
     # Try file_path first, then look in pdf_dir
     pdf_path = None
@@ -450,14 +452,23 @@ async def serve_document_pdf(doc_id: uuid.UUID, db: AsyncSession = Depends(get_d
         if candidate.is_file():
             pdf_path = candidate
 
-    if not pdf_path:
-        raise HTTPException(404, "PDF file not found on disk")
+    if pdf_path:
+        return FR(pdf_path, media_type="application/pdf", filename=filename)
 
-    return FR(pdf_path, media_type="application/pdf", filename=f"{doc.title or doc.id}.pdf")
+    # Serve from DB if stored there
+    if doc.pdf_content:
+        return Response(
+            content=doc.pdf_content,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'inline; filename="{filename}"'},
+        )
+
+    raise HTTPException(404, "PDF file not found")
 
 
-async def _resolve_pdf_path(doc: Document, httpx_mod) -> "Path | None":
-    """Get local PDF path for a document, downloading from URL if not on disk."""
+async def _resolve_pdf_path(doc: Document, httpx_mod, db: AsyncSession | None = None) -> "Path | None":
+    """Get local PDF path for a document. Checks disk, DB, then downloads from URL."""
+    import tempfile
     from pathlib import Path as _Path
 
     # Try local file first
@@ -471,6 +482,12 @@ async def _resolve_pdf_path(doc: Document, httpx_mod) -> "Path | None":
         if fp.exists():
             return fp
 
+    # Try PDF content from database
+    if doc.pdf_content:
+        settings.pdf_dir.mkdir(parents=True, exist_ok=True)
+        pdf_path.write_bytes(doc.pdf_content)
+        return pdf_path
+
     # Download from URL
     url = doc.file_url
     if not url or url.startswith("upload://"):
@@ -480,8 +497,15 @@ async def _resolve_pdf_path(doc: Document, httpx_mod) -> "Path | None":
         async with httpx_mod.AsyncClient(timeout=60, follow_redirects=True) as http:
             resp = await http.get(url)
             resp.raise_for_status()
+        pdf_bytes = resp.content
         settings.pdf_dir.mkdir(parents=True, exist_ok=True)
-        pdf_path.write_bytes(resp.content)
+        pdf_path.write_bytes(pdf_bytes)
+
+        # Store in DB for persistence
+        if db:
+            doc.pdf_content = pdf_bytes
+            doc.file_size = len(pdf_bytes)
+
         return pdf_path
     except Exception:
         return None
@@ -502,7 +526,7 @@ async def reconvert_all_documents(db: AsyncSession = Depends(get_db)):
 
     for doc in docs:
         try:
-            pdf_path = await _resolve_pdf_path(doc, _httpx)
+            pdf_path = await _resolve_pdf_path(doc, _httpx, db)
             if not pdf_path:
                 skipped += 1
                 continue
@@ -511,6 +535,9 @@ async def reconvert_all_documents(db: AsyncSession = Depends(get_db)):
             if md_text:
                 doc.markdown_content = md_text
                 doc.conversion_status = "converted"
+                # Store PDF in DB if not already there
+                if not doc.pdf_content and pdf_path.exists():
+                    doc.pdf_content = pdf_path.read_bytes()
                 updated += 1
             else:
                 skipped += 1
@@ -625,6 +652,7 @@ async def upload_document(
         db_doc.conversion_status = "converted"
     else:
         db_doc.conversion_status = "no_text"
+    db_doc.pdf_content = content
     db_doc.file_path = str(actual_pdf)
     await db.commit()
 
@@ -663,7 +691,7 @@ async def reconvert_document(doc_id: uuid.UUID, db: AsyncSession = Depends(get_d
     if not doc:
         raise HTTPException(404, "Document not found")
 
-    pdf_path = await _resolve_pdf_path(doc, _httpx)
+    pdf_path = await _resolve_pdf_path(doc, _httpx, db)
     if not pdf_path:
         raise HTTPException(404, "לא ניתן למצוא או להוריד את ה-PDF")
 
@@ -673,6 +701,9 @@ async def reconvert_document(doc_id: uuid.UUID, db: AsyncSession = Depends(get_d
 
     doc.markdown_content = md_text
     doc.conversion_status = "converted"
+    # Store PDF in DB if not already there
+    if not doc.pdf_content and pdf_path.exists():
+        doc.pdf_content = pdf_path.read_bytes()
     await db.commit()
 
     return {

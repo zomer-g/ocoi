@@ -61,3 +61,25 @@ async def create_all_tables():
     from ocoi_db.models import Base
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+
+async def run_migrations():
+    """Run lightweight migrations for new columns that create_all won't add."""
+    import logging
+    _log = logging.getLogger("ocoi.db.migrations")
+
+    migrations = [
+        ("documents", "pdf_content", "ALTER TABLE documents ADD COLUMN pdf_content BYTEA"),
+    ]
+
+    async with async_engine.begin() as conn:
+        for table, column, sql in migrations:
+            exists = await conn.run_sync(
+                lambda sync_conn, t=table, c=column: c in [
+                    col["name"] for col in sync_conn.dialect.get_columns(sync_conn, t)
+                ]
+            )
+            if not exists:
+                _log.info(f"Adding column {table}.{column}")
+                await conn.execute(__import__("sqlalchemy").text(sql))
+                _log.info(f"Column {table}.{column} added successfully")

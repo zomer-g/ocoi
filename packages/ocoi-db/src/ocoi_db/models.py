@@ -9,6 +9,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     func,
@@ -73,6 +74,7 @@ class Document(Base):
     file_path: Mapped[str | None] = mapped_column(Text)
     file_url: Mapped[str] = mapped_column(Text, nullable=False)
     file_size: Mapped[int | None] = mapped_column(Integer)
+    pdf_content: Mapped[bytes | None] = mapped_column(LargeBinary)
     markdown_content: Mapped[str | None] = mapped_column(Text)
     conversion_status: Mapped[str] = mapped_column(String(20), default="pending")
     extraction_status: Mapped[str] = mapped_column(String(20), default="pending")
