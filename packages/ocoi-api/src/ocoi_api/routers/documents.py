@@ -50,7 +50,7 @@ async def list_documents(
 @router.get("/documents/{doc_id}")
 async def get_document(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Document).where(Document.id == doc_id))
-    doc = result.scalar_one_or_none()
+    doc = result.scalars().first()
     if not doc:
         raise HTTPException(404, "Document not found")
     return {
@@ -70,7 +70,7 @@ async def get_document(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 @router.get("/documents/{doc_id}/markdown")
 async def get_document_markdown(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Document).where(Document.id == doc_id))
-    doc = result.scalar_one_or_none()
+    doc = result.scalars().first()
     if not doc:
         raise HTTPException(404, "Document not found")
     if not doc.markdown_content:

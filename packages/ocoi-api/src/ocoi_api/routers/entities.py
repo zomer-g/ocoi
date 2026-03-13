@@ -51,7 +51,7 @@ async def list_persons(
 @router.get("/persons/{person_id}")
 async def get_person(person_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Person).where(Person.id == person_id))
-    person = result.scalar_one_or_none()
+    person = result.scalars().first()
     if not person:
         raise HTTPException(404, "Person not found")
     return {
@@ -106,7 +106,7 @@ async def list_companies(
 @router.get("/companies/{company_id}")
 async def get_company(company_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Company).where(Company.id == company_id))
-    company = result.scalar_one_or_none()
+    company = result.scalars().first()
     if not company:
         raise HTTPException(404, "Company not found")
     return {
@@ -163,7 +163,7 @@ async def list_associations(
 @router.get("/associations/{assoc_id}")
 async def get_association(assoc_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Association).where(Association.id == assoc_id))
-    assoc = result.scalar_one_or_none()
+    assoc = result.scalars().first()
     if not assoc:
         raise HTTPException(404, "Association not found")
     return {"status": "ok", "data": _entity_to_dict(assoc, ["name_english", "registration_number"])}
@@ -204,7 +204,7 @@ async def list_domains(
 @router.get("/domains/{domain_id}")
 async def get_domain(domain_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Domain).where(Domain.id == domain_id))
-    domain = result.scalar_one_or_none()
+    domain = result.scalars().first()
     if not domain:
         raise HTTPException(404, "Domain not found")
     return {"status": "ok", "data": _entity_to_dict(domain, ["description"])}

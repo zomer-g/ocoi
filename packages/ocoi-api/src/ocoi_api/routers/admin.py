@@ -61,7 +61,7 @@ async def create_person(body: PersonCreate, db: AsyncSession = Depends(get_db)):
 @router.put("/persons/{person_id}")
 async def update_person(person_id: uuid.UUID, body: PersonUpdate, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Person).where(Person.id == person_id))
-    person = result.scalar_one_or_none()
+    person = result.scalars().first()
     if not person:
         raise HTTPException(404, "Person not found")
     for field, value in body.model_dump(exclude_unset=True).items():
@@ -73,7 +73,7 @@ async def update_person(person_id: uuid.UUID, body: PersonUpdate, db: AsyncSessi
 @router.delete("/persons/{person_id}")
 async def delete_person(person_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Person).where(Person.id == person_id))
-    if not result.scalar_one_or_none():
+    if not result.scalars().first():
         raise HTTPException(404, "Person not found")
     await db.execute(
         delete(EntityRelationship).where(
@@ -100,7 +100,7 @@ async def create_company(body: CompanyCreate, db: AsyncSession = Depends(get_db)
 @router.put("/companies/{company_id}")
 async def update_company(company_id: uuid.UUID, body: CompanyUpdate, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Company).where(Company.id == company_id))
-    company = result.scalar_one_or_none()
+    company = result.scalars().first()
     if not company:
         raise HTTPException(404, "Company not found")
     for field, value in body.model_dump(exclude_unset=True).items():
@@ -112,7 +112,7 @@ async def update_company(company_id: uuid.UUID, body: CompanyUpdate, db: AsyncSe
 @router.delete("/companies/{company_id}")
 async def delete_company(company_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Company).where(Company.id == company_id))
-    if not result.scalar_one_or_none():
+    if not result.scalars().first():
         raise HTTPException(404, "Company not found")
     await db.execute(
         delete(EntityRelationship).where(
@@ -139,7 +139,7 @@ async def create_association(body: AssociationCreate, db: AsyncSession = Depends
 @router.put("/associations/{assoc_id}")
 async def update_association(assoc_id: uuid.UUID, body: AssociationUpdate, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Association).where(Association.id == assoc_id))
-    assoc = result.scalar_one_or_none()
+    assoc = result.scalars().first()
     if not assoc:
         raise HTTPException(404, "Association not found")
     for field, value in body.model_dump(exclude_unset=True).items():
@@ -151,7 +151,7 @@ async def update_association(assoc_id: uuid.UUID, body: AssociationUpdate, db: A
 @router.delete("/associations/{assoc_id}")
 async def delete_association(assoc_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Association).where(Association.id == assoc_id))
-    if not result.scalar_one_or_none():
+    if not result.scalars().first():
         raise HTTPException(404, "Association not found")
     await db.execute(
         delete(EntityRelationship).where(
@@ -178,7 +178,7 @@ async def create_domain(body: DomainCreate, db: AsyncSession = Depends(get_db)):
 @router.put("/domains/{domain_id}")
 async def update_domain(domain_id: uuid.UUID, body: DomainUpdate, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Domain).where(Domain.id == domain_id))
-    domain = result.scalar_one_or_none()
+    domain = result.scalars().first()
     if not domain:
         raise HTTPException(404, "Domain not found")
     for field, value in body.model_dump(exclude_unset=True).items():
@@ -190,7 +190,7 @@ async def update_domain(domain_id: uuid.UUID, body: DomainUpdate, db: AsyncSessi
 @router.delete("/domains/{domain_id}")
 async def delete_domain(domain_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Domain).where(Domain.id == domain_id))
-    if not result.scalar_one_or_none():
+    if not result.scalars().first():
         raise HTTPException(404, "Domain not found")
     await db.execute(delete(Domain).where(Domain.id == domain_id))
     await db.commit()
@@ -208,7 +208,7 @@ async def _resolve_entity_name(db: AsyncSession, entity_type: str, entity_id: st
     if not model:
         return entity_type
     result = await db.execute(select(model).where(model.id == entity_id))
-    entity = result.scalar_one_or_none()
+    entity = result.scalars().first()
     if entity:
         return getattr(entity, "name_hebrew", "") or str(entity_id)[:8]
     return str(entity_id)[:8]
@@ -253,13 +253,13 @@ async def list_relationships(
         doc_result = await db.execute(
             select(Document).where(Document.id == r.document_id)
         )
-        doc = doc_result.scalar_one_or_none()
+        doc = doc_result.scalars().first()
         if doc:
             doc_title = doc.title or ""
             src_result = await db.execute(
                 select(Source).where(Source.id == doc.source_id)
             )
-            src = src_result.scalar_one_or_none()
+            src = src_result.scalars().first()
             if src:
                 source_title = src.title or ""
                 source_date = (src.metadata_json or {}).get("date") if src.metadata_json else None
@@ -294,7 +294,7 @@ async def create_relationship(body: RelationshipCreate, db: AsyncSession = Depen
 @router.delete("/relationships/{rel_id}")
 async def delete_relationship_single(rel_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(EntityRelationship).where(EntityRelationship.id == rel_id))
-    if not result.scalar_one_or_none():
+    if not result.scalars().first():
         raise HTTPException(404, "Relationship not found")
     await db.execute(delete(EntityRelationship).where(EntityRelationship.id == rel_id))
     await db.commit()
@@ -357,7 +357,7 @@ async def list_documents(
 async def get_document_detail(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """Full document detail: info, extraction runs, entities and relationships."""
     result = await db.execute(select(Document).where(Document.id == doc_id))
-    doc = result.scalar_one_or_none()
+    doc = result.scalars().first()
     if not doc:
         raise HTTPException(404, "Document not found")
 
@@ -442,7 +442,7 @@ async def serve_document_pdf(doc_id: uuid.UUID, db: AsyncSession = Depends(get_d
     from fastapi.responses import FileResponse as FR, Response
 
     result = await db.execute(select(Document).where(Document.id == doc_id))
-    doc = result.scalar_one_or_none()
+    doc = result.scalars().first()
     if not doc:
         raise HTTPException(404, "Document not found")
 
@@ -764,7 +764,7 @@ async def upload_document(
         existing_hash = await db.execute(
             select(Document).where(Document.content_hash == content_hash)
         )
-        if existing_hash.scalar_one_or_none():
+        if existing_hash.scalars().first():
             raise HTTPException(409, "מסמך זהה כבר קיים במערכת (תוכן זהה)")
 
         # Check for duplicate by title
@@ -772,7 +772,7 @@ async def upload_document(
         existing_title = await db.execute(
             select(Document).where(Document.title == title_to_check)
         )
-        if existing_title.scalar_one_or_none():
+        if existing_title.scalars().first():
             raise HTTPException(409, f"מסמך בשם '{title_to_check}' כבר קיים במערכת")
 
         # Convert PDF bytes to markdown (no disk needed)
@@ -837,7 +837,7 @@ async def upload_document(
 @router.delete("/documents/{doc_id}")
 async def delete_document(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Document).where(Document.id == doc_id))
-    if not result.scalar_one_or_none():
+    if not result.scalars().first():
         raise HTTPException(404, "Document not found")
     await db.execute(delete(ExtractionRun).where(ExtractionRun.document_id == doc_id))
     await db.execute(delete(EntityRelationship).where(EntityRelationship.document_id == doc_id))
@@ -853,7 +853,7 @@ async def reconvert_document(doc_id: uuid.UUID, db: AsyncSession = Depends(get_d
     from ocoi_api.services.pdf_converter import convert_pdf
 
     result = await db.execute(select(Document).where(Document.id == doc_id))
-    doc = result.scalar_one_or_none()
+    doc = result.scalars().first()
     if not doc:
         raise HTTPException(404, "Document not found")
 
@@ -893,7 +893,7 @@ async def reextract_document(
     from ocoi_api.services.extraction_service import get_extraction_status, run_extraction
 
     result = await db.execute(select(Document).where(Document.id == doc_id))
-    doc = result.scalar_one_or_none()
+    doc = result.scalars().first()
     if not doc:
         raise HTTPException(404, "Document not found")
 
@@ -957,7 +957,7 @@ async def ignore_resources(body: dict, db: AsyncSession = Depends(get_db)):
         if not url:
             continue
         existing = await db.execute(select(IgnoredResource).where(IgnoredResource.file_url == url))
-        if existing.scalar_one_or_none():
+        if existing.scalars().first():
             continue
         db.add(IgnoredResource(
             file_url=url,

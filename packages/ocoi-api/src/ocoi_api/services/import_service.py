@@ -113,7 +113,7 @@ async def _check_duplicate_hash(session, content_hash: str) -> Document | None:
     result = await session.execute(
         select(Document).where(Document.content_hash == content_hash)
     )
-    return result.scalar_one_or_none()
+    return result.scalars().first()
 
 
 # ── CKAN: Search + selective import ──────────────────────────────────────
@@ -140,11 +140,11 @@ async def search_ckan(query: str, rows: int = 20, start: int = 0) -> dict:
                 existing = await session.execute(
                     select(Document).where(Document.file_url == doc.file_url)
                 )
-                is_imported = existing.scalar_one_or_none() is not None
+                is_imported = existing.scalars().first() is not None
                 ignored = await session.execute(
                     select(IgnoredResource).where(IgnoredResource.file_url == doc.file_url)
                 )
-                is_ignored = ignored.scalar_one_or_none() is not None
+                is_ignored = ignored.scalars().first() is not None
                 if is_imported:
                     already_imported += 1
                 resources.append({
@@ -277,7 +277,7 @@ async def _import_single_ckan_doc(session, doc, ds, imported_at: str, stats: dic
     existing = await session.execute(
         select(Document).where(Document.file_url == doc.file_url)
     )
-    if existing.scalar_one_or_none():
+    if existing.scalars().first():
         stats["skipped"] += 1
         return
 
@@ -425,7 +425,7 @@ async def run_govil_with_records(raw_items: list[dict]) -> dict:
                 existing = await session.execute(
                     select(Document).where(Document.file_url == doc_info.file_url)
                 )
-                if existing.scalar_one_or_none():
+                if existing.scalars().first():
                     _import_state["already_in_db"] += 1
                 else:
                     new_records.append(record)
@@ -479,7 +479,7 @@ async def _import_govil(limit: int, url: str = ""):
             existing = await session.execute(
                 select(Document).where(Document.file_url == doc_info.file_url)
             )
-            if existing.scalar_one_or_none():
+            if existing.scalars().first():
                 _import_state["already_in_db"] += 1
             else:
                 new_records.append(record)

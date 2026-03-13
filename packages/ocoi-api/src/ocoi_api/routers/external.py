@@ -26,7 +26,7 @@ async def by_company(
     result = await db.execute(
         select(Company).where(Company.registration_number == registration_number)
     )
-    company = result.scalar_one_or_none()
+    company = result.scalars().first()
     if not company:
         return {"status": "ok", "data": None, "message": "Company not found"}
 

@@ -31,9 +31,9 @@ async def get_or_create_source(
     stmt = select(Source).where(
         Source.source_type == source_type,
         Source.source_id == source_id,
-    )
+    ).limit(1)
     result = await session.execute(stmt)
-    source = result.scalar_one_or_none()
+    source = result.scalars().first()
     if source:
         source.last_fetched_at = func.now()
         return source
@@ -60,9 +60,9 @@ async def create_document(
     file_size: int | None = None,
 ) -> Document:
     existing = await session.execute(
-        select(Document).where(Document.file_url == file_url)
+        select(Document).where(Document.file_url == file_url).limit(1)
     )
-    if doc := existing.scalar_one_or_none():
+    if doc := existing.scalars().first():
         return doc
     doc = Document(
         source_id=source_id,
@@ -106,9 +106,9 @@ async def update_document_markdown(
 
 async def upsert_person(session: AsyncSession, name_hebrew: str, **kwargs) -> Person:
     result = await session.execute(
-        select(Person).where(Person.name_hebrew == name_hebrew)
+        select(Person).where(Person.name_hebrew == name_hebrew).limit(1)
     )
-    person = result.scalar_one_or_none()
+    person = result.scalars().first()
     if person:
         for key, value in kwargs.items():
             if value is not None:
@@ -122,9 +122,9 @@ async def upsert_person(session: AsyncSession, name_hebrew: str, **kwargs) -> Pe
 
 async def upsert_company(session: AsyncSession, name_hebrew: str, **kwargs) -> Company:
     result = await session.execute(
-        select(Company).where(Company.name_hebrew == name_hebrew)
+        select(Company).where(Company.name_hebrew == name_hebrew).limit(1)
     )
-    company = result.scalar_one_or_none()
+    company = result.scalars().first()
     if company:
         for key, value in kwargs.items():
             if value is not None:
@@ -138,9 +138,9 @@ async def upsert_company(session: AsyncSession, name_hebrew: str, **kwargs) -> C
 
 async def upsert_association(session: AsyncSession, name_hebrew: str, **kwargs) -> Association:
     result = await session.execute(
-        select(Association).where(Association.name_hebrew == name_hebrew)
+        select(Association).where(Association.name_hebrew == name_hebrew).limit(1)
     )
-    assoc = result.scalar_one_or_none()
+    assoc = result.scalars().first()
     if assoc:
         for key, value in kwargs.items():
             if value is not None:
@@ -154,9 +154,9 @@ async def upsert_association(session: AsyncSession, name_hebrew: str, **kwargs) 
 
 async def upsert_domain(session: AsyncSession, name_hebrew: str, **kwargs) -> Domain:
     result = await session.execute(
-        select(Domain).where(Domain.name_hebrew == name_hebrew)
+        select(Domain).where(Domain.name_hebrew == name_hebrew).limit(1)
     )
-    domain = result.scalar_one_or_none()
+    domain = result.scalars().first()
     if domain:
         return domain
     domain = Domain(name_hebrew=name_hebrew, **kwargs)
