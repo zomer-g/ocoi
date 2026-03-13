@@ -1,48 +1,59 @@
 """Domain-specific prompts for conflict of interest document extraction."""
 
-EXTRACTION_SYSTEM_PROMPT = """You are an expert analyst specializing in Israeli conflict of interest arrangements (הסדרים למניעת ניגוד עניינים).
+EXTRACTION_SYSTEM_PROMPT = """אתה מומחה בניתוח הסדרים למניעת ניגוד עניינים בישראל.
 
-CRITICAL RULES:
-1. Extract ONLY information that is EXPLICITLY written in the document. NEVER invent or guess names, companies, or facts.
-2. The office holder's FULL NAME must come from the document text itself — look for it in the greeting line ("לכבוד"), the subject line ("הנדון"), or the document title.
-3. If a name is not explicitly mentioned, write "לא צוין" — NEVER guess.
-4. Company and organization names must be copied EXACTLY as they appear in the document.
-5. Respond in valid JSON only."""
+כללים קריטיים:
+1. חלץ אך ורק מידע שכתוב במפורש במסמך. אסור להמציא או לנחש שמות, חברות או עובדות.
+2. אם שם לא מופיע במפורש — כתוב null. לעולם אל תנחש.
+3. שמות חברות וארגונים — העתק בדיוק כפי שמופיע במסמך.
+4. החזר JSON תקין בלבד."""
 
-EXTRACTION_USER_PROMPT = """Analyze this Israeli conflict of interest (ניגוד עניינים) document.
+EXTRACTION_USER_PROMPT = """נתח את מסמך ניגוד העניינים הבא.
 
-STEP 1 — Identify the MAIN PERSON (office holder):
-- Look at the "לכבוד" (addressee) line, "הנדון" (subject) line, or document title
-- Extract their FULL NAME in Hebrew (e.g., "אביר קארה", "יעקב פרי") — NOT just their title
-- Extract their title (שר, סגן שר, מנכ"ל, etc.) and ministry/organization
+שלב 1 — זהה את הנושא המרכזי (בעל התפקיד):
+מסמכים אלה יכולים להיות מכמה סוגים:
+- חוות דעת למניעת ניגוד עניינים — נשלחת אל בעל התפקיד. חפש את שמו בשורת "לכבוד" (למשל: "לכבוד חה"כ אבי דיכטר") או בשורת "הנדון".
+- פראפרזה/סיכום הסדר — השם מופיע בשורת "הנדון" (למשל: "הנדון: פראפרזה אודות ההסדר... של שר המדע... יעקב פרי").
+- הצהרת ניגוד עניינים עצמית — בעל התפקיד הוא הכותב, לא הנמען. חפש את שם החותם בתחתית המסמך.
+- הסדר למניעת ניגוד עניינים — השם מופיע בשורת "אל:" או "הנדון".
 
-STEP 2 — Identify COMPANIES and ORGANIZATIONS mentioned:
-- Extract the EXACT Hebrew name of each company/bank/organization as written in the document
-- For each, note the office holder's relationship: owns (בעלות), manages (ניהול), board_member (דירקטוריון), employed_by (מועסק), related_to (קשור)
+חשוב: חלץ את השם המלא (שם פרטי + שם משפחה), לא רק תואר. למשל: "יעקב פרי" ולא "שר", "אבי דיכטר" ולא "השר".
+אם הכותרת של המסמך מכילה שם — זה בדרך כלל שם בעל התפקיד.
 
-STEP 3 — Identify RESTRICTIONS (הגבלות/מגבלות):
-- What is the office holder restricted FROM doing?
-- Which specific entities (companies/orgs) are they restricted regarding?
-- Is the restriction full (מלאה), partial (חלקית), or cooling_off (תקופת צינון)?
+שלב 2 — זהה חברות, בנקים וארגונים:
+חלץ את השם המדויק של כל חברה/בנק/ארגון כפי שמופיע במסמך.
+לכל חברה, ציין את סוג הקשר לבעל התפקיד:
+- owns = בעלות/החזקת מניות
+- manages = ניהול
+- board_member = חבר דירקטוריון / יו\\"ר דירקטוריון
+- employed_by = מועסק / עובד
+- related_to = קשר אחר (עסקי, משפחתי של קרוב, וכד')
 
-STEP 4 — Identify FAMILY MEMBERS with business connections:
-- Only include family members explicitly mentioned with business ties
+שלב 3 — זהה מגבלות/הגבלות:
+לכל מגבלה, ציין:
+- תיאור ההגבלה (מה בעל התפקיד מנוע מלעשות)
+- שם החברה/גוף שלגביו חלה ההגבלה
+- סוג ההגבלה: full (מלאה), partial (חלקית/מותנית בהתייעצות), cooling_off (תקופת צינון)
 
-Return this JSON structure:
+שלב 4 — בני משפחה עם קשרים עסקיים:
+רק אם מוזכרים במפורש עם קשר עסקי.
+אם השם מושחר/מצונזר (כוכביות ********) — כתוב "מצונזר" בשדה השם.
+
+החזר JSON במבנה הבא:
 
 {{
   "office_holder": {{
-    "name_hebrew": "השם המלא בעברית כפי שמופיע במסמך",
-    "name_english": "English name if mentioned, or null",
-    "title": "תואר: שר / סגן שר / מנכ\\"ל / יו\\"ר / etc.",
-    "position": "תפקיד מדויק כפי שמופיע במסמך",
-    "ministry": "שם המשרד או הגוף"
+    "name_hebrew": "השם המלא כפי שמופיע במסמך",
+    "name_english": null,
+    "title": "שר / סגן שר / מנכ\\"ל / יו\\"ר / עיתונאי / וכד'",
+    "position": "התפקיד המדויק",
+    "ministry": "שם המשרד או הגוף (למשל: משרד החקלאות ופיתוח הכפר)"
   }},
   "restrictions": [
     {{
       "description": "תיאור ההגבלה כפי שמופיע במסמך",
-      "related_entities": ["שם מדויק של חברה/גוף 1"],
-      "related_domains": ["תחום עסקי ספציפי אם צוין"],
+      "related_entities": ["שם מדויק של חברה/גוף"],
+      "related_domains": ["תחום עסקי אם צוין"],
       "restriction_type": "full|partial|cooling_off",
       "end_date": "YYYY-MM-DD or null",
       "details": "פרטים נוספים"
@@ -50,29 +61,33 @@ Return this JSON structure:
   ],
   "companies": [
     {{
-      "name_hebrew": "שם החברה/בנק/גוף בדיוק כפי שמופיע במסמך",
-      "name_english": "English name if available, or null",
-      "company_type": "פרטית|ציבורית|ממשלתית|בנק|חל\\"צ|null",
+      "name_hebrew": "שם החברה/בנק בדיוק כפי שמופיע במסמך",
+      "name_english": null,
+      "company_type": "פרטית|ציבורית|ממשלתית|בנק|חל\\"צ|קבוצה|null",
       "relationship_to_holder": "owns|manages|employed_by|board_member|related_to"
     }}
   ],
   "associations": [
     {{
-      "name_hebrew": "שם העמותה בדיוק כפי שמופיע במסמך",
+      "name_hebrew": "שם העמותה בדיוק כפי שמופיע",
       "relationship_to_holder": "manages|board_member|related_to"
     }}
   ],
   "family_members": [
     {{
-      "name": "שם בן/בת המשפחה",
-      "relation": "בן/בת זוג, ילד, הורה, אח/ות",
-      "related_companies": ["שם חברה"]
+      "name": "שם או מצונזר",
+      "relation": "חבר קרוב / בן זוג / ילד / הורה / אח",
+      "related_companies": ["שם חברה אם רלוונטי"]
     }}
   ],
-  "domains": ["תחום עסקי ספציפי שצוין במסמך"]
+  "domains": ["תחום עסקי ספציפי בלבד — למשל: בנקאות, חקלאות, תקשורת, נדל\\"ן, ביטחון"]
 }}
 
-IMPORTANT: Do NOT include generic domains like "החזקת מניות" or "מכירת מניות". Only include specific business sectors mentioned (e.g., "בנקאות", "טכנולוגיה", "נדל\\"ן", "אנרגיה").
+חשוב:
+- אל תכלול תחומים גנריים כמו "החזקת מניות", "מכירת מניות", "דיונים פרלמנטריים", "החלטות ממשלה". כלול רק מגזרים עסקיים ספציפיים.
+- אם אין חברות במסמך — החזר רשימה ריקה.
+- אם אין מגבלות — החזר רשימה ריקה.
+- אם המסמך קובע שלא נדרשות הגבלות — ציין זאת ב-restrictions עם description מתאים ו-restriction_type: null.
 
-Document text:
+טקסט המסמך:
 {document_text}"""
