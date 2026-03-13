@@ -12,7 +12,7 @@ from ocoi_common.config import settings
 from ocoi_common.models import ImportedDocument
 from ocoi_db.engine import async_session_factory
 from ocoi_db.crud import get_or_create_source, create_document
-from ocoi_db.models import Document
+from ocoi_db.models import Document, IgnoredResource
 
 logger = logging.getLogger("ocoi.api.import")
 
@@ -86,13 +86,13 @@ async def search_ckan(query: str, rows: int = 20, start: int = 0) -> dict:
     datasets = await client.search_datasets(query=query, rows=rows, start=start)
     total = await client.get_total_count(query=query)
 
-    # Check which resources already have documents imported
+    # Check which resources are already imported or ignored
     async with async_session_factory() as session:
         results = []
         for ds in datasets:
             docs = client.extract_documents(ds)
 
-            # Build resource-level info with import status
+            # Build resource-level info with import/ignore status
             resources = []
             already_imported = 0
             for doc in docs:
@@ -100,6 +100,10 @@ async def search_ckan(query: str, rows: int = 20, start: int = 0) -> dict:
                     select(Document).where(Document.file_url == doc.file_url)
                 )
                 is_imported = existing.scalar_one_or_none() is not None
+                ignored = await session.execute(
+                    select(IgnoredResource).where(IgnoredResource.file_url == doc.file_url)
+                )
+                is_ignored = ignored.scalar_one_or_none() is not None
                 if is_imported:
                     already_imported += 1
                 resources.append({
@@ -109,6 +113,7 @@ async def search_ckan(query: str, rows: int = 20, start: int = 0) -> dict:
                     "size": doc.file_size,
                     "resource_id": doc.metadata.get("resource_id"),
                     "already_imported": is_imported,
+                    "ignored": is_ignored,
                 })
 
             results.append({
@@ -222,12 +227,27 @@ async def import_ckan_resources(resource_urls: list[dict]) -> dict:
 
 
 async def _import_single_ckan_doc(session, doc, ds, imported_at: str, stats: dict):
-    """Import a single CKAN document into the database."""
+    """Import a single CKAN document: download PDF, convert to markdown, save to DB."""
     existing = await session.execute(
         select(Document).where(Document.file_url == doc.file_url)
     )
     if existing.scalar_one_or_none():
         stats["skipped"] += 1
+        return
+
+    # Download PDF and convert to markdown FIRST — don't save metadata-only
+    temp_id = hashlib.md5(doc.file_url.encode()).hexdigest()
+    md_text = await _download_and_convert_pdf(
+        file_url=doc.file_url,
+        doc_id=temp_id,
+    )
+    if not md_text:
+        logger.warning(f"CKAN: Skipping '{doc.title}' — PDF download/conversion failed")
+        stats["errors"] += 1
+        if len(stats.get("error_messages", [])) < 20:
+            stats.setdefault("error_messages", []).append(
+                f"PDF download failed: {doc.title}"
+            )
         return
 
     metadata = dict(doc.metadata)
@@ -244,7 +264,7 @@ async def _import_single_ckan_doc(session, doc, ds, imported_at: str, stats: dic
         url=doc.file_url,
         metadata_json=metadata,
     )
-    await create_document(
+    db_doc = await create_document(
         session,
         source_id=src.id,
         title=doc.title,
@@ -252,6 +272,22 @@ async def _import_single_ckan_doc(session, doc, ds, imported_at: str, stats: dic
         file_format=doc.file_format,
         file_size=doc.file_size,
     )
+
+    # Rename temp files to use actual DB id
+    actual_id = str(db_doc.id)
+    temp_pdf = settings.pdf_dir / f"{temp_id}.pdf"
+    temp_md = settings.markdown_dir / f"{temp_id}.md"
+    actual_pdf = settings.pdf_dir / f"{actual_id}.pdf"
+    actual_md = settings.markdown_dir / f"{actual_id}.md"
+    if temp_pdf.exists():
+        temp_pdf.rename(actual_pdf)
+    if temp_md.exists():
+        temp_md.rename(actual_md)
+
+    db_doc.markdown_content = md_text
+    db_doc.conversion_status = "converted"
+    db_doc.file_path = str(actual_pdf)
+
     stats["imported"] += 1
 
 

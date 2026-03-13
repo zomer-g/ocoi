@@ -146,6 +146,17 @@ class Domain(Base):
     created_at: Mapped[datetime | None] = mapped_column(DateTime, default=func.now())
 
 
+class IgnoredResource(Base):
+    """URLs marked as 'ignore' by the admin — skipped during search and import."""
+    __tablename__ = "ignored_resources"
+
+    id: Mapped[str] = mapped_column(DBUUID(), primary_key=True, default=new_uuid)
+    file_url: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    title: Mapped[str | None] = mapped_column(Text)
+    source_type: Mapped[str] = mapped_column(String(20), default="ckan")
+    created_at: Mapped[datetime | None] = mapped_column(DateTime, default=func.now())
+
+
 class EntityRelationship(Base):
     __tablename__ = "entity_relationships"
 

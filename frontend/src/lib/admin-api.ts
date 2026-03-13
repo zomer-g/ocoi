@@ -145,6 +145,7 @@ export interface CkanResource {
   size: number | null;
   resource_id: string | null;
   already_imported: boolean;
+  ignored: boolean;
 }
 
 export interface CkanSearchResult {
@@ -199,6 +200,20 @@ export function importCkanResources(resources: CkanResourceImport[]) {
   return adminFetch<{ status: string; data: ImportStats }>("/import/ckan/import", {
     method: "POST",
     body: JSON.stringify({ resources }),
+  });
+}
+
+// Import — CKAN ignore/unignore
+export function ignoreResources(resources: { url: string; title: string }[]) {
+  return adminFetch("/import/ignore", {
+    method: "POST",
+    body: JSON.stringify({ resources }),
+  });
+}
+export function unignoreResources(urls: string[]) {
+  return adminFetch("/import/unignore", {
+    method: "POST",
+    body: JSON.stringify({ urls }),
   });
 }
 

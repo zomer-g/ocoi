@@ -6,6 +6,7 @@ from ocoi_db.models import (
     Company,
     Association,
     Domain,
+    IgnoredResource,
     EntityRelationship,
     ExtractionRun,
 )
@@ -18,6 +19,7 @@ __all__ = [
     "Company",
     "Association",
     "Domain",
+    "IgnoredResource",
     "EntityRelationship",
     "ExtractionRun",
 ]

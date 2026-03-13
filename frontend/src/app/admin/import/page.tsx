@@ -4,6 +4,8 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import {
   searchCkan,
   importCkanResources,
+  ignoreResources,
+  unignoreResources,
   triggerGovilImport,
   submitGovilRecords,
   fetchGovilFromBrowser,
@@ -96,6 +98,7 @@ function CkanTab() {
   const [importResult, setImportResult] = useState<ImportStats | null>(null);
   const [hideImported, setHideImported] = useState(true);
   const [hideOcr, setHideOcr] = useState(true);
+  const [hideIgnored, setHideIgnored] = useState(true);
   // Shift-click range selection
   const lastClickedRef = useRef<string | null>(null);
 
@@ -132,6 +135,7 @@ function CkanTab() {
   const getVisibleResources = (ds: CkanSearchResult) => {
     return ds.resources.filter((r) => {
       if (hideImported && r.already_imported) return false;
+      if (hideIgnored && r.ignored) return false;
       if (hideOcr && isOcrFile(r.title)) return false;
       return true;
     });
@@ -144,7 +148,7 @@ function CkanTab() {
 
   // Build a flat list of all visible resource keys (for shift-click)
   const allVisibleKeys = filteredResults.flatMap((ds) =>
-    getVisibleResources(ds).filter((r) => !r.already_imported).map((r) => resourceKey(ds.id, r.url))
+    getVisibleResources(ds).filter((r) => !r.already_imported && !r.ignored).map((r) => resourceKey(ds.id, r.url))
   );
 
   const toggleResource = (datasetId: string, url: string, shiftKey = false) => {
@@ -231,6 +235,25 @@ function CkanTab() {
     }
   };
 
+  const doIgnore = async () => {
+    const list: { url: string; title: string }[] = [];
+    for (const ds of results) {
+      for (const res of ds.resources) {
+        if (selected.has(resourceKey(ds.id, res.url))) {
+          list.push({ url: res.url, title: res.title });
+        }
+      }
+    }
+    if (list.length === 0) return;
+    try {
+      await ignoreResources(list);
+      setSelected(new Set());
+      await doSearch(page);
+    } catch {
+      // ignore
+    }
+  };
+
   const totalPages = Math.ceil(total / 20);
   const currentPage = Math.floor(page / 20) + 1;
 
@@ -273,6 +296,15 @@ function CkanTab() {
               <label className="flex items-center gap-2 text-xs text-gray-500 cursor-pointer">
                 <input
                   type="checkbox"
+                  checked={hideIgnored}
+                  onChange={(e) => setHideIgnored(e.target.checked)}
+                  className="rounded"
+                />
+                הסתר פריטים מותעלמים
+              </label>
+              <label className="flex items-center gap-2 text-xs text-gray-500 cursor-pointer">
+                <input
+                  type="checkbox"
                   checked={hideOcr}
                   onChange={(e) => setHideOcr(e.target.checked)}
                   className="rounded"
@@ -294,13 +326,23 @@ function CkanTab() {
                 <span className="text-xs text-primary-700 font-medium">{selectedCount} משאבים נבחרו</span>
               )}
             </div>
-            <button
-              onClick={doImport}
-              disabled={selectedCount === 0 || importing}
-              className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium disabled:opacity-50"
-            >
-              {importing ? "מייבא..." : `ייבא ${selectedCount > 0 ? `(${selectedCount})` : ""}`}
-            </button>
+            <div className="flex items-center gap-2">
+              {selectedCount > 0 && (
+                <button
+                  onClick={doIgnore}
+                  className="px-3 py-2 border border-gray-300 text-gray-600 rounded-lg hover:bg-gray-50 transition-colors text-sm"
+                >
+                  התעלם ({selectedCount})
+                </button>
+              )}
+              <button
+                onClick={doImport}
+                disabled={selectedCount === 0 || importing}
+                className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium disabled:opacity-50"
+              >
+                {importing ? "מייבא..." : `ייבא ${selectedCount > 0 ? `(${selectedCount})` : ""}`}
+              </button>
+            </div>
           </div>
 
           {/* Select all on page */}
@@ -345,10 +387,10 @@ function CkanTab() {
                     <label
                       key={key}
                       className={`flex items-center gap-3 px-4 py-2 border-b border-gray-50 hover:bg-gray-50 transition-colors cursor-pointer ${
-                        res.already_imported ? "opacity-50" : ""
+                        res.already_imported || res.ignored ? "opacity-50" : ""
                       } ${selected.has(key) ? "bg-primary-50/50" : ""}`}
                       onClick={(e) => {
-                        if (!res.already_imported) {
+                        if (!res.already_imported && !res.ignored) {
                           e.preventDefault();
                           toggleResource(ds.id, res.url, e.shiftKey);
                         }
@@ -358,7 +400,7 @@ function CkanTab() {
                         type="checkbox"
                         checked={selected.has(key)}
                         onChange={() => {}}
-                        disabled={res.already_imported}
+                        disabled={res.already_imported || res.ignored}
                         className="rounded shrink-0"
                       />
                       <span className={`text-[10px] px-1.5 py-0.5 rounded border uppercase font-medium shrink-0 ${fmtColor}`}>
@@ -372,6 +414,9 @@ function CkanTab() {
                       )}
                       {res.already_imported && (
                         <span className="text-xs text-yellow-600 shrink-0">יובא</span>
+                      )}
+                      {res.ignored && !res.already_imported && (
+                        <span className="text-xs text-gray-400 shrink-0">מותעלם</span>
                       )}
                     </label>
                   );

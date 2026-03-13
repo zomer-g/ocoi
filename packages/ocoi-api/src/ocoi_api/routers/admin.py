@@ -17,7 +17,7 @@ from ocoi_api.schemas import (
 from ocoi_common.config import settings
 from ocoi_db.models import (
     Person, Company, Association, Domain,
-    EntityRelationship, Document, Source, ExtractionRun,
+    EntityRelationship, Document, Source, ExtractionRun, IgnoredResource,
 )
 
 router = APIRouter(
@@ -473,6 +473,43 @@ async def ckan_import(body: dict):
         raise HTTPException(400, "No dataset_ids or resources provided")
     stats = await import_ckan_datasets(dataset_ids)
     return {"status": "ok", "data": stats}
+
+
+# ── Ignored resources ─────────────────────────────────────────────────────
+
+@router.post("/import/ignore")
+async def ignore_resources(body: dict, db: AsyncSession = Depends(get_db)):
+    """Mark resource URLs as ignored so they don't appear in search results."""
+    resources = body.get("resources", [])
+    if not resources:
+        raise HTTPException(400, "No resources provided")
+    added = 0
+    for res in resources:
+        url = res.get("url", "")
+        if not url:
+            continue
+        existing = await db.execute(select(IgnoredResource).where(IgnoredResource.file_url == url))
+        if existing.scalar_one_or_none():
+            continue
+        db.add(IgnoredResource(
+            file_url=url,
+            title=res.get("title", ""),
+            source_type=res.get("source_type", "ckan"),
+        ))
+        added += 1
+    await db.commit()
+    return {"status": "ok", "added": added}
+
+
+@router.post("/import/unignore")
+async def unignore_resources(body: dict, db: AsyncSession = Depends(get_db)):
+    """Remove URLs from the ignore list."""
+    urls = body.get("urls", [])
+    if not urls:
+        raise HTTPException(400, "No urls provided")
+    await db.execute(delete(IgnoredResource).where(IgnoredResource.file_url.in_(urls)))
+    await db.commit()
+    return {"status": "ok"}
 
 
 # ── Gov.il: automated bulk import ────────────────────────────────────────
