@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
+import { reconvertDocument, reextractDocument } from "@/lib/admin-api";
 
 const TYPE_LABELS: Record<string, string> = {
   person: "אדם",
@@ -96,21 +97,53 @@ export default function DocumentDetailPage() {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<Tab>("content");
   const [showRaw, setShowRaw] = useState<string | null>(null);
+  const [reconverting, setReconverting] = useState(false);
+  const [reextracting, setReextracting] = useState(false);
+  const [actionMsg, setActionMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
 
-  useEffect(() => {
+  const loadDoc = async () => {
     if (!docId) { setLoading(false); return; }
-    (async () => {
-      try {
-        const res = await fetch(`/api/v1/admin/documents/${docId}`, { credentials: "include" });
-        const data = await res.json();
-        setDoc(data.data);
-      } catch {
-        setDoc(null);
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, [docId]);
+    try {
+      const res = await fetch(`/api/v1/admin/documents/${docId}`, { credentials: "include" });
+      const data = await res.json();
+      setDoc(data.data);
+    } catch {
+      setDoc(null);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { loadDoc(); }, [docId]);
+
+  const handleReconvert = async () => {
+    if (!docId) return;
+    setReconverting(true);
+    setActionMsg(null);
+    try {
+      const res = await reconvertDocument(docId);
+      setActionMsg({ type: "ok", text: `הומר מחדש — ${res.data.markdown_length.toLocaleString()} תווים` });
+      await loadDoc();
+    } catch (e) {
+      setActionMsg({ type: "err", text: e instanceof Error ? e.message : "שגיאה בהמרה" });
+    } finally {
+      setReconverting(false);
+    }
+  };
+
+  const handleReextract = async () => {
+    if (!docId) return;
+    setReextracting(true);
+    setActionMsg(null);
+    try {
+      await reextractDocument(docId);
+      setActionMsg({ type: "ok", text: "חילוץ מחדש הופעל — רענן את הדף בעוד מספר שניות" });
+    } catch (e) {
+      setActionMsg({ type: "err", text: e instanceof Error ? e.message : "שגיאה בחילוץ" });
+    } finally {
+      setReextracting(false);
+    }
+  };
 
   if (!docId) return <div className="text-red-500 py-8 text-center">מזהה מסמך חסר</div>;
   if (loading) return <div className="text-gray-400 py-8 text-center">טוען...</div>;
@@ -160,19 +193,44 @@ export default function DocumentDetailPage() {
             </span>
           </div>
         </div>
-        <a
-          href={pdfUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center gap-2 px-4 py-2 bg-primary-700 text-white rounded-lg hover:bg-primary-800 transition-colors text-sm font-medium shrink-0"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-            <polyline points="14 2 14 8 20 8" />
-          </svg>
-          צפה ב-PDF
-        </a>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={handleReconvert}
+            disabled={reconverting}
+            className="px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium disabled:opacity-50"
+            title="המרה מחדש של ה-PDF לטקסט (תיקון RTL)"
+          >
+            {reconverting ? "ממיר..." : "המר מחדש"}
+          </button>
+          <button
+            onClick={handleReextract}
+            disabled={reextracting}
+            className="px-3 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition-colors text-sm font-medium disabled:opacity-50"
+            title="מחיקת ישויות קיימות וחילוץ מחדש באמצעות LLM"
+          >
+            {reextracting ? "מחלץ..." : "חלץ מחדש"}
+          </button>
+          <a
+            href={pdfUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-2 px-3 py-2 bg-primary-700 text-white rounded-lg hover:bg-primary-800 transition-colors text-sm font-medium"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+              <polyline points="14 2 14 8 20 8" />
+            </svg>
+            PDF
+          </a>
+        </div>
       </div>
+
+      {/* Action message */}
+      {actionMsg && (
+        <div className={`mb-4 p-3 rounded-lg text-sm ${actionMsg.type === "ok" ? "bg-green-50 text-green-800" : "bg-red-50 text-red-800"}`}>
+          {actionMsg.text}
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="flex gap-1 mb-4 border-b border-gray-200">

@@ -621,6 +621,66 @@ async def delete_document(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db))
     return {"status": "ok"}
 
 
+@router.post("/documents/{doc_id}/reconvert")
+async def reconvert_document(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """Re-extract markdown from a single document's PDF using RTL-safe pymupdf."""
+    from ocoi_api.services.import_service import convert_pdf_to_markdown
+
+    result = await db.execute(select(Document).where(Document.id == doc_id))
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(404, "Document not found")
+
+    pdf_path = settings.pdf_dir / f"{doc.id}.pdf"
+    if not pdf_path.exists():
+        raise HTTPException(404, "PDF file not found on disk")
+
+    md_text = convert_pdf_to_markdown(pdf_path, str(doc.id))
+    if not md_text:
+        raise HTTPException(500, "המרה נכשלה — לא הופק טקסט מה-PDF")
+
+    doc.markdown_content = md_text
+    doc.conversion_status = "converted"
+    await db.commit()
+
+    return {
+        "status": "ok",
+        "data": {
+            "id": str(doc.id),
+            "markdown_length": len(md_text),
+        },
+    }
+
+
+@router.post("/documents/{doc_id}/reextract")
+async def reextract_document(
+    doc_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete existing extraction data for a document and re-run LLM extraction."""
+    from ocoi_api.services.extraction_service import get_extraction_status, run_extraction
+
+    result = await db.execute(select(Document).where(Document.id == doc_id))
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(404, "Document not found")
+
+    # Delete old extraction data for this document
+    await db.execute(delete(ExtractionRun).where(ExtractionRun.document_id == doc_id))
+    await db.execute(delete(EntityRelationship).where(EntityRelationship.document_id == doc_id))
+    doc.extraction_status = "pending"
+    await db.commit()
+
+    # Trigger extraction for just this document
+    status = get_extraction_status()
+    if status["running"]:
+        raise HTTPException(409, "חילוץ כבר רץ — נסה שוב אחרי שיסתיים")
+
+    background_tasks.add_task(run_extraction, [str(doc_id)])
+    return {"status": "ok", "message": "חילוץ מחדש הופעל"}
+
+
 # ── CKAN: search + selective import ───────────────────────────────────────
 
 @router.get("/import/ckan/search")

@@ -359,6 +359,18 @@ export function reconvertAllDocuments() {
   });
 }
 
+export function reconvertDocument(docId: string) {
+  return adminFetch<{ status: string; data: { id: string; markdown_length: number } }>(`/documents/${docId}/reconvert`, {
+    method: "POST",
+  });
+}
+
+export function reextractDocument(docId: string) {
+  return adminFetch<{ status: string; message: string }>(`/documents/${docId}/reextract`, {
+    method: "POST",
+  });
+}
+
 export function getExtractionPrompt() {
   return adminFetch<{ status: string; data: ExtractionPrompt }>("/extraction/prompt");
 }
