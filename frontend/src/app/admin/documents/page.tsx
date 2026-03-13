@@ -13,6 +13,7 @@ interface DocItem {
   file_url: string | null;
   file_size: number | null;
   has_content: boolean;
+  has_pdf: boolean;
   created_at: string | null;
 }
 
@@ -358,7 +359,7 @@ export default function DocumentsPage() {
                   color: "bg-gray-50 text-gray-600 border-gray-200",
                 };
                 return (
-                  <tr key={item.id} className={`hover:bg-gray-50 group ${!item.has_content ? "opacity-50" : ""}`}>
+                  <tr key={item.id} className={`hover:bg-gray-50 group ${!item.has_content && !item.has_pdf ? "opacity-50" : ""}`}>
                     <td className="px-4 py-3">
                       <div className="text-gray-800 font-medium max-w-md truncate" title={item.title || ""}>
                         {item.title || "—"}
@@ -376,6 +377,10 @@ export default function DocumentsPage() {
                       {item.has_content ? (
                         <span className="text-xs px-2 py-0.5 rounded-full bg-green-50 text-green-700">
                           {item.conversion_status === "converted" ? "PDF + MD" : "יש תוכן"}
+                        </span>
+                      ) : item.has_pdf ? (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-700">
+                          PDF בלבד (צריך OCR)
                         </span>
                       ) : (
                         <span className="text-xs px-2 py-0.5 rounded-full bg-orange-50 text-orange-600">

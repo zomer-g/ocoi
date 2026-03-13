@@ -344,6 +344,7 @@ async def list_documents(
             "file_url": d.file_url,
             "file_size": d.file_size,
             "has_content": bool(d.markdown_content),
+            "has_pdf": bool(d.pdf_content),
             "created_at": d.created_at.isoformat() if d.created_at else None,
         })
     return {"status": "ok", "data": data, "meta": {"total": total, "page": page, "limit": limit}}
