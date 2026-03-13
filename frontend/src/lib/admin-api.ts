@@ -96,6 +96,7 @@ export interface UploadResult {
   title: string;
   file_size: number;
   markdown_length: number;
+  scanned?: boolean;
 }
 
 export function uploadDocument(
