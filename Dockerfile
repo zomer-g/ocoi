@@ -10,6 +10,11 @@ RUN npm run build
 FROM python:3.13-slim AS runtime
 WORKDIR /app
 
+# Install Tesseract OCR with Hebrew language support (for scanned PDFs)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-heb && \
+    rm -rf /var/lib/apt/lists/*
+
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 

@@ -467,27 +467,50 @@ async def serve_document_pdf(doc_id: uuid.UUID, db: AsyncSession = Depends(get_d
 
 
 async def _resolve_pdf_path(doc: Document, httpx_mod, db: AsyncSession | None = None) -> "Path | None":
-    """Get local PDF path for a document. Checks disk, DB, then downloads from URL."""
+    """Get local PDF path for a document. Checks disk, DB, then downloads from URL.
+    Validates %PDF header on ALL sources to catch cached HTML error pages."""
     import logging
     _log = logging.getLogger("ocoi.api")
     from pathlib import Path as _Path
 
-    # Try local file first
+    def _is_valid_pdf(path: "Path") -> bool:
+        """Check if file starts with %PDF header."""
+        try:
+            with open(path, "rb") as f:
+                header = f.read(5)
+            if header.startswith(b"%PDF"):
+                return True
+            _log.warning(
+                f"Invalid cached file for '{doc.title[:50]}': "
+                f"starts={header!r} size={path.stat().st_size} path={path}"
+            )
+            path.unlink(missing_ok=True)  # Delete invalid cached file
+            return False
+        except Exception:
+            return False
+
+    # Try local file first (validate it's actually a PDF)
     pdf_path = settings.pdf_dir / f"{doc.id}.pdf"
     if pdf_path.exists():
-        return pdf_path
+        if _is_valid_pdf(pdf_path):
+            return pdf_path
+        # Invalid file was deleted, continue to other sources
 
     # Try file_path field
     if doc.file_path:
         fp = _Path(doc.file_path)
-        if fp.exists():
+        if fp.exists() and _is_valid_pdf(fp):
             return fp
 
     # Try PDF content from database
     if doc.pdf_content:
-        settings.pdf_dir.mkdir(parents=True, exist_ok=True)
-        pdf_path.write_bytes(doc.pdf_content)
-        return pdf_path
+        if doc.pdf_content[:5].startswith(b"%PDF"):
+            settings.pdf_dir.mkdir(parents=True, exist_ok=True)
+            pdf_path.write_bytes(doc.pdf_content)
+            return pdf_path
+        else:
+            _log.warning(f"DB pdf_content is not a PDF for '{doc.title[:50]}': starts={doc.pdf_content[:20]!r}")
+            doc.pdf_content = None  # Clear invalid DB content
 
     # Download from URL
     url = doc.file_url
@@ -517,7 +540,8 @@ async def _resolve_pdf_path(doc: Document, httpx_mod, db: AsyncSession | None = 
             doc.file_size = len(pdf_bytes)
 
         return pdf_path
-    except Exception:
+    except Exception as exc:
+        _log.warning(f"Download failed for '{doc.title[:50]}': {exc}")
         return None
 
 

@@ -364,7 +364,8 @@ async def _run_extraction(document_ids: list[str] | None):
 
 
 async def _download_and_convert(doc: Document) -> str | None:
-    """Get PDF bytes (from DB, disk, or URL) and extract text using pymupdf (RTL-safe)."""
+    """Get PDF bytes (from DB, disk, or URL) and extract text using pymupdf (RTL-safe).
+    Falls back to Tesseract OCR for scanned PDFs."""
     try:
         import pymupdf
 
@@ -394,12 +395,14 @@ async def _download_and_convert(doc: Document) -> str | None:
 
         try:
             doc_pdf = pymupdf.open(tmp_path)
+
+            # First try: direct text extraction (fast, digital PDFs)
             pages = []
             for i, page in enumerate(doc_pdf):
                 blocks = page.get_text("blocks")
                 paragraphs = []
                 for b in blocks:
-                    if b[6] == 0:  # text block (not image)
+                    if b[6] == 0:
                         text = b[4].strip()
                         if text:
                             text = re.sub(r"[\u200f\u200e]+", " ", text)
@@ -408,8 +411,35 @@ async def _download_and_convert(doc: Document) -> str | None:
                             paragraphs.append(text)
                 if paragraphs:
                     pages.append(f"--- עמוד {i + 1} ---\n" + "\n".join(paragraphs))
-            doc_pdf.close()
+
             result = "\n\n".join(pages)
+
+            # Fallback: OCR for scanned PDFs
+            if not result or len(result.strip()) <= 50:
+                logger.info(f"No embedded text for doc {doc.id}, trying OCR...")
+                pages = []
+                for i, page in enumerate(doc_pdf):
+                    try:
+                        tp = page.get_textpage_ocr(language="heb", dpi=300, full=True)
+                        blocks = page.get_text("blocks", textpage=tp)
+                        paragraphs = []
+                        for b in blocks:
+                            if b[6] == 0:
+                                text = b[4].strip()
+                                if text:
+                                    text = re.sub(r"[\u200f\u200e]+", " ", text)
+                                    text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)
+                                    text = re.sub(r" +", " ", text)
+                                    paragraphs.append(text)
+                        if paragraphs:
+                            pages.append(f"--- עמוד {i + 1} ---\n" + "\n".join(paragraphs))
+                    except Exception as e:
+                        logger.warning(f"OCR failed for page {i}: {e}")
+                result = "\n\n".join(pages)
+                if result and len(result.strip()) > 50:
+                    logger.info(f"OCR succeeded for doc {doc.id}: {len(result)} chars")
+
+            doc_pdf.close()
             return result if result and len(result.strip()) > 50 else None
         finally:
             Path(tmp_path).unlink(missing_ok=True)

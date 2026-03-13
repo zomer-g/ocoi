@@ -509,8 +509,44 @@ async def _process_new_records(client, new_records: list) -> None:
         await session.commit()
 
 
+def _extract_text_blocks(page, re_mod) -> list[str]:
+    """Extract text from a PDF page using block-level extraction (RTL-safe)."""
+    blocks = page.get_text("blocks")
+    paragraphs = []
+    for b in blocks:
+        if b[6] == 0:  # text block (not image)
+            text = b[4].strip()
+            if text:
+                text = re_mod.sub(r"[\u200f\u200e]+", " ", text)
+                text = re_mod.sub(r"(?<!\n)\n(?!\n)", " ", text)
+                text = re_mod.sub(r" +", " ", text)
+                paragraphs.append(text)
+    return paragraphs
+
+
+def _ocr_page(page, re_mod) -> list[str]:
+    """OCR a scanned PDF page using Tesseract (Hebrew)."""
+    try:
+        tp = page.get_textpage_ocr(language="heb", dpi=300, full=True)
+        blocks = page.get_text("blocks", textpage=tp)
+        paragraphs = []
+        for b in blocks:
+            if b[6] == 0:
+                text = b[4].strip()
+                if text:
+                    text = re_mod.sub(r"[\u200f\u200e]+", " ", text)
+                    text = re_mod.sub(r"(?<!\n)\n(?!\n)", " ", text)
+                    text = re_mod.sub(r" +", " ", text)
+                    paragraphs.append(text)
+        return paragraphs
+    except Exception as e:
+        logger.warning(f"OCR failed for page: {e}")
+        return []
+
+
 def convert_pdf_to_markdown(pdf_path: Path, doc_id: str) -> str | None:
-    """Extract text from a local PDF file using pymupdf (RTL-safe). Returns markdown or None."""
+    """Extract text from a local PDF file using pymupdf (RTL-safe).
+    Falls back to Tesseract OCR for scanned PDFs without embedded text."""
     import re
     import pymupdf
 
@@ -524,23 +560,30 @@ def convert_pdf_to_markdown(pdf_path: Path, doc_id: str) -> str | None:
 
     doc = pymupdf.open(str(pdf_path))
     page_count = len(doc)
+
+    # First try: direct text extraction (fast, for digital PDFs)
     pages = []
     for i, page in enumerate(doc):
-        blocks = page.get_text("blocks")
-        paragraphs = []
-        for b in blocks:
-            if b[6] == 0:  # text block (not image)
-                text = b[4].strip()
-                if text:
-                    text = re.sub(r"[\u200f\u200e]+", " ", text)
-                    text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)
-                    text = re.sub(r" +", " ", text)
-                    paragraphs.append(text)
+        paragraphs = _extract_text_blocks(page, re)
         if paragraphs:
             pages.append(f"--- עמוד {i + 1} ---\n" + "\n".join(paragraphs))
-    doc.close()
 
     md_text = "\n\n".join(pages)
+
+    # If no text found, try OCR (for scanned PDFs)
+    if len(md_text.strip()) <= 50:
+        logger.info(f"No embedded text in {doc_id} ({page_count} pages), trying OCR...")
+        pages = []
+        for i, page in enumerate(doc):
+            paragraphs = _ocr_page(page, re)
+            if paragraphs:
+                pages.append(f"--- עמוד {i + 1} ---\n" + "\n".join(paragraphs))
+        md_text = "\n\n".join(pages)
+        if md_text and len(md_text.strip()) > 50:
+            logger.info(f"OCR succeeded for {doc_id}: {len(md_text)} chars")
+
+    doc.close()
+
     if md_text and len(md_text.strip()) > 50:
         md_path = settings.markdown_dir / f"{doc_id}.md"
         md_path.write_text(md_text, encoding="utf-8")
