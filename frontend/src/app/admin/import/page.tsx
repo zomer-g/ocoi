@@ -16,6 +16,7 @@ import {
   updateExtractionPrompt,
   triggerExtraction,
   getExtractionStatus,
+  resetExtraction,
   type CkanSearchResult,
   type CkanResource,
   type CkanResourceImport,
@@ -964,6 +965,9 @@ function ExtractionTab() {
   const [status, setStatus] = useState<ExtractionStatus | null>(null);
   const [triggering, setTriggering] = useState(false);
   const [error, setError] = useState("");
+  const [resetting, setResetting] = useState(false);
+  const [resetResult, setResetResult] = useState<Record<string, number> | null>(null);
+  const [confirmReset, setConfirmReset] = useState(false);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Load prompt on mount
@@ -1076,6 +1080,59 @@ function ExtractionTab() {
               {saving ? "שומר..." : saved ? "נשמר!" : "שמור פרומפט"}
             </button>
           </>
+        )}
+      </div>
+
+      {/* Reset extraction data */}
+      <div className="bg-white rounded-lg border border-red-200 p-6 mb-4">
+        <h2 className="text-lg font-semibold text-red-800 mb-2">איפוס נתוני חילוץ</h2>
+        <p className="text-sm text-gray-600 mb-4">
+          מחיקת כל הישויות, הקשרים, והרצות החילוץ. המסמכים יישארו אך יחזרו לסטטוס &quot;ממתין&quot;.
+        </p>
+        {!confirmReset ? (
+          <button
+            onClick={() => setConfirmReset(true)}
+            disabled={resetting}
+            className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors text-sm font-medium disabled:opacity-50"
+          >
+            מחק הכל והתחל מחדש
+          </button>
+        ) : (
+          <div className="flex items-center gap-3">
+            <span className="text-sm text-red-700 font-medium">בטוח? פעולה זו בלתי הפיכה!</span>
+            <button
+              onClick={async () => {
+                setResetting(true);
+                setResetResult(null);
+                setError("");
+                try {
+                  const res = await resetExtraction();
+                  setResetResult(res.deleted);
+                } catch (e) {
+                  setError(e instanceof Error ? e.message : "שגיאה באיפוס");
+                } finally {
+                  setResetting(false);
+                  setConfirmReset(false);
+                }
+              }}
+              disabled={resetting}
+              className="px-4 py-2 bg-red-700 text-white rounded-lg hover:bg-red-800 transition-colors text-sm font-medium disabled:opacity-50"
+            >
+              {resetting ? "מוחק..." : "כן, מחק הכל"}
+            </button>
+            <button
+              onClick={() => setConfirmReset(false)}
+              className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors text-sm font-medium"
+            >
+              ביטול
+            </button>
+          </div>
+        )}
+        {resetResult && (
+          <div className="mt-3 p-3 bg-green-50 rounded-lg text-sm text-green-800">
+            נמחקו: {resetResult.persons || 0} אנשים, {resetResult.companies || 0} חברות, {resetResult.associations || 0} עמותות, {resetResult.domains || 0} תחומים, {resetResult.relationships || 0} קשרים, {resetResult.extraction_runs || 0} הרצות חילוץ.
+            <br />כל המסמכים חזרו לסטטוס &quot;ממתין לחילוץ&quot;.
+          </div>
         )}
       </div>
 

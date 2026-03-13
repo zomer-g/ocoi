@@ -347,6 +347,12 @@ export interface ExtractionStatus {
   finished_at: string | null;
 }
 
+export function resetExtraction() {
+  return adminFetch<{ status: string; deleted: Record<string, number> }>("/extraction/reset", {
+    method: "POST",
+  });
+}
+
 export function getExtractionPrompt() {
   return adminFetch<{ status: string; data: ExtractionPrompt }>("/extraction/prompt");
 }

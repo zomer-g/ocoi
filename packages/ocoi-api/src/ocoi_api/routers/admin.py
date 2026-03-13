@@ -757,6 +757,50 @@ async def import_reset():
 
 # ── Entity extraction (DeepSeek LLM) ─────────────────────────────────────
 
+@router.post("/extraction/reset")
+async def reset_extraction(db: AsyncSession = Depends(get_db)):
+    """Delete ALL entities, relationships, and extraction runs. Reset document statuses to pending."""
+    # Count before deletion
+    rel_count = (await db.execute(select(func.count()).select_from(EntityRelationship))).scalar()
+    run_count = (await db.execute(select(func.count()).select_from(ExtractionRun))).scalar()
+    person_count = (await db.execute(select(func.count()).select_from(Person))).scalar()
+    company_count = (await db.execute(select(func.count()).select_from(Company))).scalar()
+    assoc_count = (await db.execute(select(func.count()).select_from(Association))).scalar()
+    domain_count = (await db.execute(select(func.count()).select_from(Domain))).scalar()
+
+    # Delete in order (relationships first due to FK constraints)
+    await db.execute(delete(EntityRelationship))
+    await db.execute(delete(ExtractionRun))
+    await db.execute(delete(Person))
+    await db.execute(delete(Company))
+    await db.execute(delete(Association))
+    await db.execute(delete(Domain))
+
+    # Reset all document extraction statuses to pending
+    from sqlalchemy import update
+    await db.execute(
+        update(Document).where(Document.extraction_status != "pending").values(extraction_status="pending")
+    )
+
+    # Also reset saved prompt to defaults
+    from ocoi_api.services.extraction_service import PROMPT_FILE
+    if PROMPT_FILE.exists():
+        PROMPT_FILE.unlink()
+
+    await db.commit()
+    return {
+        "status": "ok",
+        "deleted": {
+            "relationships": rel_count,
+            "extraction_runs": run_count,
+            "persons": person_count,
+            "companies": company_count,
+            "associations": assoc_count,
+            "domains": domain_count,
+        },
+    }
+
+
 @router.get("/extraction/prompt")
 async def get_prompt():
     from ocoi_api.services.extraction_service import get_extraction_prompt
