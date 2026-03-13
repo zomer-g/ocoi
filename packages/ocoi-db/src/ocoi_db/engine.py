@@ -70,6 +70,7 @@ async def run_migrations():
 
     migrations = [
         ("documents", "pdf_content", "ALTER TABLE documents ADD COLUMN pdf_content BYTEA"),
+        ("documents", "content_hash", "ALTER TABLE documents ADD COLUMN content_hash VARCHAR(64)"),
     ]
 
     async with async_engine.begin() as conn:

@@ -76,6 +76,7 @@ class Document(Base):
     file_size: Mapped[int | None] = mapped_column(Integer)
     pdf_content: Mapped[bytes | None] = mapped_column(LargeBinary)
     markdown_content: Mapped[str | None] = mapped_column(Text)
+    content_hash: Mapped[str | None] = mapped_column(String(64), index=True)
     conversion_status: Mapped[str] = mapped_column(String(20), default="pending")
     extraction_status: Mapped[str] = mapped_column(String(20), default="pending")
     created_at: Mapped[datetime | None] = mapped_column(DateTime, default=func.now())

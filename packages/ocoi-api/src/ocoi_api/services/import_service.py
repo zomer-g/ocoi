@@ -14,6 +14,8 @@ from ocoi_db.engine import async_session_factory
 from ocoi_db.crud import get_or_create_source, create_document
 from ocoi_db.models import Document, IgnoredResource
 
+from ocoi_api.services.pdf_converter import convert_pdf
+
 logger = logging.getLogger("ocoi.api.import")
 
 # Module-level state for Gov.il bulk import progress polling
@@ -73,6 +75,45 @@ def _load_cached_govil_records() -> list[dict] | None:
             except Exception as e:
                 logger.warning(f"Failed to load cached records from {path}: {e}")
     return None
+
+
+# ── Shared: download PDF + convert ────────────────────────────────────────
+
+
+async def download_pdf(file_url: str, doc_id: str) -> tuple[bytes | None, str | None]:
+    """Download a PDF from URL. Returns (pdf_bytes, error_message).
+
+    Does NOT convert — just downloads and validates the %PDF header.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as http:
+            resp = await http.get(file_url)
+            resp.raise_for_status()
+            pdf_bytes = resp.content
+
+        if not pdf_bytes[:5].startswith(b"%PDF"):
+            logger.warning(f"Downloaded non-PDF for {doc_id}: starts={pdf_bytes[:40]!r} url={file_url[:100]}")
+            return None, "Downloaded file is not a valid PDF"
+
+        logger.info(f"Downloaded PDF for {doc_id}: {len(pdf_bytes)} bytes")
+        return pdf_bytes, None
+
+    except Exception as e:
+        logger.error(f"PDF download failed for {file_url}: {e}")
+        return None, str(e)
+
+
+def _compute_content_hash(pdf_bytes: bytes) -> str:
+    """Compute SHA-256 hash of PDF bytes for duplicate detection."""
+    return hashlib.sha256(pdf_bytes).hexdigest()
+
+
+async def _check_duplicate_hash(session, content_hash: str) -> Document | None:
+    """Check if a document with this content hash already exists."""
+    result = await session.execute(
+        select(Document).where(Document.content_hash == content_hash)
+    )
+    return result.scalar_one_or_none()
 
 
 # ── CKAN: Search + selective import ──────────────────────────────────────
@@ -227,7 +268,12 @@ async def import_ckan_resources(resource_urls: list[dict]) -> dict:
 
 
 async def _import_single_ckan_doc(session, doc, ds, imported_at: str, stats: dict):
-    """Import a single CKAN document: download PDF, convert to markdown, save to DB."""
+    """Import a single CKAN document: download PDF, convert to markdown, save to DB.
+
+    ALWAYS saves the document record and PDF bytes, even if conversion fails.
+    User can reconvert later with OCR.
+    """
+    # Check duplicate by URL
     existing = await session.execute(
         select(Document).where(Document.file_url == doc.file_url)
     )
@@ -235,21 +281,31 @@ async def _import_single_ckan_doc(session, doc, ds, imported_at: str, stats: dic
         stats["skipped"] += 1
         return
 
-    # Download PDF and convert to markdown FIRST — don't save metadata-only
-    temp_id = hashlib.md5(doc.file_url.encode()).hexdigest()
-    md_text, pdf_bytes = await _download_and_convert_pdf(
-        file_url=doc.file_url,
-        doc_id=temp_id,
-    )
-    if not md_text:
-        logger.warning(f"CKAN: Skipping '{doc.title}' — PDF download/conversion failed")
-        stats["errors"] += 1
-        if len(stats.get("error_messages", [])) < 20:
-            stats.setdefault("error_messages", []).append(
-                f"PDF download failed: {doc.title}"
-            )
-        return
+    # Download PDF
+    pdf_bytes, download_error = await download_pdf(doc.file_url, doc.title[:50])
 
+    # Check duplicate by content hash
+    content_hash = None
+    if pdf_bytes:
+        content_hash = _compute_content_hash(pdf_bytes)
+        dup = await _check_duplicate_hash(session, content_hash)
+        if dup:
+            logger.info(f"Duplicate content hash for '{doc.title[:50]}' — matches doc {dup.id}")
+            stats["skipped"] += 1
+            return
+
+    # Try to convert (without OCR during import — too slow for bulk)
+    md_text = None
+    if pdf_bytes:
+        temp_pdf = settings.pdf_dir / f"tmp_{hashlib.md5(doc.file_url.encode()).hexdigest()}.pdf"
+        settings.pdf_dir.mkdir(parents=True, exist_ok=True)
+        temp_pdf.write_bytes(pdf_bytes)
+        try:
+            md_text = convert_pdf(temp_pdf, doc.title[:50])
+        finally:
+            temp_pdf.unlink(missing_ok=True)
+
+    # ALWAYS create the document record (even if conversion failed)
     metadata = dict(doc.metadata)
     metadata["imported_at"] = imported_at
     if ds:
@@ -273,21 +329,20 @@ async def _import_single_ckan_doc(session, doc, ds, imported_at: str, stats: dic
         file_size=doc.file_size,
     )
 
-    # Rename temp files to use actual DB id
-    actual_id = str(db_doc.id)
-    temp_pdf = settings.pdf_dir / f"{temp_id}.pdf"
-    temp_md = settings.markdown_dir / f"{temp_id}.md"
-    actual_pdf = settings.pdf_dir / f"{actual_id}.pdf"
-    actual_md = settings.markdown_dir / f"{actual_id}.md"
-    if temp_pdf.exists():
-        temp_pdf.rename(actual_pdf)
-    if temp_md.exists():
-        temp_md.rename(actual_md)
+    # Store PDF bytes in DB for persistence on Render
+    if pdf_bytes:
+        db_doc.pdf_content = pdf_bytes
+        db_doc.content_hash = content_hash
+        db_doc.file_size = len(pdf_bytes)
 
-    db_doc.markdown_content = md_text
-    db_doc.pdf_content = pdf_bytes
-    db_doc.conversion_status = "converted"
-    db_doc.file_path = str(actual_pdf)
+    # Store markdown if available
+    if md_text:
+        db_doc.markdown_content = md_text
+        db_doc.conversion_status = "converted"
+    elif pdf_bytes:
+        db_doc.conversion_status = "no_text"  # PDF stored, needs OCR
+    else:
+        db_doc.conversion_status = "failed"  # Download failed
 
     stats["imported"] += 1
 
@@ -378,7 +433,7 @@ async def run_govil_with_records(raw_items: list[dict]) -> dict:
         _import_state["new_to_import"] = len(new_records)
         _import_state["total"] = len(new_records)
 
-        # Import new records (same logic as _import_govil phase 3)
+        # Import new records
         await _process_new_records(client, new_records)
 
     except Exception as e:
@@ -393,7 +448,6 @@ async def run_govil_with_records(raw_items: list[dict]) -> dict:
 
 async def _import_govil(limit: int, url: str = ""):
     """Import documents from Gov.il — fetch metadata, download PDFs, convert to markdown."""
-    import json
     from ocoi_importer.govil_client import GovilClient
 
     client = GovilClient(url=url) if url else GovilClient()
@@ -438,7 +492,10 @@ async def _import_govil(limit: int, url: str = ""):
 
 
 async def _process_new_records(client, new_records: list) -> None:
-    """Download PDFs, convert to markdown, save to DB. Only saves docs with actual content."""
+    """Download PDFs, convert to markdown, save to DB.
+
+    ALWAYS saves documents even if conversion fails — user can reconvert later.
+    """
     imported_at = datetime.now(timezone.utc).isoformat()
     async with async_session_factory() as session:
         for record in new_records:
@@ -448,18 +505,30 @@ async def _process_new_records(client, new_records: list) -> None:
                     _import_state["skipped"] += 1
                     continue
 
-                # Download PDF and convert to markdown FIRST — don't save metadata-only
-                temp_id = hashlib.md5(doc_info.file_url.encode()).hexdigest()
-                md_text, pdf_bytes = await _download_and_convert_pdf(
-                    file_url=doc_info.file_url,
-                    doc_id=temp_id,
-                )
-                if not md_text:
-                    logger.warning(f"Skipping '{doc_info.title}' — PDF download/conversion failed")
-                    _import_state["skipped"] += 1
-                    continue
+                # Download PDF
+                pdf_bytes, download_error = await download_pdf(doc_info.file_url, doc_info.title[:50])
 
-                # PDF content obtained — now save to DB
+                # Check duplicate by content hash
+                content_hash = None
+                if pdf_bytes:
+                    content_hash = _compute_content_hash(pdf_bytes)
+                    dup = await _check_duplicate_hash(session, content_hash)
+                    if dup:
+                        _import_state["skipped"] += 1
+                        continue
+
+                # Try conversion (no OCR during bulk import)
+                md_text = None
+                if pdf_bytes:
+                    temp_pdf = settings.pdf_dir / f"tmp_{hashlib.md5(doc_info.file_url.encode()).hexdigest()}.pdf"
+                    settings.pdf_dir.mkdir(parents=True, exist_ok=True)
+                    temp_pdf.write_bytes(pdf_bytes)
+                    try:
+                        md_text = convert_pdf(temp_pdf, doc_info.title[:50])
+                    finally:
+                        temp_pdf.unlink(missing_ok=True)
+
+                # ALWAYS save to DB
                 metadata = dict(doc_info.metadata)
                 metadata["imported_at"] = imported_at
                 metadata.update(record.raw_data)
@@ -481,21 +550,18 @@ async def _process_new_records(client, new_records: list) -> None:
                     file_size=doc_info.file_size,
                 )
 
-                # Rename temp files to use actual DB id
-                actual_id = str(db_doc.id)
-                temp_pdf = settings.pdf_dir / f"{temp_id}.pdf"
-                temp_md = settings.markdown_dir / f"{temp_id}.md"
-                actual_pdf = settings.pdf_dir / f"{actual_id}.pdf"
-                actual_md = settings.markdown_dir / f"{actual_id}.md"
-                if temp_pdf.exists():
-                    temp_pdf.rename(actual_pdf)
-                if temp_md.exists():
-                    temp_md.rename(actual_md)
+                if pdf_bytes:
+                    db_doc.pdf_content = pdf_bytes
+                    db_doc.content_hash = content_hash
+                    db_doc.file_size = len(pdf_bytes)
 
-                db_doc.markdown_content = md_text
-                db_doc.pdf_content = pdf_bytes
-                db_doc.conversion_status = "converted"
-                db_doc.file_path = str(actual_pdf)
+                if md_text:
+                    db_doc.markdown_content = md_text
+                    db_doc.conversion_status = "converted"
+                elif pdf_bytes:
+                    db_doc.conversion_status = "no_text"
+                else:
+                    db_doc.conversion_status = "failed"
 
                 _import_state["imported"] += 1
 
@@ -507,154 +573,3 @@ async def _process_new_records(client, new_records: list) -> None:
                     )
 
         await session.commit()
-
-
-def _extract_text_blocks(page, re_mod) -> list[str]:
-    """Extract text from a PDF page using block-level extraction (RTL-safe)."""
-    blocks = page.get_text("blocks")
-    paragraphs = []
-    for b in blocks:
-        if b[6] == 0:  # text block (not image)
-            text = b[4].strip()
-            if text:
-                text = re_mod.sub(r"[\u200f\u200e]+", " ", text)
-                text = re_mod.sub(r"(?<!\n)\n(?!\n)", " ", text)
-                text = re_mod.sub(r" +", " ", text)
-                paragraphs.append(text)
-    return paragraphs
-
-
-def _find_tessdata() -> str | None:
-    """Find the tessdata directory containing heb.traineddata."""
-    import os
-    from pathlib import Path as _P
-
-    # Check env var first
-    env_path = os.environ.get("TESSDATA_PREFIX")
-    if env_path and _P(env_path, "heb.traineddata").exists():
-        return env_path
-
-    # Common locations
-    for candidate in [
-        "/usr/share/tesseract-ocr/5/tessdata",
-        "/usr/share/tesseract-ocr/4.00/tessdata",
-        "/usr/share/tessdata",
-        "/usr/local/share/tessdata",
-    ]:
-        if _P(candidate, "heb.traineddata").exists():
-            return candidate
-
-    logger.warning("Could not find heb.traineddata in any standard location!")
-    return None
-
-
-_TESSDATA_DIR = None  # lazy init
-
-
-def _get_tessdata() -> str | None:
-    global _TESSDATA_DIR
-    if _TESSDATA_DIR is None:
-        _TESSDATA_DIR = _find_tessdata() or ""
-        if _TESSDATA_DIR:
-            logger.info(f"Tesseract Hebrew data found at: {_TESSDATA_DIR}")
-        else:
-            logger.warning("No Hebrew tessdata found — OCR will likely fail or use wrong language")
-    return _TESSDATA_DIR or None
-
-
-def _ocr_page(page, re_mod) -> list[str]:
-    """OCR a scanned PDF page using Tesseract (Hebrew)."""
-    try:
-        tessdata = _get_tessdata()
-        ocr_kwargs = {"language": "heb", "dpi": 200, "full": True}
-        if tessdata:
-            ocr_kwargs["tessdata"] = tessdata
-        tp = page.get_textpage_ocr(**ocr_kwargs)
-        blocks = page.get_text("blocks", textpage=tp)
-        paragraphs = []
-        for b in blocks:
-            if b[6] == 0:
-                text = b[4].strip()
-                if text:
-                    text = re_mod.sub(r"[\u200f\u200e]+", " ", text)
-                    text = re_mod.sub(r"(?<!\n)\n(?!\n)", " ", text)
-                    text = re_mod.sub(r" +", " ", text)
-                    paragraphs.append(text)
-        return paragraphs
-    except Exception as e:
-        logger.warning(f"OCR failed for page: {e}")
-        return []
-
-
-def convert_pdf_to_markdown(pdf_path: Path, doc_id: str, *, use_ocr: bool = False) -> str | None:
-    """Extract text from a local PDF file using pymupdf (RTL-safe).
-    If use_ocr=True, falls back to Tesseract OCR for scanned PDFs."""
-    import re
-    import pymupdf
-
-    # Validate it's actually a PDF
-    file_size = pdf_path.stat().st_size
-    with open(pdf_path, "rb") as f:
-        header = f.read(8)
-    if not header.startswith(b"%PDF"):
-        logger.warning(f"Not a valid PDF ({doc_id}): starts with {header[:20]!r}, size={file_size}")
-        return None
-
-    doc = pymupdf.open(str(pdf_path))
-    page_count = len(doc)
-
-    # First try: direct text extraction (fast, for digital PDFs)
-    pages = []
-    for i, page in enumerate(doc):
-        paragraphs = _extract_text_blocks(page, re)
-        if paragraphs:
-            pages.append(f"--- עמוד {i + 1} ---\n" + "\n".join(paragraphs))
-
-    md_text = "\n\n".join(pages)
-
-    # If no text found and OCR enabled, try OCR (for scanned PDFs)
-    if use_ocr and len(md_text.strip()) <= 50:
-        logger.info(f"No embedded text in {doc_id} ({page_count} pages), trying OCR...")
-        pages = []
-        for i, page in enumerate(doc):
-            paragraphs = _ocr_page(page, re)
-            if paragraphs:
-                pages.append(f"--- עמוד {i + 1} ---\n" + "\n".join(paragraphs))
-        md_text = "\n\n".join(pages)
-        if md_text and len(md_text.strip()) > 50:
-            logger.info(f"OCR succeeded for {doc_id}: {len(md_text)} chars")
-    elif len(md_text.strip()) <= 50:
-        logger.info(f"No embedded text in {doc_id} ({page_count} pages), OCR not enabled — skipping")
-
-    doc.close()
-
-    if md_text and len(md_text.strip()) > 50:
-        md_path = settings.markdown_dir / f"{doc_id}.md"
-        md_path.write_text(md_text, encoding="utf-8")
-        logger.info(f"Converted to markdown: {md_path.name} ({len(md_text)} chars)")
-        return md_text
-    else:
-        logger.warning(
-            f"PDF conversion produced empty/short text for {doc_id} "
-            f"(pages={page_count}, file_size={file_size}, text_len={len(md_text)})"
-        )
-        return None
-
-
-async def _download_and_convert_pdf(file_url: str, doc_id: str) -> tuple[str | None, bytes | None]:
-    """Download a PDF from URL, extract text. Returns (markdown, pdf_bytes)."""
-    try:
-        pdf_path = settings.pdf_dir / f"{doc_id}.pdf"
-        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as http:
-            resp = await http.get(file_url)
-            resp.raise_for_status()
-            pdf_bytes = resp.content
-            pdf_path.write_bytes(pdf_bytes)
-
-        logger.info(f"Downloaded PDF: {pdf_path.name} ({len(pdf_bytes)} bytes)")
-        md_text = convert_pdf_to_markdown(pdf_path, doc_id)
-        return md_text, pdf_bytes
-
-    except Exception as e:
-        logger.error(f"PDF download/convert failed for {file_url}: {e}")
-        return None, None

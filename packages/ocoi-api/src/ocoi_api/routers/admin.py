@@ -15,6 +15,7 @@ from ocoi_api.schemas import (
     RelationshipCreate,
 )
 from ocoi_common.config import settings
+from ocoi_db.engine import async_session_factory
 from ocoi_db.models import (
     Person, Company, Association, Domain,
     EntityRelationship, Document, Source, ExtractionRun, IgnoredResource,
@@ -545,54 +546,97 @@ async def _resolve_pdf_path(doc: Document, httpx_mod, db: AsyncSession | None = 
         return None
 
 
+_reconvert_state: dict = {
+    "running": False,
+    "total": 0,
+    "processed": 0,
+    "updated": 0,
+    "skipped": 0,
+    "errors": [],
+}
+
+
+@router.get("/documents/reconvert-all/status")
+async def reconvert_all_status():
+    """Poll reconvert-all progress."""
+    return {"status": "ok", "data": dict(_reconvert_state)}
+
+
 @router.post("/documents/reconvert-all")
-async def reconvert_all_documents(db: AsyncSession = Depends(get_db)):
-    """Re-extract markdown from all PDFs with OCR fallback. Processes one at a time to limit memory."""
+async def reconvert_all_documents(background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
+    """Re-extract markdown from all PDFs with OCR fallback. Runs as background task in batches."""
+    global _reconvert_state
+    if _reconvert_state["running"]:
+        raise HTTPException(409, "Reconvert already running")
+
+    result = await db.execute(select(func.count()).select_from(Document))
+    total = result.scalar() or 0
+
+    _reconvert_state.update({
+        "running": True,
+        "total": total,
+        "processed": 0,
+        "updated": 0,
+        "skipped": 0,
+        "errors": [],
+    })
+
+    background_tasks.add_task(_reconvert_all_bg)
+    return {"status": "ok", "message": f"Reconvert started for {total} documents"}
+
+
+async def _reconvert_all_bg():
+    """Background worker: reconvert all documents in batches of 10."""
     import gc
     import httpx as _httpx
-    from ocoi_api.services.import_service import convert_pdf_to_markdown
+    from ocoi_api.services.pdf_converter import convert_pdf
 
-    result = await db.execute(select(Document))
-    docs = result.scalars().all()
+    global _reconvert_state
+    BATCH_SIZE = 10
 
-    updated = 0
-    skipped = 0
-    errors = []
+    try:
+        async with async_session_factory() as db:
+            result = await db.execute(select(Document))
+            docs = result.scalars().all()
+            _reconvert_state["total"] = len(docs)
 
-    for doc in docs:
-        try:
-            pdf_path = await _resolve_pdf_path(doc, _httpx, db)
-            if not pdf_path:
-                skipped += 1
-                continue
+            for i, doc in enumerate(docs):
+                try:
+                    pdf_path = await _resolve_pdf_path(doc, _httpx, db)
+                    if not pdf_path:
+                        _reconvert_state["skipped"] += 1
+                        _reconvert_state["processed"] += 1
+                        continue
 
-            md_text = convert_pdf_to_markdown(pdf_path, str(doc.id), use_ocr=True)
-            if md_text:
-                doc.markdown_content = md_text
-                doc.conversion_status = "converted"
-                # Store PDF in DB if not already there
-                if not doc.pdf_content and pdf_path.exists():
-                    doc.pdf_content = pdf_path.read_bytes()
-                updated += 1
-            else:
-                skipped += 1
+                    md_text = convert_pdf(pdf_path, str(doc.id), use_ocr=True)
+                    if md_text:
+                        doc.markdown_content = md_text
+                        doc.conversion_status = "converted"
+                        if not doc.pdf_content and pdf_path.exists():
+                            doc.pdf_content = pdf_path.read_bytes()
+                        _reconvert_state["updated"] += 1
+                    else:
+                        doc.conversion_status = "no_text"
+                        _reconvert_state["skipped"] += 1
 
-            # Free memory after each doc (OCR is heavy)
-            gc.collect()
+                    gc.collect()
 
-        except Exception as e:
-            errors.append(f"{doc.title[:40]}: {e}")
-            skipped += 1
+                except Exception as e:
+                    if len(_reconvert_state["errors"]) < 20:
+                        _reconvert_state["errors"].append(f"{doc.title[:40]}: {e}")
+                    _reconvert_state["skipped"] += 1
 
-    await db.commit()
-    return {
-        "status": "ok",
-        "data": {
-            "updated": updated,
-            "skipped": skipped,
-            "errors": errors[:10],
-        },
-    }
+                _reconvert_state["processed"] += 1
+
+                # Commit in batches to avoid long transactions
+                if (i + 1) % BATCH_SIZE == 0:
+                    await db.commit()
+
+            await db.commit()
+    except Exception as e:
+        _reconvert_state["errors"].append(f"Fatal: {e}")
+    finally:
+        _reconvert_state["running"] = False
 
 
 @router.delete("/documents/purge/metadata-only")
@@ -621,21 +665,14 @@ async def upload_document(
     db: AsyncSession = Depends(get_db),
 ):
     """Upload a PDF file, convert to markdown, and create a document record."""
-    from ocoi_api.services.import_service import convert_pdf_to_markdown
+    import hashlib
+    from ocoi_api.services.pdf_converter import convert_pdf
     from ocoi_db.crud import get_or_create_source, create_document
 
     # Validate file type
     filename = file.filename or "document.pdf"
     if not filename.lower().endswith(".pdf"):
         raise HTTPException(400, "רק קבצי PDF נתמכים")
-
-    # Check if a document with this filename already exists
-    title_to_check = filename.rsplit(".", 1)[0]
-    existing = await db.execute(
-        select(Document).where(Document.title == title_to_check)
-    )
-    if existing.scalar_one_or_none():
-        raise HTTPException(409, f"מסמך בשם '{filename}' כבר קיים במערכת")
 
     # Read and validate size (20MB limit)
     content = await file.read()
@@ -644,6 +681,22 @@ async def upload_document(
     if len(content) == 0:
         raise HTTPException(400, "הקובץ ריק")
 
+    # Check for duplicate by content hash
+    content_hash = hashlib.sha256(content).hexdigest()
+    existing_hash = await db.execute(
+        select(Document).where(Document.content_hash == content_hash)
+    )
+    if existing_hash.scalar_one_or_none():
+        raise HTTPException(409, "מסמך זהה כבר קיים במערכת (תוכן זהה)")
+
+    # Check for duplicate by title
+    title_to_check = filename.rsplit(".", 1)[0]
+    existing_title = await db.execute(
+        select(Document).where(Document.title == title_to_check)
+    )
+    if existing_title.scalar_one_or_none():
+        raise HTTPException(409, f"מסמך בשם '{filename}' כבר קיים במערכת")
+
     # Save PDF to temp file
     temp_id = str(uuid.uuid4())
     pdf_path = settings.pdf_dir / f"{temp_id}.pdf"
@@ -651,7 +704,7 @@ async def upload_document(
 
     # Convert to markdown (may be None for scanned/image PDFs)
     try:
-        md_text = convert_pdf_to_markdown(pdf_path, temp_id)
+        md_text = convert_pdf(pdf_path, temp_id)
     except Exception as e:
         import logging
         logging.getLogger("ocoi.api").warning(f"PDF conversion error for {filename}: {e}")
@@ -692,6 +745,7 @@ async def upload_document(
     else:
         db_doc.conversion_status = "no_text"
     db_doc.pdf_content = content
+    db_doc.content_hash = content_hash
     db_doc.file_path = str(actual_pdf)
     await db.commit()
 
@@ -723,7 +777,7 @@ async def delete_document(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db))
 async def reconvert_document(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """Re-extract markdown from a single document's PDF (download if needed) using RTL-safe pymupdf."""
     import httpx as _httpx
-    from ocoi_api.services.import_service import convert_pdf_to_markdown
+    from ocoi_api.services.pdf_converter import convert_pdf
 
     result = await db.execute(select(Document).where(Document.id == doc_id))
     doc = result.scalar_one_or_none()
@@ -734,8 +788,10 @@ async def reconvert_document(doc_id: uuid.UUID, db: AsyncSession = Depends(get_d
     if not pdf_path:
         raise HTTPException(404, "לא ניתן למצוא או להוריד את ה-PDF")
 
-    md_text = convert_pdf_to_markdown(pdf_path, str(doc.id), use_ocr=True)
+    md_text = convert_pdf(pdf_path, str(doc.id), use_ocr=True)
     if not md_text:
+        doc.conversion_status = "no_text"
+        await db.commit()
         raise HTTPException(500, "המרה נכשלה — לא הופק טקסט מה-PDF")
 
     doc.markdown_content = md_text

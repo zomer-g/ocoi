@@ -1,8 +1,6 @@
 """Extraction service — PDF→text→DeepSeek→entities, with configurable prompts."""
 
 import json
-import re
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -364,11 +362,13 @@ async def _run_extraction(document_ids: list[str] | None):
 
 
 async def _download_and_convert(doc: Document) -> str | None:
-    """Get PDF bytes (from DB, disk, or URL) and extract text using pymupdf (RTL-safe).
-    Falls back to Tesseract OCR for scanned PDFs."""
-    try:
-        import pymupdf
+    """Get PDF bytes (from DB, disk, or URL) and convert to markdown.
 
+    Uses the centralized pdf_converter module for all conversion logic.
+    """
+    from ocoi_api.services.pdf_converter import convert_pdf_bytes
+
+    try:
         # Get PDF bytes: DB → disk → download
         pdf_bytes = None
         if doc.pdf_content:
@@ -389,65 +389,7 @@ async def _download_and_convert(doc: Document) -> str | None:
         if not pdf_bytes:
             return None
 
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-            tmp.write(pdf_bytes)
-            tmp_path = tmp.name
-
-        try:
-            doc_pdf = pymupdf.open(tmp_path)
-
-            # First try: direct text extraction (fast, digital PDFs)
-            pages = []
-            for i, page in enumerate(doc_pdf):
-                blocks = page.get_text("blocks")
-                paragraphs = []
-                for b in blocks:
-                    if b[6] == 0:
-                        text = b[4].strip()
-                        if text:
-                            text = re.sub(r"[\u200f\u200e]+", " ", text)
-                            text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)
-                            text = re.sub(r" +", " ", text)
-                            paragraphs.append(text)
-                if paragraphs:
-                    pages.append(f"--- עמוד {i + 1} ---\n" + "\n".join(paragraphs))
-
-            result = "\n\n".join(pages)
-
-            # Fallback: OCR for scanned PDFs
-            if not result or len(result.strip()) <= 50:
-                from ocoi_api.services.import_service import _get_tessdata
-                logger.info(f"No embedded text for doc {doc.id}, trying OCR...")
-                pages = []
-                for i, page in enumerate(doc_pdf):
-                    try:
-                        ocr_kwargs = {"language": "heb", "dpi": 200, "full": True}
-                        tessdata = _get_tessdata()
-                        if tessdata:
-                            ocr_kwargs["tessdata"] = tessdata
-                        tp = page.get_textpage_ocr(**ocr_kwargs)
-                        blocks = page.get_text("blocks", textpage=tp)
-                        paragraphs = []
-                        for b in blocks:
-                            if b[6] == 0:
-                                text = b[4].strip()
-                                if text:
-                                    text = re.sub(r"[\u200f\u200e]+", " ", text)
-                                    text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)
-                                    text = re.sub(r" +", " ", text)
-                                    paragraphs.append(text)
-                        if paragraphs:
-                            pages.append(f"--- עמוד {i + 1} ---\n" + "\n".join(paragraphs))
-                    except Exception as e:
-                        logger.warning(f"OCR failed for page {i}: {e}")
-                result = "\n\n".join(pages)
-                if result and len(result.strip()) > 50:
-                    logger.info(f"OCR succeeded for doc {doc.id}: {len(result)} chars")
-
-            doc_pdf.close()
-            return result if result and len(result.strip()) > 50 else None
-        finally:
-            Path(tmp_path).unlink(missing_ok=True)
+        return convert_pdf_bytes(pdf_bytes, doc.id, use_ocr=True)
 
     except Exception as e:
         logger.error(f"PDF download/convert failed for {doc.file_url}: {e}")
