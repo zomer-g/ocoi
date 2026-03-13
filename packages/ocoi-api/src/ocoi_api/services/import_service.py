@@ -508,17 +508,28 @@ async def _process_new_records(client, new_records: list) -> None:
 
 
 def convert_pdf_to_markdown(pdf_path: Path, doc_id: str) -> str | None:
-    """Extract text from a local PDF file using pdfplumber. Returns markdown or None."""
-    import pdfplumber
+    """Extract text from a local PDF file using pymupdf (RTL-safe). Returns markdown or None."""
+    import re
+    import pymupdf
 
+    doc = pymupdf.open(str(pdf_path))
     pages = []
-    with pdfplumber.open(str(pdf_path)) as pdf:
-        for i, page in enumerate(pdf.pages):
-            text = page.extract_text()
-            if text:
-                pages.append(f"## עמוד {i + 1}\n\n{text}")
+    for i, page in enumerate(doc):
+        blocks = page.get_text("blocks")
+        paragraphs = []
+        for b in blocks:
+            if b[6] == 0:  # text block (not image)
+                text = b[4].strip()
+                if text:
+                    text = re.sub(r"[\u200f\u200e]+", " ", text)
+                    text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)
+                    text = re.sub(r" +", " ", text)
+                    paragraphs.append(text)
+        if paragraphs:
+            pages.append(f"--- עמוד {i + 1} ---\n" + "\n".join(paragraphs))
+    doc.close()
 
-    md_text = "\n\n---\n\n".join(pages)
+    md_text = "\n\n".join(pages)
     if md_text and len(md_text.strip()) > 50:
         md_path = settings.markdown_dir / f"{doc_id}.md"
         md_path.write_text(md_text, encoding="utf-8")

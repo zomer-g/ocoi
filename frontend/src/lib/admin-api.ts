@@ -353,6 +353,12 @@ export function resetExtraction() {
   });
 }
 
+export function reconvertAllDocuments() {
+  return adminFetch<{ status: string; data: { updated: number; skipped: number; errors: string[] } }>("/documents/reconvert-all", {
+    method: "POST",
+  });
+}
+
 export function getExtractionPrompt() {
   return adminFetch<{ status: string; data: ExtractionPrompt }>("/extraction/prompt");
 }

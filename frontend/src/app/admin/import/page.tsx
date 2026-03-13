@@ -17,6 +17,7 @@ import {
   triggerExtraction,
   getExtractionStatus,
   resetExtraction,
+  reconvertAllDocuments,
   type CkanSearchResult,
   type CkanResource,
   type CkanResourceImport,
@@ -968,6 +969,8 @@ function ExtractionTab() {
   const [resetting, setResetting] = useState(false);
   const [resetResult, setResetResult] = useState<Record<string, number> | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
+  const [reconverting, setReconverting] = useState(false);
+  const [reconvertResult, setReconvertResult] = useState<{ updated: number; skipped: number; errors: string[] } | null>(null);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Load prompt on mount
@@ -1080,6 +1083,41 @@ function ExtractionTab() {
               {saving ? "שומר..." : saved ? "נשמר!" : "שמור פרומפט"}
             </button>
           </>
+        )}
+      </div>
+
+      {/* Reconvert all PDFs */}
+      <div className="bg-white rounded-lg border border-blue-200 p-6 mb-4">
+        <h2 className="text-lg font-semibold text-blue-800 mb-2">המרה מחדש של כל המסמכים</h2>
+        <p className="text-sm text-gray-600 mb-4">
+          המרה מחדש של כל קבצי ה-PDF לטקסט באמצעות המרה מתוקנת (תיקון עברית הפוכה RTL).
+        </p>
+        <button
+          onClick={async () => {
+            setReconverting(true);
+            setReconvertResult(null);
+            setError("");
+            try {
+              const res = await reconvertAllDocuments();
+              setReconvertResult(res.data);
+            } catch (e) {
+              setError(e instanceof Error ? e.message : "שגיאה בהמרה מחדש");
+            } finally {
+              setReconverting(false);
+            }
+          }}
+          disabled={reconverting}
+          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium disabled:opacity-50"
+        >
+          {reconverting ? "ממיר..." : "המר מחדש את כל המסמכים"}
+        </button>
+        {reconvertResult && (
+          <div className="mt-3 p-3 bg-green-50 rounded-lg text-sm text-green-800">
+            הומרו: {reconvertResult.updated} מסמכים, דילוג: {reconvertResult.skipped}.
+            {reconvertResult.errors.length > 0 && (
+              <div className="mt-1 text-red-700">שגיאות: {reconvertResult.errors.join(", ")}</div>
+            )}
+          </div>
         )}
       </div>
 

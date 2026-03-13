@@ -456,6 +456,48 @@ async def serve_document_pdf(doc_id: uuid.UUID, db: AsyncSession = Depends(get_d
     return FR(pdf_path, media_type="application/pdf", filename=f"{doc.title or doc.id}.pdf")
 
 
+@router.post("/documents/reconvert-all")
+async def reconvert_all_documents(db: AsyncSession = Depends(get_db)):
+    """Re-extract markdown from all stored PDFs using the RTL-safe pymupdf converter."""
+    from ocoi_api.services.import_service import convert_pdf_to_markdown
+
+    result = await db.execute(select(Document))
+    docs = result.scalars().all()
+
+    updated = 0
+    skipped = 0
+    errors = []
+
+    for doc in docs:
+        # Find PDF file on disk
+        pdf_path = settings.pdf_dir / f"{doc.id}.pdf"
+        if not pdf_path.exists():
+            skipped += 1
+            continue
+
+        try:
+            md_text = convert_pdf_to_markdown(pdf_path, str(doc.id))
+            if md_text:
+                doc.markdown_content = md_text
+                doc.conversion_status = "converted"
+                updated += 1
+            else:
+                skipped += 1
+        except Exception as e:
+            errors.append(f"{doc.title[:40]}: {e}")
+            skipped += 1
+
+    await db.commit()
+    return {
+        "status": "ok",
+        "data": {
+            "updated": updated,
+            "skipped": skipped,
+            "errors": errors[:10],
+        },
+    }
+
+
 @router.delete("/documents/purge/metadata-only")
 async def purge_metadata_only_documents(db: AsyncSession = Depends(get_db)):
     """Delete all documents that have no actual content (no markdown, just URL metadata)."""
