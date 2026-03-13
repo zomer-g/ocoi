@@ -203,31 +203,41 @@ async def run_extraction(document_ids: list[str] | None = None) -> dict:
 
 
 async def _run_extraction(document_ids: list[str] | None):
-    """Internal extraction loop."""
+    """Internal extraction loop — processes docs one at a time with per-doc commits."""
+    import gc
     prompt_config = get_extraction_prompt()
     client = AsyncOpenAI(
         api_key=settings.deepseek_api_key,
         base_url=settings.deepseek_base_url,
     )
 
+    # Phase 1: Get list of document IDs to process
     async with async_session_factory() as session:
-        # Get documents to process
         if document_ids:
             result = await session.execute(
-                select(Document).where(Document.id.in_(document_ids))
+                select(Document.id).where(Document.id.in_(document_ids))
             )
-            docs = list(result.scalars().all())
         else:
             result = await session.execute(
-                select(Document).where(Document.extraction_status == "pending").limit(100)
+                select(Document.id).where(Document.extraction_status == "pending")
             )
-            docs = list(result.scalars().all())
+        doc_ids = [row[0] for row in result.all()]
 
-        _extraction_state["total"] = len(docs)
-        logger.info(f"Starting extraction on {len(docs)} documents")
+    _extraction_state["total"] = len(doc_ids)
+    logger.info(f"Starting extraction on {len(doc_ids)} documents")
 
-        for doc in docs:
-            try:
+    # Phase 2: Process each doc in its own session (commit after each)
+    for doc_id in doc_ids:
+        try:
+            async with async_session_factory() as session:
+                result = await session.execute(
+                    select(Document).where(Document.id == doc_id)
+                )
+                doc = result.scalars().first()
+                if not doc:
+                    _extraction_state["processed"] += 1
+                    continue
+
                 # Step 1: Get text content (convert PDF if needed)
                 text = doc.markdown_content
                 if not text:
@@ -238,6 +248,7 @@ async def _run_extraction(document_ids: list[str] | None):
                     else:
                         doc.conversion_status = "failed"
                         doc.extraction_status = "failed"
+                        await session.commit()
                         _extraction_state["errors"] += 1
                         _extraction_state["error_messages"].append(
                             f"Failed to extract text: {doc.title[:60]}"
@@ -246,7 +257,6 @@ async def _run_extraction(document_ids: list[str] | None):
                         continue
 
                 # Step 2: Send to DeepSeek
-                # Prepend document title as context — it often contains the office holder's name
                 title_prefix = f"כותרת המסמך: {doc.title}\n\n" if doc.title else ""
                 truncated = title_prefix + text[:15000]
                 user_prompt = prompt_config["user_prompt"].format(document_text=truncated)
@@ -336,6 +346,8 @@ async def _run_extraction(document_ids: list[str] | None):
                 )
 
                 doc.extraction_status = "extracted"
+                await session.commit()
+
                 _extraction_state["entities_found"] += entities_count
                 _extraction_state["relationships_found"] += rels_saved
 
@@ -344,18 +356,28 @@ async def _run_extraction(document_ids: list[str] | None):
                     f"{len(extraction.persons)}P, {len(extraction.companies)}C, {rels_saved}R"
                 )
 
-            except Exception as e:
-                logger.error(f"Extraction failed for {doc.title[:50]}: {e}")
-                doc.extraction_status = "failed"
-                _extraction_state["errors"] += 1
-                if len(_extraction_state["error_messages"]) < 20:
-                    _extraction_state["error_messages"].append(
-                        f"{doc.title[:60]}: {e}"
+        except Exception as e:
+            logger.error(f"Extraction failed for doc {doc_id}: {e}", exc_info=True)
+            # Mark as failed in a fresh session
+            try:
+                async with async_session_factory() as err_session:
+                    result = await err_session.execute(
+                        select(Document).where(Document.id == doc_id)
                     )
+                    doc = result.scalars().first()
+                    if doc:
+                        doc.extraction_status = "failed"
+                        await err_session.commit()
+            except Exception:
+                pass
+            _extraction_state["errors"] += 1
+            if len(_extraction_state["error_messages"]) < 20:
+                _extraction_state["error_messages"].append(
+                    f"Doc {doc_id}: {e}"
+                )
 
-            _extraction_state["processed"] += 1
-
-        await session.commit()
+        _extraction_state["processed"] += 1
+        gc.collect()
 
 
 # ── PDF download + text extraction ───────────────────────────────────────
