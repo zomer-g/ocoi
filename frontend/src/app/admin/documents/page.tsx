@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { deleteDocument, purgeMetadataOnlyDocuments, uploadDocument, type UploadResult } from "@/lib/admin-api";
+import Link from "next/link";
 
 interface DocItem {
   id: string;
@@ -55,6 +56,8 @@ export default function DocumentsPage() {
   const [total, setTotal] = useState(0);
   const [statusFilter, setStatusFilter] = useState("");
   const [purging, setPurging] = useState(false);
+  const [search, setSearch] = useState("");
+  const [searchInput, setSearchInput] = useState("");
 
   // Upload state
   const [uploads, setUploads] = useState<UploadItem[]>([]);
@@ -66,6 +69,7 @@ export default function DocumentsPage() {
     try {
       const params = new URLSearchParams({ page: String(page), limit: "20" });
       if (statusFilter) params.set("status", statusFilter);
+      if (search) params.set("search", search);
       const res = await fetch(`/api/v1/admin/documents?${params}`, { credentials: "include" });
       const data = await res.json();
       setItems(data.data || []);
@@ -75,7 +79,7 @@ export default function DocumentsPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, statusFilter]);
+  }, [page, statusFilter, search]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -276,6 +280,23 @@ export default function DocumentsPage() {
         </div>
       )}
 
+      {/* Search */}
+      <div className="flex gap-2 mb-4">
+        <input
+          type="text"
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && (() => { setSearch(searchInput.trim()); setPage(1); })()}
+          placeholder="חיפוש מסמכים לפי שם..."
+          className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-primary-500"
+          dir="rtl"
+        />
+        <button onClick={() => { setSearch(searchInput.trim()); setPage(1); }} className="px-4 py-2 bg-primary-700 text-white rounded-lg hover:bg-primary-800 transition-colors text-sm font-medium">חיפוש</button>
+        {search && (
+          <button onClick={() => { setSearch(""); setSearchInput(""); setPage(1); }} className="px-3 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm text-gray-600">נקה</button>
+        )}
+      </div>
+
       <div className="flex items-center justify-between mb-4">
         <div className="flex gap-2">
           {["", "pending", "converted", "extracted", "failed"].map((s) => (
@@ -344,6 +365,12 @@ export default function DocumentsPage() {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex gap-2 items-center justify-end">
+                        <Link
+                          href={`/admin/documents/detail?id=${item.id}`}
+                          className="text-xs text-primary-600 hover:underline"
+                        >
+                          צפה
+                        </Link>
                         {item.file_url && !item.file_url.startsWith("upload://") && (
                           <a
                             href={item.file_url}
@@ -352,13 +379,6 @@ export default function DocumentsPage() {
                             className="text-xs text-primary-600 hover:text-primary-800 flex items-center gap-1"
                             title="צפייה ב-PDF"
                           >
-                            <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                              <polyline points="14 2 14 8 20 8" />
-                              <line x1="16" y1="13" x2="8" y2="13" />
-                              <line x1="16" y1="17" x2="8" y2="17" />
-                              <polyline points="10 9 9 9 8 9" />
-                            </svg>
                             PDF
                           </a>
                         )}

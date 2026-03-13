@@ -61,11 +61,15 @@ export default function RelationshipsPage() {
   const [total, setTotal] = useState(0);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState(false);
+  const [search, setSearch] = useState("");
+  const [searchInput, setSearchInput] = useState("");
 
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/v1/admin/relationships?page=${page}&limit=20`, { credentials: "include" });
+      const params = new URLSearchParams({ page: String(page), limit: "20" });
+      if (search) params.set("q", search);
+      const res = await fetch(`/api/v1/admin/relationships?${params}`, { credentials: "include" });
       const data = await res.json();
       setItems(data.data || []);
       setTotal(data.meta?.total || 0);
@@ -74,10 +78,12 @@ export default function RelationshipsPage() {
     } finally {
       setLoading(false);
     }
-  }, [page]);
+  }, [page, search]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
   useEffect(() => { setSelected(new Set()); }, [items]);
+
+  const handleSearch = () => { setSearch(searchInput.trim()); setPage(1); };
 
   const toggleSelect = (id: string) => {
     setSelected((prev) => {
@@ -133,6 +139,23 @@ export default function RelationshipsPage() {
         )}
       </div>
 
+      {/* Search */}
+      <div className="flex gap-2 mb-4">
+        <input
+          type="text"
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+          placeholder="חיפוש לפי סוג קשר..."
+          className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-primary-500"
+          dir="rtl"
+        />
+        <button onClick={handleSearch} className="px-4 py-2 bg-primary-700 text-white rounded-lg hover:bg-primary-800 transition-colors text-sm font-medium">חיפוש</button>
+        {search && (
+          <button onClick={() => { setSearch(""); setSearchInput(""); setPage(1); }} className="px-3 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm text-gray-600">נקה</button>
+        )}
+      </div>
+
       {loading ? (
         <div className="text-gray-400 py-8 text-center">טוען...</div>
       ) : (
@@ -183,7 +206,7 @@ export default function RelationshipsPage() {
                     <td className="px-3 py-3 max-w-[200px]">
                       {item.document_id ? (
                         <Link
-                          href={`/admin/documents?doc=${item.document_id}`}
+                          href={`/admin/documents/detail?id=${item.document_id}`}
                           className="text-primary-700 hover:underline truncate block"
                           title={item.document_title}
                         >

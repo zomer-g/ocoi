@@ -214,19 +214,26 @@ async def _resolve_entity_name(db: AsyncSession, entity_type: str, entity_id: st
 async def list_relationships(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
+    q: str = Query("", description="Search by entity name or relationship type"),
     db: AsyncSession = Depends(get_db),
 ):
-    from sqlalchemy.orm import selectinload
-
     offset = (page - 1) * limit
-    total_q = await db.execute(select(func.count()).select_from(EntityRelationship))
-    total = total_q.scalar()
-    result = await db.execute(
-        select(EntityRelationship)
-        .order_by(EntityRelationship.created_at.desc())
-        .offset(offset)
-        .limit(limit)
-    )
+
+    # If search query, filter by relationship_type or resolve entity names
+    base_filter = None
+    if q.strip():
+        search = f"%{q.strip()}%"
+        base_filter = EntityRelationship.relationship_type.ilike(search)
+
+    count_q = select(func.count()).select_from(EntityRelationship)
+    if base_filter is not None:
+        count_q = count_q.where(base_filter)
+    total = (await db.execute(count_q)).scalar()
+
+    query = select(EntityRelationship).order_by(EntityRelationship.created_at.desc())
+    if base_filter is not None:
+        query = query.where(base_filter)
+    result = await db.execute(query.offset(offset).limit(limit))
     rels = result.scalars().all()
 
     # Resolve entity names and document info
@@ -308,16 +315,21 @@ async def list_documents(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     status: str | None = None,
+    q: str = Query("", alias="search", description="Search by title"),
     db: AsyncSession = Depends(get_db),
 ):
     offset = (page - 1) * limit
-    q = select(Document).join(Source, Document.source_id == Source.id)
+    query = select(Document).join(Source, Document.source_id == Source.id)
     count_q = select(func.count()).select_from(Document)
     if status:
-        q = q.where(Document.extraction_status == status)
+        query = query.where(Document.extraction_status == status)
         count_q = count_q.where(Document.extraction_status == status)
+    if q.strip():
+        search_filter = Document.title.ilike(f"%{q.strip()}%")
+        query = query.where(search_filter)
+        count_q = count_q.where(search_filter)
     total = (await db.execute(count_q)).scalar()
-    result = await db.execute(q.order_by(Document.created_at.desc()).offset(offset).limit(limit))
+    result = await db.execute(query.order_by(Document.created_at.desc()).offset(offset).limit(limit))
     docs = result.scalars().all()
     data = []
     for d in docs:
@@ -334,6 +346,87 @@ async def list_documents(
             "created_at": d.created_at.isoformat() if d.created_at else None,
         })
     return {"status": "ok", "data": data, "meta": {"total": total, "page": page, "limit": limit}}
+
+
+@router.get("/documents/{doc_id}")
+async def get_document_detail(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """Full document detail: info, extraction runs, entities and relationships."""
+    result = await db.execute(select(Document).where(Document.id == doc_id))
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(404, "Document not found")
+
+    # Source info
+    source = await db.get(Source, doc.source_id) if doc.source_id else None
+
+    # Extraction runs
+    runs_result = await db.execute(
+        select(ExtractionRun).where(ExtractionRun.document_id == doc_id).order_by(ExtractionRun.created_at.desc())
+    )
+    runs = runs_result.scalars().all()
+    extraction_runs = []
+    for run in runs:
+        extraction_runs.append({
+            "id": str(run.id),
+            "extractor_type": run.extractor_type,
+            "model_version": run.model_version,
+            "entities_found": run.entities_found,
+            "relationships_found": run.relationships_found,
+            "raw_output": run.raw_output_json,
+            "created_at": run.created_at.isoformat() if run.created_at else None,
+        })
+
+    # Relationships for this document
+    rels_result = await db.execute(
+        select(EntityRelationship).where(EntityRelationship.document_id == doc_id)
+    )
+    rels = rels_result.scalars().all()
+    relationships = []
+    for r in rels:
+        source_name = await _resolve_entity_name(db, r.source_entity_type, str(r.source_entity_id))
+        target_name = await _resolve_entity_name(db, r.target_entity_type, str(r.target_entity_id))
+        relationships.append({
+            "id": str(r.id),
+            "entity1_name": source_name,
+            "entity1_type": r.source_entity_type,
+            "entity2_name": target_name,
+            "entity2_type": r.target_entity_type,
+            "relationship_type": r.relationship_type,
+            "details": r.details,
+            "confidence": r.confidence,
+        })
+
+    # Collect unique entities from relationships
+    entity_ids_seen = set()
+    entities = []
+    for r in rels:
+        for etype, eid in [(r.source_entity_type, str(r.source_entity_id)), (r.target_entity_type, str(r.target_entity_id))]:
+            key = f"{etype}:{eid}"
+            if key not in entity_ids_seen:
+                entity_ids_seen.add(key)
+                name = await _resolve_entity_name(db, etype, eid)
+                entities.append({"id": eid, "type": etype, "name": name})
+
+    return {
+        "status": "ok",
+        "data": {
+            "id": str(doc.id),
+            "title": doc.title,
+            "source_type": source.source_type if source else None,
+            "source_title": source.title if source else None,
+            "file_format": doc.file_format,
+            "file_url": doc.file_url,
+            "file_size": doc.file_size,
+            "file_path": doc.file_path,
+            "conversion_status": doc.conversion_status,
+            "extraction_status": doc.extraction_status,
+            "markdown_length": len(doc.markdown_content) if doc.markdown_content else 0,
+            "created_at": doc.created_at.isoformat() if doc.created_at else None,
+            "extraction_runs": extraction_runs,
+            "relationships": relationships,
+            "entities": entities,
+        },
+    }
 
 
 @router.delete("/documents/purge/metadata-only")

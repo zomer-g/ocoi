@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { deletePerson, deleteCompany, deleteAssociation, deleteDomain } from "@/lib/admin-api";
+import Link from "next/link";
 
 type Tab = "persons" | "companies" | "associations" | "domains";
 
@@ -29,11 +30,15 @@ export default function EntitiesPage() {
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
+  const [search, setSearch] = useState("");
+  const [searchInput, setSearchInput] = useState("");
 
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/v1/${tab}?page=${page}&limit=20`, { credentials: "include" });
+      const params = new URLSearchParams({ page: String(page), limit: "20" });
+      if (search) params.set("q", search);
+      const res = await fetch(`/api/v1/${tab}?${params}`, { credentials: "include" });
       const data = await res.json();
       setItems(data.data || []);
       setTotal(data.meta?.total || 0);
@@ -42,11 +47,16 @@ export default function EntitiesPage() {
     } finally {
       setLoading(false);
     }
-  }, [tab, page]);
+  }, [tab, page, search]);
 
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  const handleSearch = () => {
+    setSearch(searchInput.trim());
+    setPage(1);
+  };
 
   const handleDelete = async (id: string) => {
     if (!confirm("למחוק את הרשומה?")) return;
@@ -56,6 +66,7 @@ export default function EntitiesPage() {
   };
 
   const tabConfig = TABS.find((t) => t.key === tab)!;
+  const totalPages = Math.ceil(total / 20);
 
   return (
     <div>
@@ -66,7 +77,7 @@ export default function EntitiesPage() {
         {TABS.map((t) => (
           <button
             key={t.key}
-            onClick={() => { setTab(t.key); setPage(1); }}
+            onClick={() => { setTab(t.key); setPage(1); setSearch(""); setSearchInput(""); }}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
               tab === t.key
                 ? "bg-primary-100 text-primary-700"
@@ -76,6 +87,33 @@ export default function EntitiesPage() {
             {t.label}
           </button>
         ))}
+      </div>
+
+      {/* Search */}
+      <div className="flex gap-2 mb-4">
+        <input
+          type="text"
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+          placeholder="חיפוש לפי שם..."
+          className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-primary-500"
+          dir="rtl"
+        />
+        <button
+          onClick={handleSearch}
+          className="px-4 py-2 bg-primary-700 text-white rounded-lg hover:bg-primary-800 transition-colors text-sm font-medium"
+        >
+          חיפוש
+        </button>
+        {search && (
+          <button
+            onClick={() => { setSearch(""); setSearchInput(""); setPage(1); }}
+            className="px-3 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm text-gray-600"
+          >
+            נקה
+          </button>
+        )}
       </div>
 
       {/* Table */}
@@ -91,6 +129,7 @@ export default function EntitiesPage() {
                     {FIELD_LABELS[f] || f}
                   </th>
                 ))}
+                <th className="text-start px-4 py-3 font-medium text-gray-700">מסמכים</th>
                 <th className="px-4 py-3 w-20"></th>
               </tr>
             </thead>
@@ -100,6 +139,14 @@ export default function EntitiesPage() {
                   {tabConfig.fields.map((f) => (
                     <td key={f} className="px-4 py-3 text-gray-700">{item[f] || "—"}</td>
                   ))}
+                  <td className="px-4 py-3">
+                    <Link
+                      href={`/admin/entities/detail?type=${tab}&id=${item.id}`}
+                      className="text-xs text-primary-600 hover:underline"
+                    >
+                      צפה
+                    </Link>
+                  </td>
                   <td className="px-4 py-3">
                     <button
                       onClick={() => handleDelete(item.id)}
@@ -111,26 +158,25 @@ export default function EntitiesPage() {
                 </tr>
               ))}
               {items.length === 0 && (
-                <tr><td colSpan={tabConfig.fields.length + 1} className="px-4 py-8 text-center text-gray-400">אין רשומות</td></tr>
+                <tr><td colSpan={tabConfig.fields.length + 2} className="px-4 py-8 text-center text-gray-400">אין רשומות</td></tr>
               )}
             </tbody>
           </table>
-          {/* Pagination */}
           {total > 20 && (
             <div className="flex items-center justify-between px-4 py-3 border-t border-gray-200">
-              <span className="text-xs text-gray-500">{total} סה&quot;כ</span>
+              <span className="text-xs text-gray-500">{total} סה&quot;כ · עמוד {page} מתוך {totalPages}</span>
               <div className="flex gap-1">
                 <button
                   disabled={page <= 1}
                   onClick={() => setPage((p) => p - 1)}
-                  className="px-3 py-1 text-xs rounded border disabled:opacity-50"
+                  className="px-3 py-1 text-xs rounded border disabled:opacity-50 hover:bg-gray-50"
                 >
                   הקודם
                 </button>
                 <button
                   disabled={page * 20 >= total}
                   onClick={() => setPage((p) => p + 1)}
-                  className="px-3 py-1 text-xs rounded border disabled:opacity-50"
+                  className="px-3 py-1 text-xs rounded border disabled:opacity-50 hover:bg-gray-50"
                 >
                   הבא
                 </button>

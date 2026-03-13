@@ -2,7 +2,7 @@
 
 import uuid
 from fastapi import APIRouter, Depends, Query, HTTPException
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ocoi_api.dependencies import get_db
@@ -28,12 +28,18 @@ def _entity_to_dict(entity, extra_fields: list[str] | None = None) -> dict:
 async def list_persons(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
+    q: str = Query("", description="Search by name"),
     db: AsyncSession = Depends(get_db),
 ):
     offset = _paginate(page, limit)
-    total_q = await db.execute(select(func.count()).select_from(Person))
-    total = total_q.scalar()
-    result = await db.execute(select(Person).offset(offset).limit(limit).order_by(Person.name_hebrew))
+    base = select(Person)
+    count_base = select(func.count()).select_from(Person)
+    if q.strip():
+        filt = Person.name_hebrew.ilike(f"%{q.strip()}%")
+        base = base.where(filt)
+        count_base = count_base.where(filt)
+    total = (await db.execute(count_base)).scalar()
+    result = await db.execute(base.offset(offset).limit(limit).order_by(Person.name_hebrew))
     persons = result.scalars().all()
     return {
         "status": "ok",
@@ -60,11 +66,10 @@ async def get_person_documents(person_id: uuid.UUID, db: AsyncSession = Depends(
         select(Document.id, Document.title, Document.file_url)
         .join(EntityRelationship, EntityRelationship.document_id == Document.id)
         .where(
-            (EntityRelationship.source_entity_type == "person") &
-            (EntityRelationship.source_entity_id == person_id)
-            |
-            (EntityRelationship.target_entity_type == "person") &
-            (EntityRelationship.target_entity_id == person_id)
+            or_(
+                (EntityRelationship.source_entity_type == "person") & (EntityRelationship.source_entity_id == person_id),
+                (EntityRelationship.target_entity_type == "person") & (EntityRelationship.target_entity_id == person_id),
+            )
         )
         .distinct()
     )
@@ -78,12 +83,18 @@ async def get_person_documents(person_id: uuid.UUID, db: AsyncSession = Depends(
 async def list_companies(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
+    q: str = Query("", description="Search by name"),
     db: AsyncSession = Depends(get_db),
 ):
     offset = _paginate(page, limit)
-    total_q = await db.execute(select(func.count()).select_from(Company))
-    total = total_q.scalar()
-    result = await db.execute(select(Company).offset(offset).limit(limit).order_by(Company.name_hebrew))
+    base = select(Company)
+    count_base = select(func.count()).select_from(Company)
+    if q.strip():
+        filt = Company.name_hebrew.ilike(f"%{q.strip()}%")
+        base = base.where(filt)
+        count_base = count_base.where(filt)
+    total = (await db.execute(count_base)).scalar()
+    result = await db.execute(base.offset(offset).limit(limit).order_by(Company.name_hebrew))
     companies = result.scalars().all()
     return {
         "status": "ok",
@@ -106,18 +117,41 @@ async def get_company(company_id: uuid.UUID, db: AsyncSession = Depends(get_db))
     }
 
 
+@router.get("/companies/{company_id}/documents")
+async def get_company_documents(company_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(Document.id, Document.title, Document.file_url)
+        .join(EntityRelationship, EntityRelationship.document_id == Document.id)
+        .where(
+            or_(
+                (EntityRelationship.source_entity_type == "company") & (EntityRelationship.source_entity_id == company_id),
+                (EntityRelationship.target_entity_type == "company") & (EntityRelationship.target_entity_id == company_id),
+            )
+        )
+        .distinct()
+    )
+    docs = [{"id": str(r.id), "title": r.title, "file_url": r.file_url} for r in result.fetchall()]
+    return {"status": "ok", "data": docs}
+
+
 # --- Associations ---
 
 @router.get("/associations")
 async def list_associations(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
+    q: str = Query("", description="Search by name"),
     db: AsyncSession = Depends(get_db),
 ):
     offset = _paginate(page, limit)
-    total_q = await db.execute(select(func.count()).select_from(Association))
-    total = total_q.scalar()
-    result = await db.execute(select(Association).offset(offset).limit(limit))
+    base = select(Association)
+    count_base = select(func.count()).select_from(Association)
+    if q.strip():
+        filt = Association.name_hebrew.ilike(f"%{q.strip()}%")
+        base = base.where(filt)
+        count_base = count_base.where(filt)
+    total = (await db.execute(count_base)).scalar()
+    result = await db.execute(base.offset(offset).limit(limit))
     assocs = result.scalars().all()
     return {
         "status": "ok",
@@ -135,11 +169,34 @@ async def get_association(assoc_id: uuid.UUID, db: AsyncSession = Depends(get_db
     return {"status": "ok", "data": _entity_to_dict(assoc, ["name_english", "registration_number"])}
 
 
+@router.get("/associations/{assoc_id}/documents")
+async def get_association_documents(assoc_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(Document.id, Document.title, Document.file_url)
+        .join(EntityRelationship, EntityRelationship.document_id == Document.id)
+        .where(
+            or_(
+                (EntityRelationship.source_entity_type == "association") & (EntityRelationship.source_entity_id == assoc_id),
+                (EntityRelationship.target_entity_type == "association") & (EntityRelationship.target_entity_id == assoc_id),
+            )
+        )
+        .distinct()
+    )
+    docs = [{"id": str(r.id), "title": r.title, "file_url": r.file_url} for r in result.fetchall()]
+    return {"status": "ok", "data": docs}
+
+
 # --- Domains ---
 
 @router.get("/domains")
-async def list_domains(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Domain).order_by(Domain.name_hebrew))
+async def list_domains(
+    q: str = Query("", description="Search by name"),
+    db: AsyncSession = Depends(get_db),
+):
+    base = select(Domain).order_by(Domain.name_hebrew)
+    if q.strip():
+        base = base.where(Domain.name_hebrew.ilike(f"%{q.strip()}%"))
+    result = await db.execute(base)
     domains = result.scalars().all()
     return {"status": "ok", "data": [_entity_to_dict(d, ["description"]) for d in domains]}
 
@@ -151,3 +208,20 @@ async def get_domain(domain_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     if not domain:
         raise HTTPException(404, "Domain not found")
     return {"status": "ok", "data": _entity_to_dict(domain, ["description"])}
+
+
+@router.get("/domains/{domain_id}/documents")
+async def get_domain_documents(domain_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(Document.id, Document.title, Document.file_url)
+        .join(EntityRelationship, EntityRelationship.document_id == Document.id)
+        .where(
+            or_(
+                (EntityRelationship.source_entity_type == "domain") & (EntityRelationship.source_entity_id == domain_id),
+                (EntityRelationship.target_entity_type == "domain") & (EntityRelationship.target_entity_id == domain_id),
+            )
+        )
+        .distinct()
+    )
+    docs = [{"id": str(r.id), "title": r.title, "file_url": r.file_url} for r in result.fetchall()]
+    return {"status": "ok", "data": docs}
