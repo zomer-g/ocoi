@@ -416,11 +416,16 @@ async def _download_and_convert(doc: Document) -> str | None:
 
             # Fallback: OCR for scanned PDFs
             if not result or len(result.strip()) <= 50:
+                from ocoi_api.services.import_service import _get_tessdata
                 logger.info(f"No embedded text for doc {doc.id}, trying OCR...")
                 pages = []
                 for i, page in enumerate(doc_pdf):
                     try:
-                        tp = page.get_textpage_ocr(language="heb", dpi=200, full=True)
+                        ocr_kwargs = {"language": "heb", "dpi": 200, "full": True}
+                        tessdata = _get_tessdata()
+                        if tessdata:
+                            ocr_kwargs["tessdata"] = tessdata
+                        tp = page.get_textpage_ocr(**ocr_kwargs)
                         blocks = page.get_text("blocks", textpage=tp)
                         paragraphs = []
                         for b in blocks:

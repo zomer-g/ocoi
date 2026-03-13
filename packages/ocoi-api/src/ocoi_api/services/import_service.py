@@ -524,10 +524,52 @@ def _extract_text_blocks(page, re_mod) -> list[str]:
     return paragraphs
 
 
+def _find_tessdata() -> str | None:
+    """Find the tessdata directory containing heb.traineddata."""
+    import os
+    from pathlib import Path as _P
+
+    # Check env var first
+    env_path = os.environ.get("TESSDATA_PREFIX")
+    if env_path and _P(env_path, "heb.traineddata").exists():
+        return env_path
+
+    # Common locations
+    for candidate in [
+        "/usr/share/tesseract-ocr/5/tessdata",
+        "/usr/share/tesseract-ocr/4.00/tessdata",
+        "/usr/share/tessdata",
+        "/usr/local/share/tessdata",
+    ]:
+        if _P(candidate, "heb.traineddata").exists():
+            return candidate
+
+    logger.warning("Could not find heb.traineddata in any standard location!")
+    return None
+
+
+_TESSDATA_DIR = None  # lazy init
+
+
+def _get_tessdata() -> str | None:
+    global _TESSDATA_DIR
+    if _TESSDATA_DIR is None:
+        _TESSDATA_DIR = _find_tessdata() or ""
+        if _TESSDATA_DIR:
+            logger.info(f"Tesseract Hebrew data found at: {_TESSDATA_DIR}")
+        else:
+            logger.warning("No Hebrew tessdata found — OCR will likely fail or use wrong language")
+    return _TESSDATA_DIR or None
+
+
 def _ocr_page(page, re_mod) -> list[str]:
     """OCR a scanned PDF page using Tesseract (Hebrew)."""
     try:
-        tp = page.get_textpage_ocr(language="heb", dpi=200, full=True)
+        tessdata = _get_tessdata()
+        ocr_kwargs = {"language": "heb", "dpi": 200, "full": True}
+        if tessdata:
+            ocr_kwargs["tessdata"] = tessdata
+        tp = page.get_textpage_ocr(**ocr_kwargs)
         blocks = page.get_text("blocks", textpage=tp)
         paragraphs = []
         for b in blocks:

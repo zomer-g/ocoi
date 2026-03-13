@@ -14,9 +14,12 @@ WORKDIR /app
 RUN apt-get update && \
     apt-get install -y --no-install-recommends tesseract-ocr curl && \
     rm -rf /var/lib/apt/lists/* && \
-    curl -sL -o /usr/share/tesseract-ocr/5/tessdata/heb.traineddata \
-      https://github.com/tesseract-ocr/tessdata_best/raw/main/heb.traineddata
-ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
+    TESS_DIR=$(find /usr/share/tesseract-ocr -name "tessdata" -type d 2>/dev/null | head -1) && \
+    echo "Tessdata directory: $TESS_DIR" && \
+    curl -sL -o "$TESS_DIR/heb.traineddata" \
+      https://github.com/tesseract-ocr/tessdata_best/raw/main/heb.traineddata && \
+    ls -la "$TESS_DIR/heb.traineddata" && \
+    echo "Hebrew tessdata installed successfully"
 
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
