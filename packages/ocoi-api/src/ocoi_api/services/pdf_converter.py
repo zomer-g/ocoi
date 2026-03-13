@@ -161,7 +161,8 @@ def convert_pdf_bytes(pdf_bytes: bytes, doc_id: str, *, use_ocr: bool = False) -
     Writes bytes to a temp file, converts, and cleans up.
     """
     if not pdf_bytes or not pdf_bytes[:5].startswith(b"%PDF"):
-        logger.warning(f"Invalid PDF bytes for {doc_id}: starts={pdf_bytes[:20]!r if pdf_bytes else 'empty'}")
+        starts = repr(pdf_bytes[:20]) if pdf_bytes else "empty"
+        logger.warning(f"Invalid PDF bytes for {doc_id}: starts={starts}")
         return None
 
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
