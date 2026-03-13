@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef } from "react";
-import { deleteDocument, purgeMetadataOnlyDocuments, uploadDocument, type UploadResult } from "@/lib/admin-api";
+import { deleteDocument, purgeMetadataOnlyDocuments, uploadDocument, backfillPdf, type UploadResult } from "@/lib/admin-api";
 import Link from "next/link";
 
 interface DocItem {
@@ -56,6 +56,7 @@ export default function DocumentsPage() {
   const [total, setTotal] = useState(0);
   const [statusFilter, setStatusFilter] = useState("");
   const [purging, setPurging] = useState(false);
+  const [backfilling, setBackfilling] = useState(false);
   const [search, setSearch] = useState("");
   const [searchInput, setSearchInput] = useState("");
 
@@ -169,6 +170,19 @@ export default function DocumentsPage() {
     }
   };
 
+  const handleBackfill = async () => {
+    if (!confirm("להוריד ולשמור PDFs חסרים עבור מסמכים קיימים? (רץ ברקע)")) return;
+    setBackfilling(true);
+    try {
+      const result = await backfillPdf();
+      alert(result.message);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "שגיאה");
+    } finally {
+      setBackfilling(false);
+    }
+  };
+
   const metadataOnlyCount = items.filter((i) => !i.has_content).length;
   const activeUploads = uploads.filter((u) => u.status === "uploading" || u.status === "pending");
 
@@ -176,15 +190,24 @@ export default function DocumentsPage() {
     <div>
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-2xl font-bold text-gray-900">ניהול מסמכים</h1>
-        {metadataOnlyCount > 0 && (
+        <div className="flex gap-2">
           <button
-            onClick={handlePurge}
-            disabled={purging}
-            className="px-3 py-1.5 text-xs font-medium rounded bg-red-50 text-red-700 border border-red-200 hover:bg-red-100 transition-colors disabled:opacity-50"
+            onClick={handleBackfill}
+            disabled={backfilling}
+            className="px-3 py-1.5 text-xs font-medium rounded bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100 transition-colors disabled:opacity-50"
           >
-            {purging ? "מוחק..." : `מחק מסמכים ללא תוכן (${metadataOnlyCount})`}
+            {backfilling ? "מוריד..." : "הורד PDFs חסרים"}
           </button>
-        )}
+          {metadataOnlyCount > 0 && (
+            <button
+              onClick={handlePurge}
+              disabled={purging}
+              className="px-3 py-1.5 text-xs font-medium rounded bg-red-50 text-red-700 border border-red-200 hover:bg-red-100 transition-colors disabled:opacity-50"
+            >
+              {purging ? "מוחק..." : `מחק מסמכים ללא תוכן (${metadataOnlyCount})`}
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Drop zone */}

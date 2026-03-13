@@ -353,6 +353,12 @@ export function resetExtraction() {
   });
 }
 
+export function backfillPdf() {
+  return adminFetch<{ status: string; message: string }>("/documents/backfill-pdf", {
+    method: "POST",
+  });
+}
+
 export function reconvertAllDocuments() {
   return adminFetch<{ status: string; data: { updated: number; skipped: number; errors: string[] } }>("/documents/reconvert-all", {
     method: "POST",
