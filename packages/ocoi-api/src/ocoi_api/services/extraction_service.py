@@ -1,6 +1,7 @@
 """Extraction service — PDF→text→DeepSeek→entities, with configurable prompts."""
 
 import json
+import re
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -363,9 +364,9 @@ async def _run_extraction(document_ids: list[str] | None):
 
 
 async def _download_and_convert(doc: Document) -> str | None:
-    """Download PDF from file_url and extract text using pymupdf4llm."""
+    """Download PDF from file_url and extract text using pymupdf (RTL-safe)."""
     try:
-        import pymupdf4llm
+        import pymupdf
 
         async with httpx.AsyncClient(timeout=60, follow_redirects=True) as http:
             resp = await http.get(doc.file_url)
@@ -376,8 +377,27 @@ async def _download_and_convert(doc: Document) -> str | None:
             tmp_path = tmp.name
 
         try:
-            md_text = pymupdf4llm.to_markdown(tmp_path)
-            return md_text if md_text and len(md_text.strip()) > 50 else None
+            doc_pdf = pymupdf.open(tmp_path)
+            pages = []
+            for i, page in enumerate(doc_pdf):
+                blocks = page.get_text("blocks")
+                paragraphs = []
+                for b in blocks:
+                    if b[6] == 0:  # text block (not image)
+                        text = b[4].strip()
+                        if text:
+                            # Replace RTL/LTR marks with space (they act as word separators)
+                            text = re.sub(r"[\u200f\u200e]+", " ", text)
+                            # Join fragmented lines within a block
+                            text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)
+                            # Clean up multiple spaces
+                            text = re.sub(r" +", " ", text)
+                            paragraphs.append(text)
+                if paragraphs:
+                    pages.append(f"--- עמוד {i + 1} ---\n" + "\n".join(paragraphs))
+            doc_pdf.close()
+            result = "\n\n".join(pages)
+            return result if result and len(result.strip()) > 50 else None
         finally:
             Path(tmp_path).unlink(missing_ok=True)
 

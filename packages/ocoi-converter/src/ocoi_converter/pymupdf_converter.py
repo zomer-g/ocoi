@@ -1,9 +1,10 @@
-"""Fast PDF to Markdown conversion using PyMuPDF4LLM.
+"""Fast PDF to text conversion using PyMuPDF.
 
 Best for digital PDFs with embedded text (not scanned).
-Much faster than Marker (~100x) but no OCR capability.
+Uses pymupdf blocks extraction for correct RTL Hebrew text handling.
 """
 
+import re
 from pathlib import Path
 
 from ocoi_common.logging import setup_logging
@@ -26,10 +27,33 @@ def has_embedded_text(pdf_path: Path) -> bool:
 
 
 def convert_with_pymupdf(pdf_path: Path) -> str:
-    """Convert a digital PDF to Markdown using PyMuPDF4LLM."""
-    import pymupdf4llm
+    """Convert a digital PDF to text using PyMuPDF (RTL-safe).
+
+    Uses block-level extraction instead of pymupdf4llm.to_markdown()
+    to avoid reversed Hebrew text in RTL documents.
+    """
+    import pymupdf
 
     logger.info(f"Converting with PyMuPDF: {pdf_path.name}")
-    markdown = pymupdf4llm.to_markdown(str(pdf_path))
-    logger.info(f"Converted {pdf_path.name}: {len(markdown)} chars")
-    return markdown
+    doc = pymupdf.open(str(pdf_path))
+    pages = []
+    for i, page in enumerate(doc):
+        blocks = page.get_text("blocks")
+        paragraphs = []
+        for b in blocks:
+            if b[6] == 0:  # text block (not image)
+                text = b[4].strip()
+                if text:
+                    # Replace RTL/LTR marks with space (they act as word separators)
+                    text = re.sub(r"[\u200f\u200e]+", " ", text)
+                    # Join fragmented lines within a block
+                    text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)
+                    # Clean up multiple spaces
+                    text = re.sub(r" +", " ", text)
+                    paragraphs.append(text)
+        if paragraphs:
+            pages.append(f"--- עמוד {i + 1} ---\n" + "\n".join(paragraphs))
+    doc.close()
+    result = "\n\n".join(pages)
+    logger.info(f"Converted {pdf_path.name}: {len(result)} chars")
+    return result
