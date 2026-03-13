@@ -468,7 +468,8 @@ async def serve_document_pdf(doc_id: uuid.UUID, db: AsyncSession = Depends(get_d
 
 async def _resolve_pdf_path(doc: Document, httpx_mod, db: AsyncSession | None = None) -> "Path | None":
     """Get local PDF path for a document. Checks disk, DB, then downloads from URL."""
-    import tempfile
+    import logging
+    _log = logging.getLogger("ocoi.api")
     from pathlib import Path as _Path
 
     # Try local file first
@@ -498,6 +499,15 @@ async def _resolve_pdf_path(doc: Document, httpx_mod, db: AsyncSession | None = 
             resp = await http.get(url)
             resp.raise_for_status()
         pdf_bytes = resp.content
+
+        # Validate it's actually a PDF
+        if not pdf_bytes[:5].startswith(b"%PDF"):
+            _log.warning(
+                f"Downloaded non-PDF for '{doc.title[:50]}': "
+                f"starts={pdf_bytes[:40]!r} size={len(pdf_bytes)} url={url[:100]}"
+            )
+            return None
+
         settings.pdf_dir.mkdir(parents=True, exist_ok=True)
         pdf_path.write_bytes(pdf_bytes)
 

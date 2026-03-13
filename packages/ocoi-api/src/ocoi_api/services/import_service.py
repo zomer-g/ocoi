@@ -514,7 +514,16 @@ def convert_pdf_to_markdown(pdf_path: Path, doc_id: str) -> str | None:
     import re
     import pymupdf
 
+    # Validate it's actually a PDF
+    file_size = pdf_path.stat().st_size
+    with open(pdf_path, "rb") as f:
+        header = f.read(8)
+    if not header.startswith(b"%PDF"):
+        logger.warning(f"Not a valid PDF ({doc_id}): starts with {header[:20]!r}, size={file_size}")
+        return None
+
     doc = pymupdf.open(str(pdf_path))
+    page_count = len(doc)
     pages = []
     for i, page in enumerate(doc):
         blocks = page.get_text("blocks")
@@ -538,7 +547,10 @@ def convert_pdf_to_markdown(pdf_path: Path, doc_id: str) -> str | None:
         logger.info(f"Converted to markdown: {md_path.name} ({len(md_text)} chars)")
         return md_text
     else:
-        logger.warning(f"PDF conversion produced empty/short text for {doc_id}")
+        logger.warning(
+            f"PDF conversion produced empty/short text for {doc_id} "
+            f"(pages={page_count}, file_size={file_size}, text_len={len(md_text)})"
+        )
         return None
 
 
