@@ -47,8 +47,8 @@ COPY --from=frontend-build /app/frontend/out /app/static
 # Create data directories
 RUN mkdir -p /app/data /app/data/pdfs /app/data/markdown
 
-# Copy pre-fetched Gov.il records for one-shot import on first boot
-COPY data/govil_records.json /app/data/govil_records.json
+# Gov.il records already imported — no longer copy on every build
+# COPY data/govil_records.json /app/data/govil_records.json
 
 # Environment
 ENV STATIC_DIR=/app/static
