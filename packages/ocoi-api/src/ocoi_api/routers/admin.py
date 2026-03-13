@@ -639,6 +639,78 @@ async def _reconvert_all_bg():
         _reconvert_state["running"] = False
 
 
+@router.post("/documents/backfill-pdf")
+async def backfill_pdf(background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
+    """Download and store PDFs for documents that are missing pdf_content."""
+    result = await db.execute(
+        select(func.count()).select_from(Document).where(
+            Document.pdf_content.is_(None),
+            Document.file_url.isnot(None),
+            ~Document.file_url.startswith("upload://"),
+        )
+    )
+    count = result.scalar() or 0
+    if count == 0:
+        return {"status": "ok", "message": "No documents missing PDF content"}
+
+    background_tasks.add_task(_backfill_pdf_bg)
+    return {"status": "ok", "message": f"Backfilling PDFs for {count} documents"}
+
+
+async def _backfill_pdf_bg():
+    """Download PDFs for documents missing pdf_content, then reconvert."""
+    import hashlib
+    import httpx as _httpx
+    from ocoi_api.services.pdf_converter import convert_pdf_bytes
+
+    async with async_session_factory() as db:
+        result = await db.execute(
+            select(Document).where(
+                Document.pdf_content.is_(None),
+                Document.file_url.isnot(None),
+                ~Document.file_url.startswith("upload://"),
+            )
+        )
+        docs = result.scalars().all()
+        import logging
+        _log = logging.getLogger("ocoi.api.backfill")
+        _log.info(f"Backfilling PDFs for {len(docs)} documents")
+
+        for i, doc in enumerate(docs):
+            try:
+                async with _httpx.AsyncClient(timeout=60, follow_redirects=True) as http:
+                    resp = await http.get(doc.file_url)
+                    resp.raise_for_status()
+                pdf_bytes = resp.content
+
+                if not pdf_bytes or not pdf_bytes[:5].startswith(b"%PDF"):
+                    _log.warning(f"Not a PDF for '{doc.title[:40]}': {pdf_bytes[:20]!r}")
+                    continue
+
+                doc.pdf_content = pdf_bytes
+                doc.file_size = len(pdf_bytes)
+                doc.content_hash = hashlib.sha256(pdf_bytes).hexdigest()
+
+                # Try conversion
+                md_text = convert_pdf_bytes(pdf_bytes, str(doc.id))
+                if md_text:
+                    doc.markdown_content = md_text
+                    doc.conversion_status = "converted"
+                    _log.info(f"Backfilled + converted '{doc.title[:40]}': {len(md_text)} chars")
+                else:
+                    doc.conversion_status = "no_text"
+                    _log.info(f"Backfilled PDF for '{doc.title[:40]}' (no embedded text)")
+
+            except Exception as e:
+                _log.warning(f"Backfill failed for '{doc.title[:40]}': {e}")
+
+            if (i + 1) % 5 == 0:
+                await db.commit()
+
+        await db.commit()
+        _log.info(f"Backfill complete: processed {len(docs)} documents")
+
+
 @router.delete("/documents/purge/metadata-only")
 async def purge_metadata_only_documents(db: AsyncSession = Depends(get_db)):
     """Delete all documents that have no actual content (no markdown, just URL metadata)."""
