@@ -44,7 +44,7 @@ def _extract_blocks(page) -> list[str]:
 def _ocr_blocks(page) -> list[str]:
     """OCR a scanned page using Tesseract Hebrew."""
     try:
-        tp = page.get_textpage_ocr(language="heb", dpi=150, full=True)
+        tp = page.get_textpage_ocr(language="heb", dpi=200, full=True)
         blocks = page.get_text("blocks", textpage=tp)
         paragraphs = []
         for b in blocks:

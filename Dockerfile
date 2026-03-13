@@ -10,10 +10,13 @@ RUN npm run build
 FROM python:3.13-slim AS runtime
 WORKDIR /app
 
-# Install Tesseract OCR with Hebrew language support (for scanned PDFs)
+# Install Tesseract OCR with best-quality Hebrew model (for scanned PDFs)
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-heb && \
-    rm -rf /var/lib/apt/lists/*
+    apt-get install -y --no-install-recommends tesseract-ocr curl && \
+    rm -rf /var/lib/apt/lists/* && \
+    curl -sL -o /usr/share/tesseract-ocr/5/tessdata/heb.traineddata \
+      https://github.com/tesseract-ocr/tessdata_best/raw/main/heb.traineddata
+ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
 
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv

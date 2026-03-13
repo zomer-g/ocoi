@@ -420,7 +420,7 @@ async def _download_and_convert(doc: Document) -> str | None:
                 pages = []
                 for i, page in enumerate(doc_pdf):
                     try:
-                        tp = page.get_textpage_ocr(language="heb", dpi=150, full=True)
+                        tp = page.get_textpage_ocr(language="heb", dpi=200, full=True)
                         blocks = page.get_text("blocks", textpage=tp)
                         paragraphs = []
                         for b in blocks:
