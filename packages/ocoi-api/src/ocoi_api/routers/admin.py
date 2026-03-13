@@ -1,7 +1,10 @@
 """Admin CRUD routes — protected with Google OAuth JWT."""
 
+import logging
 import uuid
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, HTTPException, Request, UploadFile, File
+
+logger = logging.getLogger("ocoi.api.admin")
 from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -768,49 +771,38 @@ async def upload_document(
         select(Document).where(Document.title == title_to_check)
     )
     if existing_title.scalar_one_or_none():
-        raise HTTPException(409, f"מסמך בשם '{filename}' כבר קיים במערכת")
+        raise HTTPException(409, f"מסמך בשם '{title_to_check}' כבר קיים במערכת")
 
-    # Save PDF to temp file
-    temp_id = str(uuid.uuid4())
-    pdf_path = settings.pdf_dir / f"{temp_id}.pdf"
-    pdf_path.write_bytes(content)
-
-    # Convert to markdown (may be None for scanned/image PDFs)
+    # Convert PDF bytes to markdown (no disk needed)
+    from ocoi_api.services.pdf_converter import convert_pdf_bytes
     try:
-        md_text = convert_pdf(pdf_path, temp_id)
+        md_text = convert_pdf_bytes(content, title_to_check)
     except Exception as e:
-        import logging
-        logging.getLogger("ocoi.api").warning(f"PDF conversion error for {filename}: {e}")
+        logger.warning(f"PDF conversion error for {filename}: {e}")
         md_text = None
     is_scanned = not md_text
 
     # Create source and document
-    doc_url = f"upload://{temp_id}"
-    src = await get_or_create_source(
-        db,
-        source_type="upload",
-        source_id=filename,
-        title=filename,
-        url=doc_url,
-    )
-    db_doc = await create_document(
-        db,
-        source_id=src.id,
-        title=filename.rsplit(".", 1)[0],
-        file_url=doc_url,
-        file_format="pdf",
-        file_size=len(content),
-    )
-
-    # Rename temp files to actual DB id
-    actual_id = str(db_doc.id)
-    actual_pdf = settings.pdf_dir / f"{actual_id}.pdf"
-    actual_md = settings.markdown_dir / f"{actual_id}.md"
-    temp_md = settings.markdown_dir / f"{temp_id}.md"
-    if pdf_path.exists() and str(pdf_path) != str(actual_pdf):
-        pdf_path.rename(actual_pdf)
-    if temp_md.exists():
-        temp_md.rename(actual_md)
+    doc_url = f"upload://{uuid.uuid4()}"
+    try:
+        src = await get_or_create_source(
+            db,
+            source_type="upload",
+            source_id=filename,
+            title=filename,
+            url=doc_url,
+        )
+        db_doc = await create_document(
+            db,
+            source_id=src.id,
+            title=title_to_check,
+            file_url=doc_url,
+            file_format="pdf",
+            file_size=len(content),
+        )
+    except Exception as e:
+        logger.error(f"DB error creating document '{filename}': {e}")
+        raise HTTPException(500, f"שגיאה ביצירת מסמך: {e}")
 
     if md_text:
         db_doc.markdown_content = md_text
@@ -819,7 +811,7 @@ async def upload_document(
         db_doc.conversion_status = "no_text"
     db_doc.pdf_content = content
     db_doc.content_hash = content_hash
-    db_doc.file_path = str(actual_pdf)
+    db_doc.file_size = len(content)
     await db.commit()
 
     return {
