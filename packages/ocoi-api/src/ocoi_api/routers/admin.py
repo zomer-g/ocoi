@@ -547,7 +547,8 @@ async def _resolve_pdf_path(doc: Document, httpx_mod, db: AsyncSession | None = 
 
 @router.post("/documents/reconvert-all")
 async def reconvert_all_documents(db: AsyncSession = Depends(get_db)):
-    """Re-extract markdown from all PDFs (download if needed) using RTL-safe pymupdf."""
+    """Re-extract markdown from all PDFs with OCR fallback. Processes one at a time to limit memory."""
+    import gc
     import httpx as _httpx
     from ocoi_api.services.import_service import convert_pdf_to_markdown
 
@@ -565,7 +566,7 @@ async def reconvert_all_documents(db: AsyncSession = Depends(get_db)):
                 skipped += 1
                 continue
 
-            md_text = convert_pdf_to_markdown(pdf_path, str(doc.id))
+            md_text = convert_pdf_to_markdown(pdf_path, str(doc.id), use_ocr=True)
             if md_text:
                 doc.markdown_content = md_text
                 doc.conversion_status = "converted"
@@ -575,6 +576,10 @@ async def reconvert_all_documents(db: AsyncSession = Depends(get_db)):
                 updated += 1
             else:
                 skipped += 1
+
+            # Free memory after each doc (OCR is heavy)
+            gc.collect()
+
         except Exception as e:
             errors.append(f"{doc.title[:40]}: {e}")
             skipped += 1
@@ -729,7 +734,7 @@ async def reconvert_document(doc_id: uuid.UUID, db: AsyncSession = Depends(get_d
     if not pdf_path:
         raise HTTPException(404, "לא ניתן למצוא או להוריד את ה-PDF")
 
-    md_text = convert_pdf_to_markdown(pdf_path, str(doc.id))
+    md_text = convert_pdf_to_markdown(pdf_path, str(doc.id), use_ocr=True)
     if not md_text:
         raise HTTPException(500, "המרה נכשלה — לא הופק טקסט מה-PDF")
 

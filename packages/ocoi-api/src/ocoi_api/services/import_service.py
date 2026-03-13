@@ -527,7 +527,7 @@ def _extract_text_blocks(page, re_mod) -> list[str]:
 def _ocr_page(page, re_mod) -> list[str]:
     """OCR a scanned PDF page using Tesseract (Hebrew)."""
     try:
-        tp = page.get_textpage_ocr(language="heb", dpi=300, full=True)
+        tp = page.get_textpage_ocr(language="heb", dpi=150, full=True)
         blocks = page.get_text("blocks", textpage=tp)
         paragraphs = []
         for b in blocks:
@@ -544,9 +544,9 @@ def _ocr_page(page, re_mod) -> list[str]:
         return []
 
 
-def convert_pdf_to_markdown(pdf_path: Path, doc_id: str) -> str | None:
+def convert_pdf_to_markdown(pdf_path: Path, doc_id: str, *, use_ocr: bool = False) -> str | None:
     """Extract text from a local PDF file using pymupdf (RTL-safe).
-    Falls back to Tesseract OCR for scanned PDFs without embedded text."""
+    If use_ocr=True, falls back to Tesseract OCR for scanned PDFs."""
     import re
     import pymupdf
 
@@ -570,8 +570,8 @@ def convert_pdf_to_markdown(pdf_path: Path, doc_id: str) -> str | None:
 
     md_text = "\n\n".join(pages)
 
-    # If no text found, try OCR (for scanned PDFs)
-    if len(md_text.strip()) <= 50:
+    # If no text found and OCR enabled, try OCR (for scanned PDFs)
+    if use_ocr and len(md_text.strip()) <= 50:
         logger.info(f"No embedded text in {doc_id} ({page_count} pages), trying OCR...")
         pages = []
         for i, page in enumerate(doc):
@@ -581,6 +581,8 @@ def convert_pdf_to_markdown(pdf_path: Path, doc_id: str) -> str | None:
         md_text = "\n\n".join(pages)
         if md_text and len(md_text.strip()) > 50:
             logger.info(f"OCR succeeded for {doc_id}: {len(md_text)} chars")
+    elif len(md_text.strip()) <= 50:
+        logger.info(f"No embedded text in {doc_id} ({page_count} pages), OCR not enabled — skipping")
 
     doc.close()
 
