@@ -742,7 +742,7 @@ async def upload_document(
 ):
     """Upload a PDF file, convert to markdown, and create a document record."""
     import hashlib
-    from ocoi_api.services.pdf_converter import convert_pdf
+    import traceback
     from ocoi_db.crud import get_or_create_source, create_document
 
     # Validate file type
@@ -812,7 +812,13 @@ async def upload_document(
     db_doc.pdf_content = content
     db_doc.content_hash = content_hash
     db_doc.file_size = len(content)
-    await db.commit()
+
+    try:
+        await db.commit()
+    except Exception as e:
+        logger.error(f"DB commit failed for '{filename}' ({len(content)} bytes): {e}", exc_info=True)
+        await db.rollback()
+        raise HTTPException(500, f"שגיאה בשמירת מסמך: {type(e).__name__}: {e}")
 
     return {
         "status": "ok",
