@@ -391,7 +391,12 @@ async def upload_document(
     pdf_path.write_bytes(content)
 
     # Convert to markdown (may be None for scanned/image PDFs)
-    md_text = convert_pdf_to_markdown(pdf_path, temp_id)
+    try:
+        md_text = convert_pdf_to_markdown(pdf_path, temp_id)
+    except Exception as e:
+        import logging
+        logging.getLogger("ocoi.api").warning(f"PDF conversion error for {filename}: {e}")
+        md_text = None
     is_scanned = not md_text
 
     # Create source and document
