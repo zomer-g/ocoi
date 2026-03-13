@@ -742,49 +742,51 @@ async def upload_document(
 ):
     """Upload a PDF file, convert to markdown, and create a document record."""
     import hashlib
-    import traceback
+    import traceback as tb
     from ocoi_db.crud import get_or_create_source, create_document
 
-    # Validate file type
-    filename = file.filename or "document.pdf"
-    if not filename.lower().endswith(".pdf"):
-        raise HTTPException(400, "רק קבצי PDF נתמכים")
-
-    # Read and validate size (20MB limit)
-    content = await file.read()
-    if len(content) > 20 * 1024 * 1024:
-        raise HTTPException(400, "הקובץ גדול מדי (מקסימום 20MB)")
-    if len(content) == 0:
-        raise HTTPException(400, "הקובץ ריק")
-
-    # Check for duplicate by content hash
-    content_hash = hashlib.sha256(content).hexdigest()
-    existing_hash = await db.execute(
-        select(Document).where(Document.content_hash == content_hash)
-    )
-    if existing_hash.scalar_one_or_none():
-        raise HTTPException(409, "מסמך זהה כבר קיים במערכת (תוכן זהה)")
-
-    # Check for duplicate by title
-    title_to_check = filename.rsplit(".", 1)[0]
-    existing_title = await db.execute(
-        select(Document).where(Document.title == title_to_check)
-    )
-    if existing_title.scalar_one_or_none():
-        raise HTTPException(409, f"מסמך בשם '{title_to_check}' כבר קיים במערכת")
-
-    # Convert PDF bytes to markdown (no disk needed)
-    from ocoi_api.services.pdf_converter import convert_pdf_bytes
     try:
-        md_text = convert_pdf_bytes(content, title_to_check)
-    except Exception as e:
-        logger.warning(f"PDF conversion error for {filename}: {e}")
-        md_text = None
-    is_scanned = not md_text
+        # Validate file type
+        filename = file.filename or "document.pdf"
+        if not filename.lower().endswith(".pdf"):
+            raise HTTPException(400, "רק קבצי PDF נתמכים")
 
-    # Create source and document
-    doc_url = f"upload://{uuid.uuid4()}"
-    try:
+        # Read and validate size (20MB limit)
+        content = await file.read()
+        logger.info(f"Upload received: {filename}, {len(content)} bytes")
+        if len(content) > 20 * 1024 * 1024:
+            raise HTTPException(400, "הקובץ גדול מדי (מקסימום 20MB)")
+        if len(content) == 0:
+            raise HTTPException(400, "הקובץ ריק")
+
+        # Check for duplicate by content hash
+        content_hash = hashlib.sha256(content).hexdigest()
+        existing_hash = await db.execute(
+            select(Document).where(Document.content_hash == content_hash)
+        )
+        if existing_hash.scalar_one_or_none():
+            raise HTTPException(409, "מסמך זהה כבר קיים במערכת (תוכן זהה)")
+
+        # Check for duplicate by title
+        title_to_check = filename.rsplit(".", 1)[0]
+        existing_title = await db.execute(
+            select(Document).where(Document.title == title_to_check)
+        )
+        if existing_title.scalar_one_or_none():
+            raise HTTPException(409, f"מסמך בשם '{title_to_check}' כבר קיים במערכת")
+
+        # Convert PDF bytes to markdown (no disk needed)
+        from ocoi_api.services.pdf_converter import convert_pdf_bytes
+        try:
+            md_text = convert_pdf_bytes(content, title_to_check)
+        except Exception as e:
+            logger.warning(f"PDF conversion error for {filename}: {e}")
+            md_text = None
+        is_scanned = not md_text
+        logger.info(f"Upload conversion: {filename} -> {'scanned' if is_scanned else f'{len(md_text)} chars'}")
+
+        # Create source and document
+        doc_url = f"upload://{uuid.uuid4()}"
         src = await get_or_create_source(
             db,
             source_type="upload",
@@ -800,36 +802,36 @@ async def upload_document(
             file_format="pdf",
             file_size=len(content),
         )
-    except Exception as e:
-        logger.error(f"DB error creating document '{filename}': {e}")
-        raise HTTPException(500, f"שגיאה ביצירת מסמך: {e}")
+        logger.info(f"Upload DB record created: {db_doc.id}")
 
-    if md_text:
-        db_doc.markdown_content = md_text
-        db_doc.conversion_status = "converted"
-    else:
-        db_doc.conversion_status = "no_text"
-    db_doc.pdf_content = content
-    db_doc.content_hash = content_hash
-    db_doc.file_size = len(content)
+        if md_text:
+            db_doc.markdown_content = md_text
+            db_doc.conversion_status = "converted"
+        else:
+            db_doc.conversion_status = "no_text"
+        db_doc.pdf_content = content
+        db_doc.content_hash = content_hash
+        db_doc.file_size = len(content)
 
-    try:
         await db.commit()
-    except Exception as e:
-        logger.error(f"DB commit failed for '{filename}' ({len(content)} bytes): {e}", exc_info=True)
-        await db.rollback()
-        raise HTTPException(500, f"שגיאה בשמירת מסמך: {type(e).__name__}: {e}")
+        logger.info(f"Upload committed: {db_doc.id}")
 
-    return {
-        "status": "ok",
-        "data": {
-            "id": str(db_doc.id),
-            "title": db_doc.title,
-            "file_size": len(content),
-            "markdown_length": len(md_text) if md_text else 0,
-            "scanned": is_scanned,
-        },
-    }
+        return {
+            "status": "ok",
+            "data": {
+                "id": str(db_doc.id),
+                "title": db_doc.title,
+                "file_size": len(content),
+                "markdown_length": len(md_text) if md_text else 0,
+                "scanned": is_scanned,
+            },
+        }
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions as-is (400, 409, etc.)
+    except Exception as e:
+        error_details = tb.format_exc()
+        logger.error(f"Upload failed for '{file.filename}': {error_details}")
+        raise HTTPException(500, detail=f"שגיאה בהעלאת מסמך: {type(e).__name__}: {e}")
 
 
 @router.delete("/documents/{doc_id}")

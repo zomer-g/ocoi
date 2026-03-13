@@ -122,46 +122,6 @@ def create_app() -> FastAPI:
     async def health():
         return {"status": "ok"}
 
-    @app.post("/api/debug/test-upload")
-    async def debug_test_upload():
-        """Temporary diagnostic: test PDF conversion pipeline on Render."""
-        import hashlib
-        import traceback as tb
-        results = {}
-        try:
-            # Test 1: import pdf_converter
-            from ocoi_api.services.pdf_converter import convert_pdf_bytes
-            results["import"] = "ok"
-            # Test 2: convert a tiny fake PDF
-            fake_pdf = b"%PDF-1.0\n1 0 obj<</Pages 2 0 R>>endobj 2 0 obj<</Kids[]>>endobj\nxref\n0 3\ntrailer<</Root 1 0 R>>\nstartxref\n9\n%%EOF"
-            try:
-                md = convert_pdf_bytes(fake_pdf, "test")
-                results["convert"] = f"ok, md={'yes' if md else 'no'}"
-            except Exception as e:
-                results["convert"] = f"error: {e}"
-            # Test 3: DB write test
-            from ocoi_db.engine import async_session_factory
-            from ocoi_db.models import Document
-            from sqlalchemy import select, text
-            async with async_session_factory() as session:
-                # Check pdf_content column exists
-                r = await session.execute(text(
-                    "SELECT column_name FROM information_schema.columns "
-                    "WHERE table_name='documents' AND column_name='pdf_content'"
-                ))
-                col = r.scalar_one_or_none()
-                results["pdf_content_column"] = "exists" if col else "MISSING"
-                # Check content_hash column
-                r2 = await session.execute(text(
-                    "SELECT column_name FROM information_schema.columns "
-                    "WHERE table_name='documents' AND column_name='content_hash'"
-                ))
-                col2 = r2.scalar_one_or_none()
-                results["content_hash_column"] = "exists" if col2 else "MISSING"
-        except Exception as e:
-            results["error"] = f"{type(e).__name__}: {e}\n{tb.format_exc()}"
-        return results
-
     # ── Static frontend (SPA fallback) ───────────────────────────────────
     static_dir = _get_static_dir()
     if static_dir:
