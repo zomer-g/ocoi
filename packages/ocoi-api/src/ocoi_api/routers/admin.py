@@ -456,9 +456,41 @@ async def serve_document_pdf(doc_id: uuid.UUID, db: AsyncSession = Depends(get_d
     return FR(pdf_path, media_type="application/pdf", filename=f"{doc.title or doc.id}.pdf")
 
 
+async def _resolve_pdf_path(doc: Document, httpx_mod) -> "Path | None":
+    """Get local PDF path for a document, downloading from URL if not on disk."""
+    from pathlib import Path as _Path
+
+    # Try local file first
+    pdf_path = settings.pdf_dir / f"{doc.id}.pdf"
+    if pdf_path.exists():
+        return pdf_path
+
+    # Try file_path field
+    if doc.file_path:
+        fp = _Path(doc.file_path)
+        if fp.exists():
+            return fp
+
+    # Download from URL
+    url = doc.file_url
+    if not url or url.startswith("upload://"):
+        return None
+
+    try:
+        async with httpx_mod.AsyncClient(timeout=60, follow_redirects=True) as http:
+            resp = await http.get(url)
+            resp.raise_for_status()
+        settings.pdf_dir.mkdir(parents=True, exist_ok=True)
+        pdf_path.write_bytes(resp.content)
+        return pdf_path
+    except Exception:
+        return None
+
+
 @router.post("/documents/reconvert-all")
 async def reconvert_all_documents(db: AsyncSession = Depends(get_db)):
-    """Re-extract markdown from all stored PDFs using the RTL-safe pymupdf converter."""
+    """Re-extract markdown from all PDFs (download if needed) using RTL-safe pymupdf."""
+    import httpx as _httpx
     from ocoi_api.services.import_service import convert_pdf_to_markdown
 
     result = await db.execute(select(Document))
@@ -469,13 +501,12 @@ async def reconvert_all_documents(db: AsyncSession = Depends(get_db)):
     errors = []
 
     for doc in docs:
-        # Find PDF file on disk
-        pdf_path = settings.pdf_dir / f"{doc.id}.pdf"
-        if not pdf_path.exists():
-            skipped += 1
-            continue
-
         try:
+            pdf_path = await _resolve_pdf_path(doc, _httpx)
+            if not pdf_path:
+                skipped += 1
+                continue
+
             md_text = convert_pdf_to_markdown(pdf_path, str(doc.id))
             if md_text:
                 doc.markdown_content = md_text
@@ -623,7 +654,8 @@ async def delete_document(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db))
 
 @router.post("/documents/{doc_id}/reconvert")
 async def reconvert_document(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """Re-extract markdown from a single document's PDF using RTL-safe pymupdf."""
+    """Re-extract markdown from a single document's PDF (download if needed) using RTL-safe pymupdf."""
+    import httpx as _httpx
     from ocoi_api.services.import_service import convert_pdf_to_markdown
 
     result = await db.execute(select(Document).where(Document.id == doc_id))
@@ -631,9 +663,9 @@ async def reconvert_document(doc_id: uuid.UUID, db: AsyncSession = Depends(get_d
     if not doc:
         raise HTTPException(404, "Document not found")
 
-    pdf_path = settings.pdf_dir / f"{doc.id}.pdf"
-    if not pdf_path.exists():
-        raise HTTPException(404, "PDF file not found on disk")
+    pdf_path = await _resolve_pdf_path(doc, _httpx)
+    if not pdf_path:
+        raise HTTPException(404, "לא ניתן למצוא או להוריד את ה-PDF")
 
     md_text = convert_pdf_to_markdown(pdf_path, str(doc.id))
     if not md_text:
