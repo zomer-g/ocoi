@@ -370,6 +370,14 @@ async def upload_document(
     if not filename.lower().endswith(".pdf"):
         raise HTTPException(400, "רק קבצי PDF נתמכים")
 
+    # Check if a document with this filename already exists
+    title_to_check = filename.rsplit(".", 1)[0]
+    existing = await db.execute(
+        select(Document).where(Document.title == title_to_check)
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(409, f"מסמך בשם '{filename}' כבר קיים במערכת")
+
     # Read and validate size (20MB limit)
     content = await file.read()
     if len(content) > 20 * 1024 * 1024:

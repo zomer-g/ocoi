@@ -135,10 +135,12 @@ export default function DocumentsPage() {
           )
         );
       } catch (e) {
+        const msg = e instanceof Error ? e.message : "שגיאה";
+        const isDuplicate = msg.includes("כבר קיים") || msg.includes("409");
         setUploads((prev) =>
           prev.map((u, j) =>
             j === idx
-              ? { ...u, status: "error", error: e instanceof Error ? e.message : "שגיאה" }
+              ? { ...u, status: "error", error: isDuplicate ? `כבר קיים: ${pdfFiles[i].name}` : msg }
               : u
           )
         );
