@@ -390,11 +390,9 @@ async def upload_document(
     pdf_path = settings.pdf_dir / f"{temp_id}.pdf"
     pdf_path.write_bytes(content)
 
-    # Convert to markdown
+    # Convert to markdown (may be None for scanned/image PDFs)
     md_text = convert_pdf_to_markdown(pdf_path, temp_id)
-    if not md_text:
-        pdf_path.unlink(missing_ok=True)
-        raise HTTPException(422, "לא ניתן לחלץ טקסט מה-PDF")
+    is_scanned = not md_text
 
     # Create source and document
     doc_url = f"upload://{temp_id}"
@@ -424,8 +422,11 @@ async def upload_document(
     if temp_md.exists():
         temp_md.rename(actual_md)
 
-    db_doc.markdown_content = md_text
-    db_doc.conversion_status = "converted"
+    if md_text:
+        db_doc.markdown_content = md_text
+        db_doc.conversion_status = "converted"
+    else:
+        db_doc.conversion_status = "no_text"
     db_doc.file_path = str(actual_pdf)
     await db.commit()
 
@@ -435,7 +436,8 @@ async def upload_document(
             "id": str(db_doc.id),
             "title": db_doc.title,
             "file_size": len(content),
-            "markdown_length": len(md_text),
+            "markdown_length": len(md_text) if md_text else 0,
+            "scanned": is_scanned,
         },
     }
 

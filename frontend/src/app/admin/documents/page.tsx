@@ -17,7 +17,7 @@ interface DocItem {
 
 interface UploadItem {
   file: File;
-  status: "pending" | "uploading" | "done" | "error";
+  status: "pending" | "uploading" | "done" | "warning" | "error";
   progress: number;
   error?: string;
   result?: UploadResult;
@@ -129,9 +129,16 @@ export default function DocumentsPage() {
             prev.map((u, j) => (j === idx ? { ...u, progress } : u))
           );
         });
+        const scanned = result.data?.scanned;
         setUploads((prev) =>
           prev.map((u, j) =>
-            j === idx ? { ...u, status: "done", progress: 100, result: result.data } : u
+            j === idx ? {
+              ...u,
+              status: scanned ? "warning" : "done",
+              progress: 100,
+              result: result.data,
+              error: scanned ? "PDF סרוק — הועלה ללא טקסט" : undefined,
+            } : u
           )
         );
       } catch (e) {
@@ -246,6 +253,9 @@ export default function DocumentsPage() {
                   <span className="text-xs text-green-600">
                     {u.result ? `${u.result.markdown_length.toLocaleString()} תווים` : "הועלה"}
                   </span>
+                )}
+                {u.status === "warning" && (
+                  <span className="text-xs text-amber-600">{u.error || "PDF סרוק — הועלה ללא טקסט"}</span>
                 )}
                 {u.status === "error" && (
                   <span className="text-xs text-red-600" title={u.error}>{u.error}</span>
