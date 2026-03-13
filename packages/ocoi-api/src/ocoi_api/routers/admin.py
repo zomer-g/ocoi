@@ -420,6 +420,7 @@ async def get_document_detail(doc_id: uuid.UUID, db: AsyncSession = Depends(get_
             "file_path": doc.file_path,
             "conversion_status": doc.conversion_status,
             "extraction_status": doc.extraction_status,
+            "markdown_content": doc.markdown_content or "",
             "markdown_length": len(doc.markdown_content) if doc.markdown_content else 0,
             "created_at": doc.created_at.isoformat() if doc.created_at else None,
             "extraction_runs": extraction_runs,
@@ -427,6 +428,32 @@ async def get_document_detail(doc_id: uuid.UUID, db: AsyncSession = Depends(get_
             "entities": entities,
         },
     }
+
+
+@router.get("/documents/{doc_id}/pdf")
+async def serve_document_pdf(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """Serve the PDF file for a document."""
+    from pathlib import Path
+    from fastapi.responses import FileResponse as FR
+
+    result = await db.execute(select(Document).where(Document.id == doc_id))
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(404, "Document not found")
+
+    # Try file_path first, then look in pdf_dir
+    pdf_path = None
+    if doc.file_path and Path(doc.file_path).is_file():
+        pdf_path = Path(doc.file_path)
+    else:
+        candidate = settings.pdf_dir / f"{doc.id}.pdf"
+        if candidate.is_file():
+            pdf_path = candidate
+
+    if not pdf_path:
+        raise HTTPException(404, "PDF file not found on disk")
+
+    return FR(pdf_path, media_type="application/pdf", filename=f"{doc.title or doc.id}.pdf")
 
 
 @router.delete("/documents/purge/metadata-only")
