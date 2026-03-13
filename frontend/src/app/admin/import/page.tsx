@@ -143,9 +143,11 @@ function CkanTab() {
     });
   };
 
-  const filteredResults = hideImported
-    ? results.filter((r) => !(r.already_imported === r.num_documents && r.num_documents > 0))
-    : results;
+  // Filter out datasets where ALL visible resources are hidden by active filters
+  const filteredResults = results.filter((ds) => {
+    const visible = getVisibleResources(ds);
+    return visible.length > 0;
+  });
   const hiddenCount = results.length - filteredResults.length;
 
   // Build a flat list of all visible resource keys (for shift-click)
@@ -258,6 +260,19 @@ function CkanTab() {
 
   const totalPages = Math.ceil(total / 20);
   const currentPage = Math.floor(page / 20) + 1;
+
+  // Auto-advance to next page when all results on current page are filtered out
+  useEffect(() => {
+    if (
+      results.length > 0 &&
+      filteredResults.length === 0 &&
+      !searching &&
+      page + 20 < total
+    ) {
+      doSearch(page + 20);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [results, filteredResults.length, searching, page, total]);
 
   return (
     <div>
