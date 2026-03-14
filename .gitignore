@@ -18,6 +18,10 @@ venv/
 data/
 !data/govil_records.json
 
+# Local processor
+tools/local_processor/.state.json
+tools/local_processor/cache/
+
 # Caches
 .ruff_cache/
 .mypy_cache/
