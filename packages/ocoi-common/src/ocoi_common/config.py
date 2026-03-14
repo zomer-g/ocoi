@@ -81,7 +81,7 @@ class Settings(BaseSettings):
     # Israeli Government Data Registry (DATAGOV)
     datagov_base_url: str = "https://data.gov.il"
     registry_match_threshold: float = 0.85
-    registry_sync_batch_size: int = 5000
+    registry_sync_batch_size: int = 2000
 
     def ensure_dirs(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)

@@ -398,10 +398,21 @@ async def list_documents(
 @router.get("/documents/{doc_id}")
 async def get_document_detail(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """Full document detail: info, extraction runs, entities and relationships."""
-    result = await db.execute(select(Document).where(Document.id == doc_id))
+    # Load document WITHOUT pdf_content blob to save memory
+    from sqlalchemy.orm import defer
+    result = await db.execute(
+        select(Document).options(defer(Document.pdf_content)).where(Document.id == doc_id)
+    )
     doc = result.scalars().first()
     if not doc:
         raise HTTPException(404, "Document not found")
+
+    # Check has_pdf without loading the blob
+    pdf_check = await db.execute(
+        select(Document.pdf_content.isnot(None)).where(Document.id == doc_id)
+    )
+    has_pdf = bool(pdf_check.scalar())
+    pdf_size = doc.file_size
 
     # Source info
     source = await db.get(Source, doc.source_id) if doc.source_id else None
@@ -455,8 +466,6 @@ async def get_document_detail(doc_id: uuid.UUID, db: AsyncSession = Depends(get_
                 entities.append({"id": eid, "type": etype, "name": name})
 
     # Build processing log
-    has_pdf = bool(doc.pdf_content)
-    pdf_size = len(doc.pdf_content) if doc.pdf_content else doc.file_size
     md_len = len(doc.markdown_content) if doc.markdown_content else 0
     total_entities = len(entities)
     total_rels = len(relationships)
@@ -686,11 +695,18 @@ async def _reconvert_all_bg():
 
     try:
         async with async_session_factory() as db:
-            result = await db.execute(select(Document))
-            docs = result.scalars().all()
-            _reconvert_state["total"] = len(docs)
+            # Only load IDs first — avoid loading all PDF blobs into memory
+            id_result = await db.execute(select(Document.id))
+            doc_ids = [r[0] for r in id_result.all()]
+            _reconvert_state["total"] = len(doc_ids)
 
-            for i, doc in enumerate(docs):
+            for i, doc_id in enumerate(doc_ids):
+                # Load one document at a time to avoid OOM on 512MB
+                doc_result = await db.execute(select(Document).where(Document.id == doc_id))
+                doc = doc_result.scalars().first()
+                if not doc:
+                    _reconvert_state["processed"] += 1
+                    continue
                 try:
                     pdf_path = await _resolve_pdf_path(doc, _httpx, db)
                     if not pdf_path:
@@ -719,9 +735,11 @@ async def _reconvert_all_bg():
 
                 _reconvert_state["processed"] += 1
 
-                # Commit in batches to avoid long transactions
+                # Commit in batches and free memory
                 if (i + 1) % BATCH_SIZE == 0:
                     await db.commit()
+                    db.expunge_all()
+                    gc.collect()
 
             await db.commit()
     except Exception as e:
