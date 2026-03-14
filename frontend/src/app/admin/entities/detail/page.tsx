@@ -26,7 +26,7 @@ const FIELD_LABELS: Record<string, string> = {
   aliases: "כינויים (שמות קודמים)",
 };
 
-const UPDATE_FN: Record<string, (id: string, data: Record<string, string | null>) => Promise<unknown>> = {
+const UPDATE_FN: Record<string, (id: string, data: Record<string, string | string[] | null>, keepAlias?: boolean) => Promise<unknown>> = {
   persons: updatePerson,
   companies: updateCompany,
   associations: updateAssociation,
@@ -51,6 +51,7 @@ export default function EntityDetailPage() {
   // Inline edit state
   const [editingName, setEditingName] = useState(false);
   const [newName, setNewName] = useState("");
+  const [keepAlias, setKeepAlias] = useState(false);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -83,7 +84,7 @@ export default function EntityDetailPage() {
 
     setSaving(true);
     try {
-      await updateFn(entityId, { name_hebrew: newName.trim() });
+      await updateFn(entityId, { name_hebrew: newName.trim() }, keepAlias);
       // Refetch entity to get updated aliases
       const res = await fetch(`/api/v1/${entityType}/${entityId}`, { credentials: "include" });
       const data = await res.json();
@@ -93,6 +94,21 @@ export default function EntityDetailPage() {
       alert(`שגיאה בשמירה: ${e instanceof Error ? e.message : "שגיאה"}`);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleRemoveAlias = async (aliasToRemove: string) => {
+    const updateFn = UPDATE_FN[entityType];
+    if (!updateFn || !entity) return;
+    const currentAliases: string[] = Array.isArray(entity.aliases) ? entity.aliases : [];
+    const newAliases = currentAliases.filter((a) => a !== aliasToRemove);
+    try {
+      await updateFn(entityId, { aliases: newAliases } as Record<string, string | string[] | null>);
+      const res = await fetch(`/api/v1/${entityType}/${entityId}`, { credentials: "include" });
+      const data = await res.json();
+      setEntity(data.data || null);
+    } catch (e) {
+      alert(`שגיאה במחיקת כינוי: ${e instanceof Error ? e.message : "שגיאה"}`);
     }
   };
 
@@ -117,32 +133,43 @@ export default function EntityDetailPage() {
 
       <div className="flex items-center gap-3 mb-6">
         {editingName ? (
-          <div className="flex items-center gap-2">
-            <input
-              type="text"
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              className="text-2xl font-bold text-gray-900 border border-primary-300 rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-primary-500"
-              autoFocus
-              dir="rtl"
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleSaveName();
-                if (e.key === "Escape") setEditingName(false);
-              }}
-            />
-            <button
-              onClick={handleSaveName}
-              disabled={saving}
-              className="text-sm px-3 py-1.5 bg-primary-600 text-white rounded hover:bg-primary-700 disabled:opacity-50"
-            >
-              {saving ? "שומר..." : "שמור"}
-            </button>
-            <button
-              onClick={() => setEditingName(false)}
-              className="text-sm px-3 py-1.5 bg-gray-200 text-gray-700 rounded hover:bg-gray-300"
-            >
-              ביטול
-            </button>
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                className="text-2xl font-bold text-gray-900 border border-primary-300 rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                autoFocus
+                dir="rtl"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleSaveName();
+                  if (e.key === "Escape") setEditingName(false);
+                }}
+              />
+              <button
+                onClick={handleSaveName}
+                disabled={saving}
+                className="text-sm px-3 py-1.5 bg-primary-600 text-white rounded hover:bg-primary-700 disabled:opacity-50"
+              >
+                {saving ? "שומר..." : "שמור"}
+              </button>
+              <button
+                onClick={() => setEditingName(false)}
+                className="text-sm px-3 py-1.5 bg-gray-200 text-gray-700 rounded hover:bg-gray-300"
+              >
+                ביטול
+              </button>
+            </div>
+            <label className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={keepAlias}
+                onChange={(e) => setKeepAlias(e.target.checked)}
+                className="rounded border-gray-300"
+              />
+              שמור שם ישן ככינוי (רק אם השם הישן הוא שם אמיתי, לא טעות של ה-AI)
+            </label>
           </div>
         ) : (
           <>
@@ -152,6 +179,7 @@ export default function EntityDetailPage() {
             <button
               onClick={() => {
                 setNewName(entity.name_hebrew as string || "");
+                setKeepAlias(false);
                 setEditingName(true);
               }}
               className="text-xs px-2 py-1 text-primary-600 border border-primary-300 rounded hover:bg-primary-50"
@@ -170,8 +198,19 @@ export default function EntityDetailPage() {
       {aliases.length > 0 && (
         <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg">
           <span className="text-sm text-amber-700 font-medium">{FIELD_LABELS.aliases}: </span>
-          <span className="text-sm text-amber-600">
-            {aliases.join(" · ")}
+          <span className="text-sm text-amber-600 inline-flex flex-wrap gap-1.5 items-center">
+            {aliases.map((alias) => (
+              <span key={alias} className="inline-flex items-center gap-0.5 bg-amber-100 rounded px-1.5 py-0.5">
+                {alias}
+                <button
+                  onClick={() => handleRemoveAlias(alias)}
+                  className="text-amber-400 hover:text-red-500 text-xs leading-none"
+                  title="הסר כינוי"
+                >
+                  ×
+                </button>
+              </span>
+            ))}
           </span>
         </div>
       )}

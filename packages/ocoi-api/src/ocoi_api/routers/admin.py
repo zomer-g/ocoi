@@ -1,5 +1,6 @@
 """Admin CRUD routes — protected with Google OAuth JWT."""
 
+import json
 import logging
 import uuid
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, HTTPException, Request, UploadFile, File
@@ -90,15 +91,22 @@ async def create_person(body: PersonCreate, db: AsyncSession = Depends(get_db)):
 
 
 @router.put("/persons/{person_id}")
-async def update_person(person_id: uuid.UUID, body: PersonUpdate, db: AsyncSession = Depends(get_db)):
+async def update_person(
+    person_id: uuid.UUID, body: PersonUpdate,
+    keep_alias: bool = Query(False, description="Store old name as alias when renaming"),
+    db: AsyncSession = Depends(get_db),
+):
     result = await db.execute(select(Person).where(Person.id == person_id))
     person = result.scalars().first()
     if not person:
         raise HTTPException(404, "Person not found")
     updates = body.model_dump(exclude_unset=True)
-    # If name is changing, store old name as alias so LLM re-extraction still maps here
-    if "name_hebrew" in updates and updates["name_hebrew"] and updates["name_hebrew"] != person.name_hebrew:
+    # Only store old name as alias if explicitly requested (e.g. real alias like nickname)
+    if keep_alias and "name_hebrew" in updates and updates["name_hebrew"] and updates["name_hebrew"] != person.name_hebrew:
         _add_alias(person, person.name_hebrew)
+    # Serialize aliases list to JSON string for storage
+    if "aliases" in updates:
+        updates["aliases"] = json.dumps(updates["aliases"] or [], ensure_ascii=False)
     for field, value in updates.items():
         setattr(person, field, value)
     await db.commit()
@@ -133,14 +141,20 @@ async def create_company(body: CompanyCreate, db: AsyncSession = Depends(get_db)
 
 
 @router.put("/companies/{company_id}")
-async def update_company(company_id: uuid.UUID, body: CompanyUpdate, db: AsyncSession = Depends(get_db)):
+async def update_company(
+    company_id: uuid.UUID, body: CompanyUpdate,
+    keep_alias: bool = Query(False, description="Store old name as alias when renaming"),
+    db: AsyncSession = Depends(get_db),
+):
     result = await db.execute(select(Company).where(Company.id == company_id))
     company = result.scalars().first()
     if not company:
         raise HTTPException(404, "Company not found")
     updates = body.model_dump(exclude_unset=True)
-    if "name_hebrew" in updates and updates["name_hebrew"] and updates["name_hebrew"] != company.name_hebrew:
+    if keep_alias and "name_hebrew" in updates and updates["name_hebrew"] and updates["name_hebrew"] != company.name_hebrew:
         _add_alias(company, company.name_hebrew)
+    if "aliases" in updates:
+        updates["aliases"] = json.dumps(updates["aliases"] or [], ensure_ascii=False)
     for field, value in updates.items():
         setattr(company, field, value)
     await db.commit()
@@ -175,14 +189,20 @@ async def create_association(body: AssociationCreate, db: AsyncSession = Depends
 
 
 @router.put("/associations/{assoc_id}")
-async def update_association(assoc_id: uuid.UUID, body: AssociationUpdate, db: AsyncSession = Depends(get_db)):
+async def update_association(
+    assoc_id: uuid.UUID, body: AssociationUpdate,
+    keep_alias: bool = Query(False, description="Store old name as alias when renaming"),
+    db: AsyncSession = Depends(get_db),
+):
     result = await db.execute(select(Association).where(Association.id == assoc_id))
     assoc = result.scalars().first()
     if not assoc:
         raise HTTPException(404, "Association not found")
     updates = body.model_dump(exclude_unset=True)
-    if "name_hebrew" in updates and updates["name_hebrew"] and updates["name_hebrew"] != assoc.name_hebrew:
+    if keep_alias and "name_hebrew" in updates and updates["name_hebrew"] and updates["name_hebrew"] != assoc.name_hebrew:
         _add_alias(assoc, assoc.name_hebrew)
+    if "aliases" in updates:
+        updates["aliases"] = json.dumps(updates["aliases"] or [], ensure_ascii=False)
     for field, value in updates.items():
         setattr(assoc, field, value)
     await db.commit()
@@ -217,14 +237,20 @@ async def create_domain(body: DomainCreate, db: AsyncSession = Depends(get_db)):
 
 
 @router.put("/domains/{domain_id}")
-async def update_domain(domain_id: uuid.UUID, body: DomainUpdate, db: AsyncSession = Depends(get_db)):
+async def update_domain(
+    domain_id: uuid.UUID, body: DomainUpdate,
+    keep_alias: bool = Query(False, description="Store old name as alias when renaming"),
+    db: AsyncSession = Depends(get_db),
+):
     result = await db.execute(select(Domain).where(Domain.id == domain_id))
     domain = result.scalars().first()
     if not domain:
         raise HTTPException(404, "Domain not found")
     updates = body.model_dump(exclude_unset=True)
-    if "name_hebrew" in updates and updates["name_hebrew"] and updates["name_hebrew"] != domain.name_hebrew:
+    if keep_alias and "name_hebrew" in updates and updates["name_hebrew"] and updates["name_hebrew"] != domain.name_hebrew:
         _add_alias(domain, domain.name_hebrew)
+    if "aliases" in updates:
+        updates["aliases"] = json.dumps(updates["aliases"] or [], ensure_ascii=False)
     for field, value in updates.items():
         setattr(domain, field, value)
     await db.commit()

@@ -17,6 +17,7 @@ class PersonUpdate(BaseModel):
     title: str | None = None
     position: str | None = None
     ministry: str | None = None
+    aliases: list[str] | None = None
 
 
 class CompanyCreate(BaseModel):
@@ -33,6 +34,7 @@ class CompanyUpdate(BaseModel):
     registration_number: str | None = None
     company_type: str | None = None
     status: str | None = None
+    aliases: list[str] | None = None
 
 
 class AssociationCreate(BaseModel):
@@ -45,6 +47,7 @@ class AssociationUpdate(BaseModel):
     name_hebrew: str | None = None
     name_english: str | None = None
     registration_number: str | None = None
+    aliases: list[str] | None = None
 
 
 class DomainCreate(BaseModel):
@@ -57,6 +60,7 @@ class DomainUpdate(BaseModel):
     name_hebrew: str | None = None
     name_english: str | None = None
     description: str | None = None
+    aliases: list[str] | None = None
 
 
 class RelationshipCreate(BaseModel):

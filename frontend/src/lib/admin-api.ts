@@ -23,44 +23,48 @@ export function getAdminStats() {
 }
 
 // Persons
-export function createPerson(data: Record<string, string | null>) {
+export function createPerson(data: Record<string, string | string[] | null>) {
   return adminFetch("/persons", { method: "POST", body: JSON.stringify(data) });
 }
-export function updatePerson(id: string, data: Record<string, string | null>) {
-  return adminFetch(`/persons/${id}`, { method: "PUT", body: JSON.stringify(data) });
+export function updatePerson(id: string, data: Record<string, string | string[] | null>, keepAlias = false) {
+  const qs = keepAlias ? "?keep_alias=true" : "";
+  return adminFetch(`/persons/${id}${qs}`, { method: "PUT", body: JSON.stringify(data) });
 }
 export function deletePerson(id: string) {
   return adminFetch(`/persons/${id}`, { method: "DELETE" });
 }
 
 // Companies
-export function createCompany(data: Record<string, string | null>) {
+export function createCompany(data: Record<string, string | string[] | null>) {
   return adminFetch("/companies", { method: "POST", body: JSON.stringify(data) });
 }
-export function updateCompany(id: string, data: Record<string, string | null>) {
-  return adminFetch(`/companies/${id}`, { method: "PUT", body: JSON.stringify(data) });
+export function updateCompany(id: string, data: Record<string, string | string[] | null>, keepAlias = false) {
+  const qs = keepAlias ? "?keep_alias=true" : "";
+  return adminFetch(`/companies/${id}${qs}`, { method: "PUT", body: JSON.stringify(data) });
 }
 export function deleteCompany(id: string) {
   return adminFetch(`/companies/${id}`, { method: "DELETE" });
 }
 
 // Associations
-export function createAssociation(data: Record<string, string | null>) {
+export function createAssociation(data: Record<string, string | string[] | null>) {
   return adminFetch("/associations", { method: "POST", body: JSON.stringify(data) });
 }
-export function updateAssociation(id: string, data: Record<string, string | null>) {
-  return adminFetch(`/associations/${id}`, { method: "PUT", body: JSON.stringify(data) });
+export function updateAssociation(id: string, data: Record<string, string | string[] | null>, keepAlias = false) {
+  const qs = keepAlias ? "?keep_alias=true" : "";
+  return adminFetch(`/associations/${id}${qs}`, { method: "PUT", body: JSON.stringify(data) });
 }
 export function deleteAssociation(id: string) {
   return adminFetch(`/associations/${id}`, { method: "DELETE" });
 }
 
 // Domains
-export function createDomain(data: Record<string, string | null>) {
+export function createDomain(data: Record<string, string | string[] | null>) {
   return adminFetch("/domains", { method: "POST", body: JSON.stringify(data) });
 }
-export function updateDomain(id: string, data: Record<string, string | null>) {
-  return adminFetch(`/domains/${id}`, { method: "PUT", body: JSON.stringify(data) });
+export function updateDomain(id: string, data: Record<string, string | string[] | null>, keepAlias = false) {
+  const qs = keepAlias ? "?keep_alias=true" : "";
+  return adminFetch(`/domains/${id}${qs}`, { method: "PUT", body: JSON.stringify(data) });
 }
 export function deleteDomain(id: string) {
   return adminFetch(`/domains/${id}`, { method: "DELETE" });
