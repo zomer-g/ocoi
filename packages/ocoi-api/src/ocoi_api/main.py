@@ -4,14 +4,15 @@ import os
 from pathlib import Path
 import uvicorn
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
 from ocoi_api.routers import search, entities, connections, documents, external, auth, admin
+from ocoi_api.auth import get_current_admin
 from ocoi_common.config import settings
 
 
@@ -85,13 +86,48 @@ def _get_static_dir() -> Path | None:
     return None
 
 
+def _build_public_openapi(full_schema: dict) -> dict:
+    """Filter the full OpenAPI schema to include only public read-only endpoints."""
+    public_prefixes = ("/api/v1/search", "/api/v1/persons", "/api/v1/companies",
+                       "/api/v1/associations", "/api/v1/domains", "/api/v1/documents",
+                       "/api/v1/graph", "/api/v1/external", "/api/v1/lookup",
+                       "/api/v1/registry/lookup", "/api/health")
+    admin_prefixes = ("/api/v1/admin",)
+
+    filtered_paths = {}
+    for path, methods in full_schema.get("paths", {}).items():
+        # Skip admin routes
+        if any(path.startswith(p) for p in admin_prefixes):
+            continue
+        # Only include GET methods from public routes
+        if any(path.startswith(p) for p in public_prefixes):
+            get_op = methods.get("get")
+            if get_op:
+                filtered_paths[path] = {"get": get_op}
+
+    public_schema = {
+        **full_schema,
+        "info": {
+            **full_schema.get("info", {}),
+            "title": "ניגוד עניינים לעם — Public API",
+            "description": "Read-only public API for querying entities, relationships, documents and registry data.",
+        },
+        "paths": filtered_paths,
+    }
+    # Remove admin tag
+    if "tags" in public_schema:
+        public_schema["tags"] = [t for t in public_schema["tags"] if t.get("name") != "admin"]
+    return public_schema
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="אינטרסים לעם API",
         description="Conflict of Interest Transparency Platform API",
         version="0.1.0",
-        docs_url="/api/docs",
-        openapi_url="/api/openapi.json",
+        docs_url=None,        # Disable default docs — we serve custom ones
+        redoc_url=None,
+        openapi_url=None,     # We serve openapi.json manually (admin-protected)
         lifespan=lifespan,
     )
 
@@ -121,6 +157,51 @@ def create_app() -> FastAPI:
     @app.get("/api/health")
     async def health():
         return {"status": "ok"}
+
+    # ── Admin-only full OpenAPI schema + Swagger UI ────────────────────
+    @app.get("/api/openapi.json", include_in_schema=False)
+    async def full_openapi_schema(request: Request):
+        """Full OpenAPI schema — admin-only."""
+        try:
+            await get_current_admin(request)
+        except Exception:
+            return JSONResponse({"detail": "Admin access required"}, status_code=403)
+        return JSONResponse(app.openapi())
+
+    @app.get("/api/admin-docs", include_in_schema=False)
+    async def admin_docs(request: Request):
+        """Full Swagger UI — requires admin auth (cookie)."""
+        try:
+            await get_current_admin(request)
+        except Exception:
+            return HTMLResponse(
+                "<html><body style='text-align:center;margin-top:100px;font-family:sans-serif'>"
+                "<h2>🔒 Admin access required</h2>"
+                "<p><a href='/admin/login'>Login</a> to view full API documentation.</p>"
+                "</body></html>",
+                status_code=403,
+            )
+        from fastapi.openapi.docs import get_swagger_ui_html
+        return get_swagger_ui_html(
+            openapi_url="/api/openapi.json",
+            title="Admin API Docs — ניגוד עניינים לעם",
+        )
+
+    # ── Public read-only API docs ────────────────────────────────────────
+    @app.get("/api/public-openapi.json", include_in_schema=False)
+    async def public_openapi():
+        """Filtered OpenAPI schema with only public GET endpoints."""
+        full_schema = app.openapi()
+        return JSONResponse(_build_public_openapi(full_schema))
+
+    @app.get("/api/docs", include_in_schema=False)
+    async def public_docs():
+        """Public Swagger UI — read-only endpoints only."""
+        from fastapi.openapi.docs import get_swagger_ui_html
+        return get_swagger_ui_html(
+            openapi_url="/api/public-openapi.json",
+            title="Public API — ניגוד עניינים לעם",
+        )
 
     # ── Static frontend (SPA fallback) ───────────────────────────────────
     static_dir = _get_static_dir()
