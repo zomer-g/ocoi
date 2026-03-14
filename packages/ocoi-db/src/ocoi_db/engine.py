@@ -93,6 +93,28 @@ async def run_migrations():
                 await conn.execute(sa_text(sql))
                 _log.info(f"Column {table}.{column} added successfully")
 
+    # --- Alter TIMESTAMP → TIMESTAMPTZ for columns that receive tz-aware datetimes ---
+    tz_migrations = [
+        ("documents", "converted_at", "ALTER TABLE documents ALTER COLUMN converted_at TYPE TIMESTAMPTZ USING converted_at AT TIME ZONE 'UTC'"),
+        ("documents", "extracted_at", "ALTER TABLE documents ALTER COLUMN extracted_at TYPE TIMESTAMPTZ USING extracted_at AT TIME ZONE 'UTC'"),
+    ]
+    async with async_engine.begin() as conn:
+        for table, column, sql in tz_migrations:
+            # Check current column type — only alter if it's still TIMESTAMP WITHOUT TZ
+            col_type = await conn.run_sync(
+                lambda sync_conn, t=table, c=column: next(
+                    (col for col in sync_conn.dialect.get_columns(sync_conn, t) if col["name"] == c),
+                    None,
+                )
+            )
+            if col_type and not getattr(col_type.get("type"), "timezone", True):
+                _log.info(f"Altering {table}.{column} to TIMESTAMPTZ")
+                try:
+                    await conn.execute(sa_text(sql))
+                    _log.info(f"Column {table}.{column} altered to TIMESTAMPTZ")
+                except Exception as e:
+                    _log.warning(f"Could not alter {table}.{column}: {e}")
+
     # --- Dedup + unique indexes (run once, idempotent) ---
     await _run_dedup_and_indexes(_log)
 

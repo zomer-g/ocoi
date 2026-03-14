@@ -80,8 +80,8 @@ class Document(Base):
     conversion_status: Mapped[str] = mapped_column(String(20), default="pending")
     extraction_status: Mapped[str] = mapped_column(String(20), default="pending")
     created_at: Mapped[datetime | None] = mapped_column(DateTime, default=func.now())
-    converted_at: Mapped[datetime | None] = mapped_column(DateTime)
-    extracted_at: Mapped[datetime | None] = mapped_column(DateTime)
+    converted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    extracted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     source = relationship("Source", back_populates="documents")
     extraction_runs = relationship("ExtractionRun", back_populates="document")
