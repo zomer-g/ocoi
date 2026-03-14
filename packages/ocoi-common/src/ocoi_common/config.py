@@ -58,6 +58,14 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 480  # 8 hours
 
+    @model_validator(mode="after")
+    def _check_jwt_secret(self):
+        if self.env == "production" and self.jwt_secret_key == "change-me-to-a-random-secret":
+            raise ValueError(
+                "JWT_SECRET_KEY must be set to a strong random value in production"
+            )
+        return self
+
     # Admin whitelist (comma-separated Google email addresses)
     admin_emails: str = ""
 

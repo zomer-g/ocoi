@@ -21,6 +21,7 @@ data/
 # Local processor
 tools/local_processor/.state.json
 tools/local_processor/cache/
+tools/.env
 
 # Caches
 .ruff_cache/
@@ -33,6 +34,7 @@ node_modules/
 frontend/.next/
 frontend/node_modules/
 frontend/out/
+*.tsbuildinfo
 
 # Claude
 .claude/
