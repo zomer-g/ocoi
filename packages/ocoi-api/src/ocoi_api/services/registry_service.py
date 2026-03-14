@@ -11,7 +11,11 @@ from ocoi_common.config import settings
 from ocoi_common.logging import setup_logging
 from ocoi_db.engine import async_session_factory
 from ocoi_db.models import RegistryRecord, RegistrySyncStatus, Company, Association
-from ocoi_matcher.fuzzy_match import normalize_company_name, match_score
+
+# Lazy import — ocoi_matcher may not be installed in Docker (skipped in Dockerfile)
+def _get_matcher():
+    from ocoi_matcher.fuzzy_match import normalize_company_name, match_score
+    return normalize_company_name, match_score
 
 logger = setup_logging("ocoi.api.registry")
 
@@ -254,6 +258,7 @@ async def _process_batch(
     status_field = source_config.get("status_field")
     dedup_fields = source_config.get("deduplicate_by")
 
+    normalize_company_name, _ = _get_matcher()
     rows_to_upsert: list[dict] = []
     for rec in records:
         name = str(rec.get(name_field, "")).strip()
@@ -352,6 +357,7 @@ async def match_entity_against_registry(
     else:
         return None
 
+    normalize_company_name, match_score = _get_matcher()
     name_norm = normalize_company_name(entity_name)
     threshold = settings.registry_match_threshold
 
