@@ -178,6 +178,19 @@ async def create_relationship(
     restriction_end_date=None,
     confidence: float = 0.5,
 ) -> EntityRelationship:
+    # Check for existing relationship with same compound key
+    existing = await session.execute(
+        select(EntityRelationship).where(
+            EntityRelationship.source_entity_type == source_entity_type,
+            EntityRelationship.source_entity_id == str(source_entity_id),
+            EntityRelationship.target_entity_type == target_entity_type,
+            EntityRelationship.target_entity_id == str(target_entity_id),
+            EntityRelationship.relationship_type == relationship_type,
+            EntityRelationship.document_id == str(document_id),
+        ).limit(1)
+    )
+    if rel := existing.scalars().first():
+        return rel
     rel = EntityRelationship(
         source_entity_type=source_entity_type,
         source_entity_id=source_entity_id,

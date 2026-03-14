@@ -80,6 +80,8 @@ class Document(Base):
     conversion_status: Mapped[str] = mapped_column(String(20), default="pending")
     extraction_status: Mapped[str] = mapped_column(String(20), default="pending")
     created_at: Mapped[datetime | None] = mapped_column(DateTime, default=func.now())
+    converted_at: Mapped[datetime | None] = mapped_column(DateTime)
+    extracted_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     source = relationship("Source", back_populates="documents")
     extraction_runs = relationship("ExtractionRun", back_populates="document")
@@ -172,7 +174,7 @@ class EntityRelationship(Base):
     details: Mapped[str | None] = mapped_column(Text)
     restriction_type: Mapped[str | None] = mapped_column(String(20))
     restriction_end_date: Mapped[date | None] = mapped_column()
-    document_id: Mapped[str] = mapped_column(DBUUID(), ForeignKey("documents.id"), nullable=False)
+    document_id: Mapped[str] = mapped_column(DBUUID(), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
     confidence: Mapped[float] = mapped_column(Float, default=0.5)
     created_at: Mapped[datetime | None] = mapped_column(DateTime, default=func.now())
 
@@ -187,7 +189,7 @@ class ExtractionRun(Base):
     __tablename__ = "extraction_runs"
 
     id: Mapped[str] = mapped_column(DBUUID(), primary_key=True, default=new_uuid)
-    document_id: Mapped[str] = mapped_column(DBUUID(), ForeignKey("documents.id"), nullable=False)
+    document_id: Mapped[str] = mapped_column(DBUUID(), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
     extractor_type: Mapped[str] = mapped_column(String(50), nullable=False)
     model_version: Mapped[str | None] = mapped_column(String(100))
     entities_found: Mapped[int] = mapped_column(Integer, default=0)
