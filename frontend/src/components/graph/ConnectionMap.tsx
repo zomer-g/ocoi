@@ -70,21 +70,41 @@ export function ConnectionMap({
       },
     }));
 
-    const edges = graph.edges.map((edge, i) => ({
+    // Merge edges between the same pair of entities into one line.
+    // If any relationship in the pair is "restricted_from", use the thick style.
+    const nodeIds = new Set(nodes.map((n) => n.data.id));
+    const pairMap = new Map<string, { source: string; target: string; labels: string[]; hasRestriction: boolean }>();
+
+    for (const edge of graph.edges) {
+      if (!nodeIds.has(edge.source_id) || !nodeIds.has(edge.target_id)) continue;
+      // Canonical key: sorted so A→B and B→A merge together
+      const key = [edge.source_id, edge.target_id].sort().join("||");
+      const existing = pairMap.get(key);
+      const label = EDGE_LABELS[edge.relationship_type] || edge.relationship_type;
+      const isRestricted = edge.relationship_type === "restricted_from";
+
+      if (existing) {
+        if (!existing.labels.includes(label)) existing.labels.push(label);
+        if (isRestricted) existing.hasRestriction = true;
+      } else {
+        pairMap.set(key, {
+          source: edge.source_id,
+          target: edge.target_id,
+          labels: [label],
+          hasRestriction: isRestricted,
+        });
+      }
+    }
+
+    const validEdges = Array.from(pairMap.entries()).map(([key, info]) => ({
       data: {
-        id: `e${i}`,
-        source: edge.source_id,
-        target: edge.target_id,
-        label: EDGE_LABELS[edge.relationship_type] || edge.relationship_type,
-        relType: edge.relationship_type,
+        id: `e_${key}`,
+        source: info.source,
+        target: info.target,
+        label: info.labels.join(" + "),
+        relType: info.hasRestriction ? "restricted_from" : "other",
       },
     }));
-
-    // Filter edges to only include those connecting existing nodes
-    const nodeIds = new Set(nodes.map((n) => n.data.id));
-    const validEdges = edges.filter(
-      (e) => nodeIds.has(e.data.source) && nodeIds.has(e.data.target)
-    );
 
     if (cyRef.current) {
       cyRef.current.destroy();
