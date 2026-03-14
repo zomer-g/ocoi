@@ -19,6 +19,7 @@ from ocoi_api.schemas import (
     RelationshipCreate,
 )
 from ocoi_common.config import settings
+from ocoi_common.timezone import now_israel
 from ocoi_db.engine import async_session_factory, bg_session_factory
 from ocoi_db.crud import _add_alias, _get_aliases
 from ocoi_db.models import (
@@ -763,7 +764,6 @@ async def _reconvert_all_bg():
     """Background worker: reconvert all documents one at a time with per-doc sessions."""
     import gc
     import httpx as _httpx
-    from datetime import datetime, timezone as tz
     from ocoi_api.services.pdf_converter import convert_pdf
     from sqlalchemy.orm import undefer
 
@@ -798,7 +798,7 @@ async def _reconvert_all_bg():
                     if md_text:
                         doc.markdown_content = md_text
                         doc.conversion_status = "converted"
-                        doc.converted_at = datetime.now(tz.utc)
+                        doc.converted_at = now_israel()
                         if not doc.pdf_content and pdf_path.exists():
                             doc.pdf_content = pdf_path.read_bytes()
                         _reconvert_state["updated"] += 1
@@ -845,7 +845,7 @@ async def _backfill_pdf_bg():
     import gc
     import hashlib
     import httpx as _httpx
-    from datetime import datetime, timezone as tz
+
     from ocoi_api.services.pdf_converter import convert_pdf_bytes
     import logging
     _log = logging.getLogger("ocoi.api.backfill")
@@ -889,7 +889,7 @@ async def _backfill_pdf_bg():
                 if md_text:
                     doc.markdown_content = md_text
                     doc.conversion_status = "converted"
-                    doc.converted_at = datetime.now(tz.utc)
+                    doc.converted_at = now_israel()
                     _log.info(f"Backfilled + converted '{doc.title[:40]}': {len(md_text)} chars")
                 else:
                     doc.conversion_status = "no_text"
@@ -986,11 +986,10 @@ async def upload_document(
         )
         logger.info(f"Upload DB record created: {db_doc.id}")
 
-        from datetime import datetime, timezone
         if md_text:
             db_doc.markdown_content = md_text
             db_doc.conversion_status = "converted"
-            db_doc.converted_at = datetime.now(timezone.utc)
+            db_doc.converted_at = now_israel()
         else:
             db_doc.conversion_status = "no_text"
         db_doc.pdf_content = content
@@ -1057,7 +1056,7 @@ async def _batch_reconvert_bg(document_ids: list[str]):
     """Background worker for batch reconvert."""
     import gc
     import httpx as _httpx
-    from datetime import datetime, timezone as tz
+
     from ocoi_api.services.pdf_converter import convert_pdf
     from sqlalchemy.orm import undefer
 
@@ -1079,7 +1078,7 @@ async def _batch_reconvert_bg(document_ids: list[str]):
                 if md_text:
                     doc.markdown_content = md_text
                     doc.conversion_status = "converted"
-                    doc.converted_at = datetime.now(tz.utc)
+                    doc.converted_at = now_israel()
                     if not doc.pdf_content and pdf_path.exists():
                         doc.pdf_content = pdf_path.read_bytes()
                 else:
@@ -1169,10 +1168,10 @@ async def reconvert_document(doc_id: uuid.UUID, db: AsyncSession = Depends(get_d
         await db.commit()
         raise HTTPException(500, "המרה נכשלה — לא הופק טקסט מה-PDF")
 
-    from datetime import datetime, timezone as tz
+
     doc.markdown_content = md_text
     doc.conversion_status = "converted"
-    doc.converted_at = datetime.now(tz.utc)
+    doc.converted_at = now_israel()
     # Store PDF in DB if not already there
     if not doc.pdf_content and pdf_path.exists():
         doc.pdf_content = pdf_path.read_bytes()

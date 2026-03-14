@@ -54,6 +54,7 @@ COPY --from=frontend-build /app/frontend/out /app/static
 RUN mkdir -p /app/data /app/data/pdfs /app/data/markdown
 
 # Environment
+ENV TZ=Asia/Jerusalem
 ENV STATIC_DIR=/app/static
 ENV ENV=production
 ENV API_HOST=0.0.0.0

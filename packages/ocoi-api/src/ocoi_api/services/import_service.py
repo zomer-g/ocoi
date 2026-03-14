@@ -2,10 +2,12 @@
 
 import hashlib
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 import httpx
+
+from ocoi_common.timezone import now_israel
 
 from sqlalchemy import select
 from ocoi_common.config import settings
@@ -213,7 +215,7 @@ async def import_ckan_datasets(dataset_ids: list[str]) -> dict:
     from ocoi_importer.ckan_client import CkanClient
 
     client = CkanClient()
-    imported_at = datetime.now(timezone.utc).isoformat()
+    imported_at = now_israel().isoformat()
     stats = {"imported": 0, "skipped": 0, "errors": 0, "error_messages": []}
 
     async with async_session_factory() as session:
@@ -249,7 +251,7 @@ async def import_ckan_resources(resource_urls: list[dict]) -> dict:
     from ocoi_importer.ckan_client import CkanClient
 
     client = CkanClient()
-    imported_at = datetime.now(timezone.utc).isoformat()
+    imported_at = now_israel().isoformat()
     stats = {"imported": 0, "skipped": 0, "errors": 0, "error_messages": []}
 
     # Group by dataset_id to minimize API calls
@@ -362,7 +364,7 @@ async def _import_single_ckan_doc(session, doc, ds, imported_at: str, stats: dic
     if md_text:
         db_doc.markdown_content = md_text
         db_doc.conversion_status = "converted"
-        db_doc.converted_at = datetime.now(timezone.utc)
+        db_doc.converted_at = now_israel()
     elif pdf_bytes:
         db_doc.conversion_status = "no_text"  # PDF stored, needs OCR
     else:
@@ -394,7 +396,7 @@ async def run_bulk_ckan_import(query: str) -> dict:
         "skipped": 0,
         "errors": 0,
         "error_messages": [],
-        "started_at": datetime.now(timezone.utc).isoformat(),
+        "started_at": now_israel().isoformat(),
         "finished_at": None,
     })
 
@@ -405,7 +407,7 @@ async def run_bulk_ckan_import(query: str) -> dict:
 
         page_size = 20
         offset = 0
-        imported_at = datetime.now(timezone.utc).isoformat()
+        imported_at = now_israel().isoformat()
 
         while offset < total_datasets:
             try:
@@ -467,7 +469,7 @@ async def run_bulk_ckan_import(query: str) -> dict:
         _import_state["error_messages"].append(f"Fatal: {e}")
     finally:
         _import_state["running"] = False
-        _import_state["finished_at"] = datetime.now(timezone.utc).isoformat()
+        _import_state["finished_at"] = now_israel().isoformat()
 
     return get_import_status()
 
@@ -493,7 +495,7 @@ async def run_govil_import(limit: int = 0, url: str = "") -> dict:
         "skipped": 0,
         "errors": 0,
         "error_messages": [],
-        "started_at": datetime.now(timezone.utc).isoformat(),
+        "started_at": now_israel().isoformat(),
         "finished_at": None,
     })
 
@@ -504,7 +506,7 @@ async def run_govil_import(limit: int = 0, url: str = "") -> dict:
         _import_state["errors"] += 1
     finally:
         _import_state["running"] = False
-        _import_state["finished_at"] = datetime.now(timezone.utc).isoformat()
+        _import_state["finished_at"] = now_israel().isoformat()
 
     return get_import_status()
 
@@ -527,7 +529,7 @@ async def run_govil_with_records(raw_items: list[dict]) -> dict:
         "skipped": 0,
         "errors": 0,
         "error_messages": [],
-        "started_at": datetime.now(timezone.utc).isoformat(),
+        "started_at": now_israel().isoformat(),
         "finished_at": None,
     })
 
@@ -566,7 +568,7 @@ async def run_govil_with_records(raw_items: list[dict]) -> dict:
         _import_state["errors"] += 1
     finally:
         _import_state["running"] = False
-        _import_state["finished_at"] = datetime.now(timezone.utc).isoformat()
+        _import_state["finished_at"] = now_israel().isoformat()
 
     return get_import_status()
 
@@ -623,7 +625,7 @@ async def _process_new_records(client, new_records: list) -> None:
     Uses per-document sessions with bg_session_factory to prevent memory accumulation.
     """
     import gc
-    imported_at = datetime.now(timezone.utc).isoformat()
+    imported_at = now_israel().isoformat()
 
     for record in new_records:
         try:
@@ -682,7 +684,7 @@ async def _process_new_records(client, new_records: list) -> None:
                 if md_text:
                     db_doc.markdown_content = md_text
                     db_doc.conversion_status = "converted"
-                    db_doc.converted_at = datetime.now(timezone.utc)
+                    db_doc.converted_at = now_israel()
                 elif pdf_bytes:
                     db_doc.conversion_status = "no_text"
                 else:

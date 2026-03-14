@@ -2,12 +2,13 @@
 and matches extracted entities against them using fuzzy name similarity."""
 
 import gc
-from datetime import datetime, timezone
+from datetime import datetime
 
 import httpx
 from sqlalchemy import select, func, and_
 
 from ocoi_common.config import settings
+from ocoi_common.timezone import now_israel, now_israel_naive
 from ocoi_common.logging import setup_logging
 from ocoi_db.engine import async_session_factory, bg_session_factory
 from ocoi_db.models import RegistryRecord, RegistrySyncStatus, Company, Association
@@ -140,7 +141,7 @@ async def run_registry_sync(source_type: str):
     _registry_sync_state.update({
         "running": True,
         "source": source_type,
-        "started_at": datetime.now(timezone.utc).isoformat(),
+        "started_at": now_israel().isoformat(),
     })
 
     source_config = REGISTRY_SOURCES[source_type]
@@ -212,7 +213,7 @@ async def run_registry_sync(source_type: str):
         async with bg_session_factory() as session:
             sync_row = await _get_or_create_sync_status(session, source_type, "completed")
             sync_row.record_count = total_saved
-            sync_row.last_synced_at = datetime.utcnow()
+            sync_row.last_synced_at = now_israel_naive()
             sync_row.error_message = None
             await session.commit()
 
@@ -233,7 +234,7 @@ async def run_registry_sync(source_type: str):
 
     finally:
         _registry_sync_state["running"] = False
-        _registry_sync_state["finished_at"] = datetime.now(timezone.utc).isoformat()
+        _registry_sync_state["finished_at"] = now_israel().isoformat()
 
 
 async def _fetch_ckan_page(
@@ -494,7 +495,7 @@ async def match_all_unmatched():
         "matched": 0,
         "errors": 0,
         "error_messages": [],
-        "started_at": datetime.now(timezone.utc).isoformat(),
+        "started_at": now_israel().isoformat(),
         "finished_at": None,
     })
 
@@ -547,4 +548,4 @@ async def match_all_unmatched():
         _registry_match_state["error_messages"].append(f"Fatal: {e}")
     finally:
         _registry_match_state["running"] = False
-        _registry_match_state["finished_at"] = datetime.now(timezone.utc).isoformat()
+        _registry_match_state["finished_at"] = now_israel().isoformat()

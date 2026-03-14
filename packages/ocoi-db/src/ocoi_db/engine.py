@@ -9,10 +9,17 @@ def _is_sqlite(url: str) -> bool:
     return "sqlite" in url
 
 
+def _is_postgres(url: str) -> bool:
+    return "postgresql" in url or "postgres" in url
+
+
 # --- Async engine ---
 connect_args = {}
 if _is_sqlite(settings.database_url):
     connect_args = {"check_same_thread": False}
+elif _is_postgres(settings.database_url):
+    # Set session timezone to Israel so func.now() returns Israel time
+    connect_args = {"server_settings": {"timezone": "Asia/Jerusalem"}}
 
 async_engine = create_async_engine(
     settings.database_url,

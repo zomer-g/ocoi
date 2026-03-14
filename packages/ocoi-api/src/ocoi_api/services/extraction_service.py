@@ -1,10 +1,12 @@
 """Extraction service — PDF→text→DeepSeek→entities, with configurable prompts."""
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 import httpx
+
+from ocoi_common.timezone import now_israel
 from openai import AsyncOpenAI
 from sqlalchemy import select
 from sqlalchemy.orm import undefer
@@ -187,7 +189,7 @@ async def run_extraction(document_ids: list[str] | None = None) -> dict:
         "relationships_found": 0,
         "errors": 0,
         "error_messages": [],
-        "started_at": datetime.now(timezone.utc).isoformat(),
+        "started_at": now_israel().isoformat(),
         "finished_at": None,
     })
 
@@ -198,7 +200,7 @@ async def run_extraction(document_ids: list[str] | None = None) -> dict:
         _extraction_state["errors"] += 1
     finally:
         _extraction_state["running"] = False
-        _extraction_state["finished_at"] = datetime.now(timezone.utc).isoformat()
+        _extraction_state["finished_at"] = now_israel().isoformat()
 
     return get_extraction_status()
 
@@ -368,7 +370,7 @@ async def _run_extraction(document_ids: list[str] | None):
                 )
 
                 doc.extraction_status = "extracted"
-                doc.extracted_at = datetime.now(timezone.utc)
+                doc.extracted_at = now_israel()
                 await session.commit()
 
                 _extraction_state["entities_found"] += entities_count
