@@ -4,6 +4,7 @@ import uuid
 from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import undefer
 
 from ocoi_api.dependencies import get_db
 from ocoi_db.models import Document, EntityRelationship
@@ -69,7 +70,9 @@ async def get_document(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 
 @router.get("/documents/{doc_id}/markdown")
 async def get_document_markdown(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Document).where(Document.id == doc_id))
+    result = await db.execute(
+        select(Document).options(undefer(Document.markdown_content)).where(Document.id == doc_id)
+    )
     doc = result.scalars().first()
     if not doc:
         raise HTTPException(404, "Document not found")

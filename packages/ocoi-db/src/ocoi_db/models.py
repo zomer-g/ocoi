@@ -15,7 +15,7 @@ from sqlalchemy import (
     func,
 )
 from sqlalchemy.types import JSON, TypeDecorator, CHAR
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, deferred, mapped_column, relationship
 
 
 # --- Cross-DB UUID type ---
@@ -74,8 +74,8 @@ class Document(Base):
     file_path: Mapped[str | None] = mapped_column(Text)
     file_url: Mapped[str] = mapped_column(Text, nullable=False)
     file_size: Mapped[int | None] = mapped_column(Integer)
-    pdf_content: Mapped[bytes | None] = mapped_column(LargeBinary)
-    markdown_content: Mapped[str | None] = mapped_column(Text)
+    pdf_content: Mapped[bytes | None] = deferred(mapped_column(LargeBinary))
+    markdown_content: Mapped[str | None] = deferred(mapped_column(Text))
     content_hash: Mapped[str | None] = mapped_column(String(64), index=True)
     conversion_status: Mapped[str] = mapped_column(String(20), default="pending")
     extraction_status: Mapped[str] = mapped_column(String(20), default="pending")

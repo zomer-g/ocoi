@@ -7,6 +7,7 @@ from pathlib import Path
 import httpx
 from openai import AsyncOpenAI
 from sqlalchemy import select
+from sqlalchemy.orm import undefer
 
 from ocoi_common.config import settings
 from ocoi_common.logging import setup_logging
@@ -231,7 +232,10 @@ async def _run_extraction(document_ids: list[str] | None):
         try:
             async with async_session_factory() as session:
                 result = await session.execute(
-                    select(Document).where(Document.id == doc_id)
+                    select(Document).options(
+                        undefer(Document.markdown_content),
+                        undefer(Document.pdf_content),
+                    ).where(Document.id == doc_id)
                 )
                 doc = result.scalars().first()
                 if not doc:

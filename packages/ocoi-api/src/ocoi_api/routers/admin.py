@@ -398,10 +398,10 @@ async def list_documents(
 @router.get("/documents/{doc_id}")
 async def get_document_detail(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """Full document detail: info, extraction runs, entities and relationships."""
-    # Load document WITHOUT pdf_content blob to save memory
-    from sqlalchemy.orm import defer
+    # Load document with markdown content (pdf_content stays deferred by default)
+    from sqlalchemy.orm import undefer
     result = await db.execute(
-        select(Document).options(defer(Document.pdf_content)).where(Document.id == doc_id)
+        select(Document).options(undefer(Document.markdown_content)).where(Document.id == doc_id)
     )
     doc = result.scalars().first()
     if not doc:
@@ -534,7 +534,9 @@ async def serve_document_pdf(doc_id: uuid.UUID, db: AsyncSession = Depends(get_d
     """Serve the PDF file for a document (from disk or DB)."""
     from pathlib import Path
     from fastapi.responses import FileResponse as FR, Response
+    from sqlalchemy.orm import undefer
 
+    # First try to serve from disk without loading pdf_content
     result = await db.execute(select(Document).where(Document.id == doc_id))
     doc = result.scalars().first()
     if not doc:
@@ -554,7 +556,11 @@ async def serve_document_pdf(doc_id: uuid.UUID, db: AsyncSession = Depends(get_d
     if pdf_path:
         return FR(pdf_path, media_type="application/pdf", filename=filename)
 
-    # Serve from DB if stored there
+    # Only load pdf_content from DB if disk file not found
+    result2 = await db.execute(
+        select(Document).options(undefer(Document.pdf_content)).where(Document.id == doc_id)
+    )
+    doc = result2.scalars().first()
     if doc.pdf_content:
         return Response(
             content=doc.pdf_content,
@@ -689,6 +695,7 @@ async def _reconvert_all_bg():
     import httpx as _httpx
     from datetime import datetime, timezone as tz
     from ocoi_api.services.pdf_converter import convert_pdf
+    from sqlalchemy.orm import undefer
 
     global _reconvert_state
     BATCH_SIZE = 10
@@ -701,8 +708,10 @@ async def _reconvert_all_bg():
             _reconvert_state["total"] = len(doc_ids)
 
             for i, doc_id in enumerate(doc_ids):
-                # Load one document at a time to avoid OOM on 512MB
-                doc_result = await db.execute(select(Document).where(Document.id == doc_id))
+                # Load one document at a time with pdf_content undeferred for conversion
+                doc_result = await db.execute(
+                    select(Document).options(undefer(Document.pdf_content)).where(Document.id == doc_id)
+                )
                 doc = doc_result.scalars().first()
                 if not doc:
                     _reconvert_state["processed"] += 1
@@ -768,26 +777,35 @@ async def backfill_pdf(background_tasks: BackgroundTasks, db: AsyncSession = Dep
 
 async def _backfill_pdf_bg():
     """Download PDFs for documents missing pdf_content, then reconvert."""
+    import gc
     import hashlib
     import httpx as _httpx
     from datetime import datetime, timezone as tz
     from ocoi_api.services.pdf_converter import convert_pdf_bytes
+    import logging
+    _log = logging.getLogger("ocoi.api.backfill")
 
+    # Phase 1: Get IDs only (no BLOBs loaded)
     async with async_session_factory() as db:
         result = await db.execute(
-            select(Document).where(
+            select(Document.id).where(
                 Document.pdf_content.is_(None),
                 Document.file_url.isnot(None),
                 ~Document.file_url.startswith("upload://"),
             )
         )
-        docs = result.scalars().all()
-        import logging
-        _log = logging.getLogger("ocoi.api.backfill")
-        _log.info(f"Backfilling PDFs for {len(docs)} documents")
+        doc_ids = [r[0] for r in result.all()]
+    _log.info(f"Backfilling PDFs for {len(doc_ids)} documents")
 
-        for i, doc in enumerate(docs):
-            try:
+    # Phase 2: Process one at a time in fresh sessions
+    for i, doc_id in enumerate(doc_ids):
+        try:
+            async with async_session_factory() as db:
+                result = await db.execute(select(Document).where(Document.id == doc_id))
+                doc = result.scalars().first()
+                if not doc:
+                    continue
+
                 async with _httpx.AsyncClient(timeout=60, follow_redirects=True) as http:
                     resp = await http.get(doc.file_url)
                     resp.raise_for_status()
@@ -812,14 +830,12 @@ async def _backfill_pdf_bg():
                     doc.conversion_status = "no_text"
                     _log.info(f"Backfilled PDF for '{doc.title[:40]}' (no embedded text)")
 
-            except Exception as e:
-                _log.warning(f"Backfill failed for '{doc.title[:40]}': {e}")
-
-            if (i + 1) % 5 == 0:
                 await db.commit()
+        except Exception as e:
+            _log.warning(f"Backfill failed for doc {doc_id}: {e}")
+        gc.collect()
 
-        await db.commit()
-        _log.info(f"Backfill complete: processed {len(docs)} documents")
+    _log.info(f"Backfill complete: processed {len(doc_ids)} documents")
 
 
 @router.delete("/documents/purge/metadata-only")
@@ -978,11 +994,14 @@ async def _batch_reconvert_bg(document_ids: list[str]):
     import httpx as _httpx
     from datetime import datetime, timezone as tz
     from ocoi_api.services.pdf_converter import convert_pdf
+    from sqlalchemy.orm import undefer
 
     for doc_id in document_ids:
         try:
             async with async_session_factory() as db:
-                result = await db.execute(select(Document).where(Document.id == doc_id))
+                result = await db.execute(
+                    select(Document).options(undefer(Document.pdf_content)).where(Document.id == doc_id)
+                )
                 doc = result.scalars().first()
                 if not doc:
                     continue
@@ -1066,8 +1085,11 @@ async def reconvert_document(doc_id: uuid.UUID, db: AsyncSession = Depends(get_d
     """Re-extract markdown from a single document's PDF (download if needed) using RTL-safe pymupdf."""
     import httpx as _httpx
     from ocoi_api.services.pdf_converter import convert_pdf
+    from sqlalchemy.orm import undefer
 
-    result = await db.execute(select(Document).where(Document.id == doc_id))
+    result = await db.execute(
+        select(Document).options(undefer(Document.pdf_content)).where(Document.id == doc_id)
+    )
     doc = result.scalars().first()
     if not doc:
         raise HTTPException(404, "Document not found")
