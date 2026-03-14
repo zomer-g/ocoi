@@ -159,9 +159,19 @@ async def run_registry_sync(source_type: str):
         total_saved = 0
         seen_keys: set[str] = set()  # For deduplication (municipal_corporations)
 
+        # Only fetch the fields we actually need (name, number, status)
+        needed_fields = [source_config["name_field"], source_config["number_field"]]
+        if source_config.get("status_field"):
+            needed_fields.append(source_config["status_field"])
+        if source_config.get("deduplicate_by"):
+            for f in source_config["deduplicate_by"]:
+                if f not in needed_fields:
+                    needed_fields.append(f)
+        fields_param = ",".join(needed_fields)
+
         async with httpx.AsyncClient(timeout=60, follow_redirects=True) as http:
             # First request to get total
-            first_resp = await _fetch_ckan_page(http, base_url, resource_id, 0, batch_size)
+            first_resp = await _fetch_ckan_page(http, base_url, resource_id, 0, batch_size, fields=fields_param)
             total_remote = first_resp.get("result", {}).get("total", 0)
             _registry_sync_state["total_remote"] = total_remote
 
@@ -177,7 +187,7 @@ async def run_registry_sync(source_type: str):
             # Paginate through remaining
             while offset < total_remote:
                 try:
-                    data = await _fetch_ckan_page(http, base_url, resource_id, offset, batch_size)
+                    data = await _fetch_ckan_page(http, base_url, resource_id, offset, batch_size, fields=fields_param)
                     records = data.get("result", {}).get("records", [])
                     if not records:
                         break
@@ -228,12 +238,12 @@ async def run_registry_sync(source_type: str):
 
 async def _fetch_ckan_page(
     http: httpx.AsyncClient, base_url: str, resource_id: str, offset: int, limit: int,
-    retries: int = 3,
+    retries: int = 3, fields: str = "",
 ) -> dict:
     """Fetch a single page from the CKAN datastore API with retries."""
     import asyncio
 
-    url = f"{base_url}?resource_id={resource_id}&limit={limit}&offset={offset}"
+    url = f"{base_url}?resource_id={resource_id}&limit={limit}&offset={offset}&fields={fields}" if fields else f"{base_url}?resource_id={resource_id}&limit={limit}&offset={offset}"
     for attempt in range(retries):
         try:
             resp = await http.get(url)
@@ -266,8 +276,14 @@ async def _process_batch(
         if not name:
             continue
 
-        # Deduplication for municipal_corporations (same corporation appears per board member)
-        if dedup_fields:
+        # Dedup by registration number across all batches
+        dedup_key = f"{source_type}|{reg_number}" if reg_number else None
+        if dedup_key:
+            if dedup_key in seen_keys:
+                continue
+            seen_keys.add(dedup_key)
+        # Extra deduplication for municipal_corporations (same corp appears per board member)
+        elif dedup_fields:
             dedup_key = "|".join(str(rec.get(f, "")) for f in dedup_fields)
             if dedup_key in seen_keys:
                 continue
@@ -282,37 +298,36 @@ async def _process_batch(
             "name_normalized": name_norm,
             "registration_number": reg_number,
             "status": status or None,
-            "raw_data": rec,
         })
 
     if not rows_to_upsert:
         return 0
 
-    # Upsert into DB
+    # Batch upsert into DB — group by registration_number to avoid duplicates
     async with async_session_factory() as session:
         saved = 0
+        # Collect existing reg numbers in one query for the whole batch
+        reg_numbers = [r["registration_number"] for r in rows_to_upsert if r["registration_number"]]
+        existing_by_reg: dict[str, RegistryRecord] = {}
+        if reg_numbers:
+            # Query in chunks of 500 to avoid overly large IN clauses
+            for i in range(0, len(reg_numbers), 500):
+                chunk = reg_numbers[i:i+500]
+                result = await session.execute(
+                    select(RegistryRecord).where(and_(
+                        RegistryRecord.source_type == source_type,
+                        RegistryRecord.registration_number.in_(chunk),
+                    ))
+                )
+                for rec in result.scalars().all():
+                    existing_by_reg[rec.registration_number] = rec
+
         for row in rows_to_upsert:
-            # Find existing by (source_type, registration_number) or (source_type, name)
-            if row["registration_number"]:
-                result = await session.execute(
-                    select(RegistryRecord).where(and_(
-                        RegistryRecord.source_type == row["source_type"],
-                        RegistryRecord.registration_number == row["registration_number"],
-                    ))
-                )
-            else:
-                result = await session.execute(
-                    select(RegistryRecord).where(and_(
-                        RegistryRecord.source_type == row["source_type"],
-                        RegistryRecord.name == row["name"],
-                    ))
-                )
-            existing = result.scalars().first()
+            existing = existing_by_reg.get(row["registration_number"]) if row["registration_number"] else None
             if existing:
                 existing.name = row["name"]
                 existing.name_normalized = row["name_normalized"]
                 existing.status = row["status"]
-                existing.raw_data = row["raw_data"]
                 existing.updated_at = datetime.now(timezone.utc)
             else:
                 session.add(RegistryRecord(**row))
