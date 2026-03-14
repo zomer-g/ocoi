@@ -9,7 +9,7 @@ from sqlalchemy import select, func, and_
 
 from ocoi_common.config import settings
 from ocoi_common.logging import setup_logging
-from ocoi_db.engine import async_session_factory
+from ocoi_db.engine import async_session_factory, bg_session_factory
 from ocoi_db.models import RegistryRecord, RegistrySyncStatus, Company, Association
 
 # Lazy import — ocoi_matcher may not be installed in Docker (skipped in Dockerfile)
@@ -147,7 +147,7 @@ async def run_registry_sync(source_type: str):
 
     try:
         # Mark sync status as "syncing"
-        async with async_session_factory() as session:
+        async with bg_session_factory() as session:
             await _get_or_create_sync_status(session, source_type, "syncing")
             await session.commit()
 
@@ -209,7 +209,7 @@ async def run_registry_sync(source_type: str):
                 gc.collect()
 
         # Update sync status
-        async with async_session_factory() as session:
+        async with bg_session_factory() as session:
             sync_row = await _get_or_create_sync_status(session, source_type, "completed")
             sync_row.record_count = total_saved
             sync_row.last_synced_at = datetime.now(timezone.utc)
@@ -224,7 +224,7 @@ async def run_registry_sync(source_type: str):
         _registry_sync_state["error_messages"].append(f"Fatal: {e}")
 
         try:
-            async with async_session_factory() as session:
+            async with bg_session_factory() as session:
                 sync_row = await _get_or_create_sync_status(session, source_type, "failed")
                 sync_row.error_message = str(e)[:500]
                 await session.commit()
@@ -304,7 +304,7 @@ async def _process_batch(
         return 0
 
     # Batch upsert into DB — group by registration_number to avoid duplicates
-    async with async_session_factory() as session:
+    async with bg_session_factory() as session:
         saved = 0
         # Collect existing reg numbers in one query for the whole batch
         reg_numbers = [r["registration_number"] for r in rows_to_upsert if r["registration_number"]]
@@ -334,6 +334,7 @@ async def _process_batch(
             saved += 1
 
         await session.commit()
+        gc.collect()
         return saved
 
 
@@ -478,7 +479,7 @@ async def match_all_unmatched():
 
     try:
         # Gather unmatched entities
-        async with async_session_factory() as session:
+        async with bg_session_factory() as session:
             companies = (await session.execute(
                 select(Company.id, Company.name_hebrew).where(
                     Company.registration_number.is_(None)
@@ -500,7 +501,7 @@ async def match_all_unmatched():
 
         for entity_type, entity_id, entity_name in entities:
             try:
-                async with async_session_factory() as session:
+                async with bg_session_factory() as session:
                     match = await match_entity_against_registry(
                         session, entity_type, entity_name, entity_id
                     )
