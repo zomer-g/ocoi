@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef } from "react";
-import { deleteDocument, purgeMetadataOnlyDocuments, uploadDocument, backfillPdf, type UploadResult } from "@/lib/admin-api";
+import { deleteDocument, purgeMetadataOnlyDocuments, uploadDocument, backfillPdf, batchReconvert, batchExtract, batchResetStatus, type UploadResult } from "@/lib/admin-api";
 import Link from "next/link";
 
 interface DocItem {
@@ -15,6 +15,8 @@ interface DocItem {
   has_content: boolean;
   has_pdf: boolean;
   created_at: string | null;
+  converted_at: string | null;
+  extracted_at: string | null;
 }
 
 interface UploadItem {
@@ -29,6 +31,19 @@ const SOURCE_LABELS: Record<string, { label: string; color: string }> = {
   govil: { label: "Gov.il", color: "bg-blue-50 text-blue-700 border-blue-200" },
   ckan: { label: "CKAN", color: "bg-purple-50 text-purple-700 border-purple-200" },
   upload: { label: "העלאה", color: "bg-teal-50 text-teal-700 border-teal-200" },
+};
+
+const CONVERSION_BADGES: Record<string, { label: string; color: string }> = {
+  pending: { label: "ממתין", color: "bg-gray-100 text-gray-600" },
+  converted: { label: "הומר", color: "bg-green-50 text-green-700" },
+  no_text: { label: "ללא טקסט", color: "bg-amber-50 text-amber-700" },
+  failed: { label: "נכשל", color: "bg-red-50 text-red-700" },
+};
+
+const EXTRACTION_BADGES: Record<string, { label: string; color: string }> = {
+  pending: { label: "ממתין", color: "bg-gray-100 text-gray-600" },
+  extracted: { label: "חולץ", color: "bg-blue-50 text-blue-700" },
+  failed: { label: "נכשל", color: "bg-red-50 text-red-700" },
 };
 
 function formatDate(iso: string | null) {
@@ -56,10 +71,16 @@ export default function DocumentsPage() {
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [statusFilter, setStatusFilter] = useState("");
+  const [conversionFilter, setConversionFilter] = useState("");
+  const [sourceFilter, setSourceFilter] = useState("");
   const [purging, setPurging] = useState(false);
   const [backfilling, setBackfilling] = useState(false);
   const [search, setSearch] = useState("");
   const [searchInput, setSearchInput] = useState("");
+
+  // Selection state
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [batchLoading, setBatchLoading] = useState(false);
 
   // Upload state
   const [uploads, setUploads] = useState<UploadItem[]>([]);
@@ -71,6 +92,8 @@ export default function DocumentsPage() {
     try {
       const params = new URLSearchParams({ page: String(page), limit: "20" });
       if (statusFilter) params.set("status", statusFilter);
+      if (conversionFilter) params.set("conversion", conversionFilter);
+      if (sourceFilter) params.set("source_type", sourceFilter);
       if (search) params.set("search", search);
       const res = await fetch(`/api/v1/admin/documents?${params}`, { credentials: "include" });
       const data = await res.json();
@@ -81,9 +104,12 @@ export default function DocumentsPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, statusFilter, search]);
+  }, [page, statusFilter, conversionFilter, sourceFilter, search]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  // Clear selection when filters change
+  useEffect(() => { setSelectedIds(new Set()); }, [statusFilter, conversionFilter, sourceFilter, search, page]);
 
   const handleDelete = async (id: string) => {
     if (!confirm("למחוק את המסמך?")) return;
@@ -106,6 +132,66 @@ export default function DocumentsPage() {
     }
   };
 
+  // ── Selection ──────────────────────────────────────────────────
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedIds.size === items.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(items.map((i) => i.id)));
+    }
+  };
+
+  const handleBatchReconvert = async () => {
+    setBatchLoading(true);
+    try {
+      const result = await batchReconvert(Array.from(selectedIds));
+      alert(result.message);
+      setSelectedIds(new Set());
+      fetchData();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "שגיאה");
+    } finally {
+      setBatchLoading(false);
+    }
+  };
+
+  const handleBatchExtract = async () => {
+    setBatchLoading(true);
+    try {
+      const result = await batchExtract(Array.from(selectedIds));
+      alert(result.message);
+      setSelectedIds(new Set());
+      fetchData();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "שגיאה");
+    } finally {
+      setBatchLoading(false);
+    }
+  };
+
+  const handleBatchReset = async () => {
+    setBatchLoading(true);
+    try {
+      await batchResetStatus(Array.from(selectedIds), "extraction_status", "pending");
+      alert(`אופס ${selectedIds.size} מסמכים`);
+      setSelectedIds(new Set());
+      fetchData();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "שגיאה");
+    } finally {
+      setBatchLoading(false);
+    }
+  };
+
   // ── Upload handling ──────────────────────────────────────────────────
   const handleFilesSelected = async (files: FileList | File[]) => {
     const pdfFiles = Array.from(files).filter(
@@ -121,7 +207,6 @@ export default function DocumentsPage() {
     }));
     setUploads((prev) => [...prev, ...newUploads]);
 
-    // Upload sequentially (Render memory-friendly)
     for (let i = 0; i < pdfFiles.length; i++) {
       const idx = startIdx + i;
       setUploads((prev) =>
@@ -321,22 +406,113 @@ export default function DocumentsPage() {
         )}
       </div>
 
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex gap-2">
-          {["", "pending", "converted", "extracted", "failed"].map((s) => (
-            <button
-              key={s}
-              onClick={() => { setStatusFilter(s); setPage(1); }}
-              className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
-                statusFilter === s ? "bg-primary-100 text-primary-700" : "text-gray-500 hover:bg-gray-100"
-              }`}
-            >
-              {s === "" ? "הכל" : s === "pending" ? "ממתין" : s === "converted" ? "הומר" : s === "extracted" ? "חולץ" : "נכשל"}
-            </button>
-          ))}
+      {/* Filters */}
+      <div className="space-y-2 mb-4">
+        {/* Conversion status */}
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-gray-500 w-16 shrink-0">המרה:</span>
+          <div className="flex gap-1">
+            {[
+              { value: "", label: "הכל" },
+              { value: "pending", label: "ממתין" },
+              { value: "converted", label: "הומר" },
+              { value: "no_text", label: "ללא טקסט" },
+              { value: "failed", label: "נכשל" },
+            ].map((s) => (
+              <button
+                key={s.value}
+                onClick={() => { setConversionFilter(s.value); setPage(1); }}
+                className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                  conversionFilter === s.value ? "bg-primary-100 text-primary-700" : "text-gray-500 hover:bg-gray-100"
+                }`}
+              >
+                {s.label}
+              </button>
+            ))}
+          </div>
         </div>
-        <span className="text-xs text-gray-500">{total} מסמכים</span>
+
+        {/* Extraction status */}
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-gray-500 w-16 shrink-0">חילוץ:</span>
+          <div className="flex gap-1">
+            {[
+              { value: "", label: "הכל" },
+              { value: "pending", label: "ממתין" },
+              { value: "extracted", label: "חולץ" },
+              { value: "failed", label: "נכשל" },
+            ].map((s) => (
+              <button
+                key={s.value}
+                onClick={() => { setStatusFilter(s.value); setPage(1); }}
+                className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                  statusFilter === s.value ? "bg-primary-100 text-primary-700" : "text-gray-500 hover:bg-gray-100"
+                }`}
+              >
+                {s.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Source type */}
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-gray-500 w-16 shrink-0">מקור:</span>
+          <div className="flex gap-1">
+            {[
+              { value: "", label: "הכל" },
+              { value: "govil", label: "Gov.il" },
+              { value: "ckan", label: "CKAN" },
+              { value: "upload", label: "העלאה" },
+            ].map((s) => (
+              <button
+                key={s.value}
+                onClick={() => { setSourceFilter(s.value); setPage(1); }}
+                className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                  sourceFilter === s.value ? "bg-primary-100 text-primary-700" : "text-gray-500 hover:bg-gray-100"
+                }`}
+              >
+                {s.label}
+              </button>
+            ))}
+          </div>
+          <span className="text-xs text-gray-500 mr-auto">{total} מסמכים</span>
+        </div>
       </div>
+
+      {/* Batch action bar */}
+      {selectedIds.size > 0 && (
+        <div className="flex items-center gap-3 mb-4 p-3 bg-primary-50 border border-primary-200 rounded-lg">
+          <span className="text-sm font-medium text-primary-800">{selectedIds.size} נבחרו</span>
+          <button
+            onClick={handleBatchReconvert}
+            disabled={batchLoading}
+            className="px-3 py-1.5 text-xs font-medium rounded bg-amber-100 text-amber-800 border border-amber-300 hover:bg-amber-200 transition-colors disabled:opacity-50"
+          >
+            המר מחדש ({selectedIds.size})
+          </button>
+          <button
+            onClick={handleBatchExtract}
+            disabled={batchLoading}
+            className="px-3 py-1.5 text-xs font-medium rounded bg-blue-100 text-blue-800 border border-blue-300 hover:bg-blue-200 transition-colors disabled:opacity-50"
+          >
+            חלץ ישויות ({selectedIds.size})
+          </button>
+          <button
+            onClick={handleBatchReset}
+            disabled={batchLoading}
+            className="px-3 py-1.5 text-xs font-medium rounded bg-gray-100 text-gray-700 border border-gray-300 hover:bg-gray-200 transition-colors disabled:opacity-50"
+          >
+            אפס סטטוס ({selectedIds.size})
+          </button>
+          <button
+            onClick={() => setSelectedIds(new Set())}
+            className="text-xs text-gray-500 hover:text-gray-700 mr-auto"
+          >
+            בטל בחירה
+          </button>
+        </div>
+      )}
 
       {loading ? (
         <div className="text-gray-400 py-8 text-center">טוען...</div>
@@ -345,9 +521,18 @@ export default function DocumentsPage() {
           <table className="w-full text-sm">
             <thead className="bg-gray-50 border-b border-gray-200">
               <tr>
+                <th className="px-3 py-3 w-10">
+                  <input
+                    type="checkbox"
+                    checked={items.length > 0 && selectedIds.size === items.length}
+                    onChange={toggleSelectAll}
+                    className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                  />
+                </th>
                 <th className="text-start px-4 py-3 font-medium text-gray-700">כותרת</th>
                 <th className="text-start px-4 py-3 font-medium text-gray-700 w-20">מקור</th>
-                <th className="text-start px-4 py-3 font-medium text-gray-700 w-24">תוכן</th>
+                <th className="text-start px-4 py-3 font-medium text-gray-700 w-20">המרה</th>
+                <th className="text-start px-4 py-3 font-medium text-gray-700 w-20">חילוץ</th>
                 <th className="text-start px-4 py-3 font-medium text-gray-700 w-36">תאריך ייבוא</th>
                 <th className="px-4 py-3 w-28"></th>
               </tr>
@@ -358,8 +543,18 @@ export default function DocumentsPage() {
                   label: item.source_type || "—",
                   color: "bg-gray-50 text-gray-600 border-gray-200",
                 };
+                const conv = CONVERSION_BADGES[item.conversion_status || "pending"] || CONVERSION_BADGES.pending;
+                const extr = EXTRACTION_BADGES[item.extraction_status || "pending"] || EXTRACTION_BADGES.pending;
                 return (
                   <tr key={item.id} className={`hover:bg-gray-50 group ${!item.has_content && !item.has_pdf ? "opacity-50" : ""}`}>
+                    <td className="px-3 py-3">
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(item.id)}
+                        onChange={() => toggleSelect(item.id)}
+                        className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                      />
+                    </td>
                     <td className="px-4 py-3">
                       <div className="text-gray-800 font-medium max-w-md truncate" title={item.title || ""}>
                         {item.title || "—"}
@@ -374,19 +569,14 @@ export default function DocumentsPage() {
                       </span>
                     </td>
                     <td className="px-4 py-3">
-                      {item.has_content ? (
-                        <span className="text-xs px-2 py-0.5 rounded-full bg-green-50 text-green-700">
-                          {item.conversion_status === "converted" ? "PDF + MD" : "יש תוכן"}
-                        </span>
-                      ) : item.has_pdf ? (
-                        <span className="text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-700">
-                          PDF בלבד (צריך OCR)
-                        </span>
-                      ) : (
-                        <span className="text-xs px-2 py-0.5 rounded-full bg-orange-50 text-orange-600">
-                          מטאדאטה בלבד
-                        </span>
-                      )}
+                      <span className={`text-xs px-2 py-0.5 rounded-full ${conv.color}`}>
+                        {conv.label}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={`text-xs px-2 py-0.5 rounded-full ${extr.color}`}>
+                        {extr.label}
+                      </span>
                     </td>
                     <td className="px-4 py-3 text-xs text-gray-500">
                       {formatDate(item.created_at)}
@@ -422,7 +612,7 @@ export default function DocumentsPage() {
                 );
               })}
               {items.length === 0 && (
-                <tr><td colSpan={5} className="px-4 py-8 text-center text-gray-400">אין מסמכים</td></tr>
+                <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-400">אין מסמכים</td></tr>
               )}
             </tbody>
           </table>

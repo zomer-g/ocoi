@@ -359,6 +359,28 @@ export function backfillPdf() {
   });
 }
 
+// Batch operations
+export function batchReconvert(documentIds: string[]) {
+  return adminFetch<{ status: string; message: string; count: number }>("/documents/batch/reconvert", {
+    method: "POST",
+    body: JSON.stringify({ document_ids: documentIds }),
+  });
+}
+
+export function batchExtract(documentIds: string[]) {
+  return adminFetch<{ status: string; message: string; count: number }>("/documents/batch/extract", {
+    method: "POST",
+    body: JSON.stringify({ document_ids: documentIds }),
+  });
+}
+
+export function batchResetStatus(documentIds: string[], field: string, value: string = "pending") {
+  return adminFetch<{ status: string; message: string; count: number }>("/documents/batch/reset-status", {
+    method: "POST",
+    body: JSON.stringify({ document_ids: documentIds, field, value }),
+  });
+}
+
 export function reconvertAllDocuments() {
   return adminFetch<{ status: string; data: { updated: number; skipped: number; errors: string[] } }>("/documents/reconvert-all", {
     method: "POST",
