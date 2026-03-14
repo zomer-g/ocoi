@@ -22,7 +22,7 @@ function LoginContent() {
             <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
           </svg>
           <h1 className="text-xl font-bold text-gray-900 mt-3">פאנל ניהול</h1>
-          <p className="text-sm text-gray-500 mt-1">אינטרסים לעם</p>
+          <p className="text-sm text-gray-500 mt-1">ניגוד עניינים לעם</p>
         </div>
 
         {error && (

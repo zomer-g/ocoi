@@ -122,7 +122,7 @@ def _build_public_openapi(full_schema: dict) -> dict:
 
 def create_app() -> FastAPI:
     app = FastAPI(
-        title="אינטרסים לעם API",
+        title="ניגוד עניינים לעם API",
         description="Conflict of Interest Transparency Platform API",
         version="0.1.0",
         docs_url=None,        # Disable default docs — we serve custom ones
