@@ -10,9 +10,10 @@ RUN npm run build
 FROM python:3.13-slim AS runtime
 WORKDIR /app
 
-# Install Tesseract OCR with Hebrew model (for scanned PDFs)
+# Install lightweight PDF tools (poppler pdftotext ~5MB RSS vs pymupdf ~150MB)
+# and Tesseract OCR with Hebrew model for scanned PDFs
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends tesseract-ocr curl && \
+    apt-get install -y --no-install-recommends poppler-utils tesseract-ocr curl && \
     rm -rf /var/lib/apt/lists/* && \
     TESS_DIR=$(find /usr/share/tesseract-ocr -name "tessdata" -type d 2>/dev/null | head -1) && \
     curl -sL -o "$TESS_DIR/heb.traineddata" \
@@ -37,8 +38,8 @@ COPY packages/ocoi-matcher/ ./packages/ocoi-matcher/
 # Strip [tool.uv.sources] workspace refs (not needed outside workspace)
 RUN sed -i '/^\[tool\.uv/,$d' packages/*/pyproject.toml
 
-# Strip unused pdfplumber (not referenced anywhere in code)
-RUN sed -i '/"pdfplumber/d' packages/ocoi-api/pyproject.toml
+# Strip heavy Python PDF libs — we use poppler pdftotext CLI instead (~5MB vs ~150MB)
+RUN sed -i '/"pdfplumber/d; /"pymupdf/d' packages/ocoi-api/pyproject.toml
 
 # Install via pip (bypasses workspace resolution — no torch/transformers)
 RUN uv pip install ./packages/ocoi-common ./packages/ocoi-db ./packages/ocoi-api ./packages/ocoi-importer ./packages/ocoi-matcher
@@ -48,9 +49,6 @@ COPY --from=frontend-build /app/frontend/out /app/static
 
 # Create data directories
 RUN mkdir -p /app/data /app/data/pdfs /app/data/markdown
-
-# Gov.il records already imported — no longer copy on every build
-# COPY data/govil_records.json /app/data/govil_records.json
 
 # Environment
 ENV STATIC_DIR=/app/static
