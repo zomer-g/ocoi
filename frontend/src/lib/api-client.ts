@@ -16,6 +16,9 @@ export interface ConnectionEdge {
   target_name: string;
   relationship_type: string;
   details?: string;
+  document_id?: string;
+  document_title?: string;
+  document_url?: string;
 }
 
 export interface SubGraph {

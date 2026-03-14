@@ -73,7 +73,7 @@ export function ConnectionMap({
     // Merge edges between the same pair of entities into one line.
     // If any relationship in the pair is "restricted_from", use the thick style.
     const nodeIds = new Set(nodes.map((n) => n.data.id));
-    const pairMap = new Map<string, { source: string; target: string; labels: string[]; hasRestriction: boolean }>();
+    const pairMap = new Map<string, { source: string; target: string; labels: string[]; hasRestriction: boolean; docUrls: string[] }>();
 
     for (const edge of graph.edges) {
       if (!nodeIds.has(edge.source_id) || !nodeIds.has(edge.target_id)) continue;
@@ -82,16 +82,19 @@ export function ConnectionMap({
       const existing = pairMap.get(key);
       const label = EDGE_LABELS[edge.relationship_type] || edge.relationship_type;
       const isRestricted = edge.relationship_type === "restricted_from";
+      const docUrl = edge.document_url && !edge.document_url.startsWith("upload://") ? edge.document_url : "";
 
       if (existing) {
         if (!existing.labels.includes(label)) existing.labels.push(label);
         if (isRestricted) existing.hasRestriction = true;
+        if (docUrl && !existing.docUrls.includes(docUrl)) existing.docUrls.push(docUrl);
       } else {
         pairMap.set(key, {
           source: edge.source_id,
           target: edge.target_id,
           labels: [label],
           hasRestriction: isRestricted,
+          docUrls: docUrl ? [docUrl] : [],
         });
       }
     }
@@ -103,6 +106,7 @@ export function ConnectionMap({
         target: info.target,
         label: info.labels.join(" + "),
         relType: info.hasRestriction ? "restricted_from" : "other",
+        docUrl: info.docUrls[0] || "",
       },
     }));
 
@@ -210,6 +214,12 @@ export function ConnectionMap({
       const nodeId = evt.target.data("id");
       const nodeType = evt.target.data("type");
       if (onExpandNode) onExpandNode(nodeId, nodeType);
+    });
+
+    // Click edge to open source document
+    cy.on("tap", "edge", (evt: { target: { data: (key: string) => string } }) => {
+      const url = evt.target.data("docUrl");
+      if (url) window.open(url, "_blank", "noopener,noreferrer");
     });
 
     cyRef.current = cy;

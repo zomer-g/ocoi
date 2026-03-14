@@ -144,6 +144,9 @@ class ConnectionEdge(BaseModel):
     target_name: str
     relationship_type: RelationshipType
     details: str | None = None
+    document_id: str | None = None
+    document_title: str | None = None
+    document_url: str | None = None
 
 
 class SubGraph(BaseModel):

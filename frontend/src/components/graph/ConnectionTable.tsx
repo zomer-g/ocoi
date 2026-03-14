@@ -44,6 +44,7 @@ export function ConnectionTable({ edges, caption, className }: ConnectionTablePr
               <th scope="col" className="px-4 py-3 text-start font-semibold">סוג יעד</th>
               <th scope="col" className="px-4 py-3 text-start font-semibold">סוג קשר</th>
               <th scope="col" className="px-4 py-3 text-start font-semibold">מגבלה</th>
+              <th scope="col" className="px-4 py-3 text-start font-semibold">מסמך מקור</th>
             </tr>
           </thead>
           <tbody>
@@ -64,6 +65,25 @@ export function ConnectionTable({ edges, caption, className }: ConnectionTablePr
                     <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600">
                       לא
                     </span>
+                  )}
+                </td>
+                <td className="px-4 py-3">
+                  {edge.document_url && !edge.document_url.startsWith("upload://") ? (
+                    <a
+                      href={edge.document_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-primary-700 hover:text-primary-900 text-xs font-medium"
+                      title={edge.document_title || "מסמך מקור"}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                        <polyline points="14 2 14 8 20 8"/>
+                      </svg>
+                      PDF
+                    </a>
+                  ) : (
+                    <span className="text-gray-300 text-xs">—</span>
                   )}
                 </td>
               </tr>

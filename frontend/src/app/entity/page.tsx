@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useState, Suspense } from "react";
+import { useEffect, useState, useCallback, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { ConnectionMap } from "@/components/graph/ConnectionMap";
 import { ConnectionTable } from "@/components/graph/ConnectionTable";
-import type { SubGraph } from "@/lib/api-client";
+import type { SubGraph, ConnectionEdge, EntitySummary } from "@/lib/api-client";
 
 interface EntityData {
   id: string;
@@ -63,6 +63,42 @@ function EntityContent() {
     fetchData();
   }, [id, type]);
 
+  const handleExpand = useCallback(async (nodeId: string, nodeType: string) => {
+    try {
+      const res = await fetch(`/api/v1/graph/neighbors/${nodeId}?type=${nodeType}&depth=1`);
+      const data = await res.json();
+      const newGraph: SubGraph = data.data;
+      if (!newGraph || !graph) return;
+
+      // Merge new nodes and edges into existing graph
+      const existingNodeIds = new Set(graph.nodes.map((n) => n.id));
+      const existingEdgeKeys = new Set(
+        graph.edges.map((e) => `${e.source_id}|${e.target_id}|${e.relationship_type}`)
+      );
+
+      const mergedNodes = [...graph.nodes];
+      for (const node of newGraph.nodes) {
+        if (!existingNodeIds.has(node.id)) {
+          mergedNodes.push(node);
+          existingNodeIds.add(node.id);
+        }
+      }
+
+      const mergedEdges = [...graph.edges];
+      for (const edge of newGraph.edges) {
+        const key = `${edge.source_id}|${edge.target_id}|${edge.relationship_type}`;
+        if (!existingEdgeKeys.has(key)) {
+          mergedEdges.push(edge);
+          existingEdgeKeys.add(key);
+        }
+      }
+
+      setGraph({ nodes: mergedNodes, edges: mergedEdges });
+    } catch {
+      // ignore
+    }
+  }, [graph]);
+
   if (loading) return <div className="text-center py-12 text-gray-400">טוען...</div>;
   if (!id || !entity) return <div className="text-center py-12 text-gray-400">לא נמצא</div>;
 
@@ -99,7 +135,12 @@ function EntityContent() {
       {graph && (graph.nodes.length > 0 || graph.edges.length > 0) && (
         <div className="bg-white rounded-lg border border-gray-200">
           <div className="flex items-center justify-between p-4 border-b border-gray-200">
-            <h2 className="text-lg font-semibold text-gray-900">מפת קשרים</h2>
+            <h2 className="text-lg font-semibold text-gray-900">
+              מפת קשרים
+              <span className="text-sm font-normal text-gray-400 mr-2">
+                (לחיצה כפולה על צומת להרחבה)
+              </span>
+            </h2>
             {graph.edges.length > 0 && (
               <button
                 onClick={() => setShowTable((v) => !v)}
@@ -117,6 +158,7 @@ function EntityContent() {
               onNodeClick={(nodeId, nodeType) => {
                 window.location.href = `/entity?id=${nodeId}&type=${nodeType}`;
               }}
+              onExpandNode={handleExpand}
             />
           </div>
           {showTable && graph.edges.length > 0 && (
