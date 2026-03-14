@@ -10,17 +10,6 @@ RUN npm run build
 FROM python:3.13-slim AS runtime
 WORKDIR /app
 
-# Install Tesseract OCR with best-quality Hebrew model (for scanned PDFs)
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends tesseract-ocr curl && \
-    rm -rf /var/lib/apt/lists/* && \
-    TESS_DIR=$(find /usr/share/tesseract-ocr -name "tessdata" -type d 2>/dev/null | head -1) && \
-    echo "Tessdata directory: $TESS_DIR" && \
-    curl -sL -o "$TESS_DIR/heb.traineddata" \
-      https://github.com/tesseract-ocr/tessdata_best/raw/main/heb.traineddata && \
-    ls -la "$TESS_DIR/heb.traineddata" && \
-    echo "Hebrew tessdata installed successfully"
-
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
@@ -38,6 +27,11 @@ COPY packages/ocoi-matcher/ ./packages/ocoi-matcher/
 
 # Strip [tool.uv.sources] workspace refs (not needed outside workspace)
 RUN sed -i '/^\[tool\.uv/,$d' packages/*/pyproject.toml
+
+# Strip heavy PDF processing libs that OOM on 512MB free tier
+# (pymupdf ~80MB, pdfplumber ~30MB, tesseract ~50MB)
+# PDF conversion runs locally, not on Render
+RUN sed -i '/"pymupdf/d; /"pdfplumber/d' packages/ocoi-api/pyproject.toml
 
 # Install via pip (bypasses workspace resolution — no torch/transformers)
 RUN uv pip install ./packages/ocoi-common ./packages/ocoi-db ./packages/ocoi-api ./packages/ocoi-importer ./packages/ocoi-matcher
