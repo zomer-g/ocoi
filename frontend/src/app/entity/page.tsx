@@ -3,6 +3,7 @@
 import { useEffect, useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { ConnectionMap } from "@/components/graph/ConnectionMap";
+import { ConnectionTable } from "@/components/graph/ConnectionTable";
 import type { SubGraph } from "@/lib/api-client";
 
 interface EntityData {
@@ -25,6 +26,7 @@ function EntityContent() {
   const [entity, setEntity] = useState<EntityData | null>(null);
   const [graph, setGraph] = useState<SubGraph | null>(null);
   const [loading, setLoading] = useState(true);
+  const [showTable, setShowTable] = useState(false);
 
   useEffect(() => {
     if (!id) {
@@ -96,7 +98,17 @@ function EntityContent() {
 
       {graph && (graph.nodes.length > 0 || graph.edges.length > 0) && (
         <div className="bg-white rounded-lg border border-gray-200">
-          <h2 className="text-lg font-semibold text-gray-900 p-4 border-b border-gray-200">מפת קשרים</h2>
+          <div className="flex items-center justify-between p-4 border-b border-gray-200">
+            <h2 className="text-lg font-semibold text-gray-900">מפת קשרים</h2>
+            {graph.edges.length > 0 && (
+              <button
+                onClick={() => setShowTable((v) => !v)}
+                className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                {showTable ? "הסתר טבלה" : "הצג כטבלה"}
+              </button>
+            )}
+          </div>
           <div className="h-[500px]">
             <ConnectionMap
               graph={graph}
@@ -107,6 +119,14 @@ function EntityContent() {
               }}
             />
           </div>
+          {showTable && graph.edges.length > 0 && (
+            <div className="p-4 border-t border-gray-200">
+              <ConnectionTable
+                edges={graph.edges}
+                caption={`קשרים של ${entity?.name_hebrew || ""}`}
+              />
+            </div>
+          )}
         </div>
       )}
     </div>

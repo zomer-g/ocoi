@@ -2,12 +2,14 @@
 
 import { useState, useCallback } from "react";
 import { ConnectionMap } from "@/components/graph/ConnectionMap";
+import { ConnectionTable } from "@/components/graph/ConnectionTable";
 import type { SubGraph } from "@/lib/api-client";
 
 export default function GraphPage() {
   const [graph, setGraph] = useState<SubGraph | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [loading, setLoading] = useState(false);
+  const [showTable, setShowTable] = useState(false);
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -69,33 +71,44 @@ export default function GraphPage() {
   }, []);
 
   return (
-    <div className="h-[calc(100vh-60px)] flex flex-col">
-      <div className="p-4 border-b border-gray-200 bg-white">
-        <form onSubmit={handleSearch} className="flex gap-2 max-w-xl">
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="חיפוש ישות להצגה במפת קשרים..."
-            className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm
-                       focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-            dir="rtl"
-          />
+    <div className="flex flex-col" style={{ minHeight: "calc(100vh - 60px)" }}>
+      <div className="p-4 border-b border-gray-200 bg-white flex items-start justify-between gap-4">
+        <div>
+          <form onSubmit={handleSearch} className="flex gap-2 max-w-xl">
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="חיפוש ישות להצגה במפת קשרים..."
+              className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm
+                         focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+              dir="rtl"
+            />
+            <button
+              type="submit"
+              disabled={loading}
+              className="px-4 py-2 bg-primary-700 text-white rounded-lg text-sm font-medium
+                         hover:bg-primary-800 transition-colors disabled:opacity-50"
+            >
+              {loading ? "טוען..." : "הצג מפה"}
+            </button>
+          </form>
+          <p className="text-xs text-gray-400 mt-1">
+            לחיצה כפולה על צומת להרחבת הקשרים שלו
+          </p>
+        </div>
+
+        {graph && graph.edges.length > 0 && (
           <button
-            type="submit"
-            disabled={loading}
-            className="px-4 py-2 bg-primary-700 text-white rounded-lg text-sm font-medium
-                       hover:bg-primary-800 transition-colors disabled:opacity-50"
+            onClick={() => setShowTable((v) => !v)}
+            className="px-3 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors shrink-0"
           >
-            {loading ? "טוען..." : "הצג מפה"}
+            {showTable ? "הסתר טבלה" : "הצג כטבלה"}
           </button>
-        </form>
-        <p className="text-xs text-gray-400 mt-1">
-          לחיצה כפולה על צומת להרחבת הקשרים שלו
-        </p>
+        )}
       </div>
 
-      <div className="flex-1 bg-gray-100">
+      <div className="flex-1 bg-gray-100" style={{ minHeight: "500px" }}>
         {graph ? (
           <ConnectionMap
             graph={graph}
@@ -105,11 +118,22 @@ export default function GraphPage() {
             onExpandNode={handleExpand}
           />
         ) : (
-          <div className="flex items-center justify-center h-full text-gray-400">
+          <div className="flex items-center justify-center h-full text-gray-400" style={{ minHeight: "500px" }}>
             חפשו שם של איש ציבור, חברה או עמותה כדי להציג את מפת הקשרים
           </div>
         )}
       </div>
+
+      {/* Accessible table view */}
+      {showTable && graph && graph.edges.length > 0 && (
+        <div className="p-4 bg-white border-t border-gray-200">
+          <h2 className="text-lg font-semibold text-gray-900 mb-3">טבלת קשרים</h2>
+          <ConnectionTable
+            edges={graph.edges}
+            caption="רשימת כל הקשרים המוצגים במפה"
+          />
+        </div>
+      )}
     </div>
   );
 }
