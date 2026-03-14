@@ -106,11 +106,7 @@ def convert_pdf(pdf_path: Path, doc_id: str, *, use_ocr: bool = False) -> str | 
     Returns:
         Markdown text or None if extraction failed.
     """
-    try:
-        import pymupdf
-    except ImportError:
-        logger.warning(f"pymupdf not installed — cannot convert PDF {doc_id}. Install locally for conversion.")
-        return None
+    import pymupdf
 
     # Validate PDF header
     file_size = pdf_path.stat().st_size

@@ -663,10 +663,6 @@ async def reconvert_all_status():
 @router.post("/documents/reconvert-all")
 async def reconvert_all_documents(background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
     """Re-extract markdown from all PDFs with OCR fallback. Runs as background task in batches."""
-    try:
-        import pymupdf  # noqa: F401
-    except ImportError:
-        raise HTTPException(503, "המרת PDF לא זמינה בשרת הנוכחי (חסר pymupdf). הרץ המרה מקומית.")
     global _reconvert_state
     if _reconvert_state["running"]:
         raise HTTPException(409, "Reconvert already running")
@@ -1068,10 +1064,6 @@ async def batch_reset_status(body: dict, db: AsyncSession = Depends(get_db)):
 @router.post("/documents/{doc_id}/reconvert")
 async def reconvert_document(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """Re-extract markdown from a single document's PDF (download if needed) using RTL-safe pymupdf."""
-    try:
-        import pymupdf  # noqa: F401
-    except ImportError:
-        raise HTTPException(503, "המרת PDF לא זמינה בשרת הנוכחי (חסר pymupdf). הרץ המרה מקומית.")
     import httpx as _httpx
     from ocoi_api.services.pdf_converter import convert_pdf
 
