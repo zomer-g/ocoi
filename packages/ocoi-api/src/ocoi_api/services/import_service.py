@@ -14,8 +14,6 @@ from ocoi_db.engine import async_session_factory
 from ocoi_db.crud import get_or_create_source, create_document
 from ocoi_db.models import Document, IgnoredResource
 
-from ocoi_api.services.pdf_converter import convert_pdf
-
 logger = logging.getLogger("ocoi.api.import")
 
 # Module-level state for Gov.il bulk import progress polling
@@ -111,9 +109,41 @@ def _compute_content_hash(pdf_bytes: bytes) -> str:
 async def _check_duplicate_hash(session, content_hash: str) -> Document | None:
     """Check if a document with this content hash already exists."""
     result = await session.execute(
-        select(Document).where(Document.content_hash == content_hash)
+        select(Document).where(Document.content_hash == content_hash).limit(1)
     )
     return result.scalars().first()
+
+
+async def check_duplicate(
+    session,
+    file_url: str | None = None,
+    content_hash: str | None = None,
+    title: str | None = None,
+) -> Document | None:
+    """Unified duplicate detection — used by all import paths.
+
+    Checks in order: file_url → content_hash → title.
+    Returns existing Document or None.
+    """
+    if file_url:
+        result = await session.execute(
+            select(Document).where(Document.file_url == file_url).limit(1)
+        )
+        if doc := result.scalars().first():
+            return doc
+    if content_hash:
+        result = await session.execute(
+            select(Document).where(Document.content_hash == content_hash).limit(1)
+        )
+        if doc := result.scalars().first():
+            return doc
+    if title:
+        result = await session.execute(
+            select(Document).where(Document.title == title).limit(1)
+        )
+        if doc := result.scalars().first():
+            return doc
+    return None
 
 
 # ── CKAN: Search + selective import ──────────────────────────────────────
@@ -274,10 +304,8 @@ async def _import_single_ckan_doc(session, doc, ds, imported_at: str, stats: dic
     User can reconvert later with OCR.
     """
     # Check duplicate by URL
-    existing = await session.execute(
-        select(Document).where(Document.file_url == doc.file_url)
-    )
-    if existing.scalars().first():
+    dup = await check_duplicate(session, file_url=doc.file_url)
+    if dup:
         stats["skipped"] += 1
         return
 
@@ -288,7 +316,7 @@ async def _import_single_ckan_doc(session, doc, ds, imported_at: str, stats: dic
     content_hash = None
     if pdf_bytes:
         content_hash = _compute_content_hash(pdf_bytes)
-        dup = await _check_duplicate_hash(session, content_hash)
+        dup = await check_duplicate(session, content_hash=content_hash)
         if dup:
             logger.info(f"Duplicate content hash for '{doc.title[:50]}' — matches doc {dup.id}")
             stats["skipped"] += 1
@@ -297,13 +325,8 @@ async def _import_single_ckan_doc(session, doc, ds, imported_at: str, stats: dic
     # Try to convert (without OCR during import — too slow for bulk)
     md_text = None
     if pdf_bytes:
-        temp_pdf = settings.pdf_dir / f"tmp_{hashlib.md5(doc.file_url.encode()).hexdigest()}.pdf"
-        settings.pdf_dir.mkdir(parents=True, exist_ok=True)
-        temp_pdf.write_bytes(pdf_bytes)
-        try:
-            md_text = convert_pdf(temp_pdf, doc.title[:50])
-        finally:
-            temp_pdf.unlink(missing_ok=True)
+        from ocoi_api.services.pdf_converter import convert_pdf_bytes
+        md_text = convert_pdf_bytes(pdf_bytes, doc.title[:50])
 
     # ALWAYS create the document record (even if conversion failed)
     metadata = dict(doc.metadata)
@@ -339,6 +362,7 @@ async def _import_single_ckan_doc(session, doc, ds, imported_at: str, stats: dic
     if md_text:
         db_doc.markdown_content = md_text
         db_doc.conversion_status = "converted"
+        db_doc.converted_at = datetime.now(timezone.utc)
     elif pdf_bytes:
         db_doc.conversion_status = "no_text"  # PDF stored, needs OCR
     else:
@@ -512,7 +536,7 @@ async def _process_new_records(client, new_records: list) -> None:
                 content_hash = None
                 if pdf_bytes:
                     content_hash = _compute_content_hash(pdf_bytes)
-                    dup = await _check_duplicate_hash(session, content_hash)
+                    dup = await check_duplicate(session, content_hash=content_hash)
                     if dup:
                         _import_state["skipped"] += 1
                         continue
@@ -520,13 +544,8 @@ async def _process_new_records(client, new_records: list) -> None:
                 # Try conversion (no OCR during bulk import)
                 md_text = None
                 if pdf_bytes:
-                    temp_pdf = settings.pdf_dir / f"tmp_{hashlib.md5(doc_info.file_url.encode()).hexdigest()}.pdf"
-                    settings.pdf_dir.mkdir(parents=True, exist_ok=True)
-                    temp_pdf.write_bytes(pdf_bytes)
-                    try:
-                        md_text = convert_pdf(temp_pdf, doc_info.title[:50])
-                    finally:
-                        temp_pdf.unlink(missing_ok=True)
+                    from ocoi_api.services.pdf_converter import convert_pdf_bytes
+                    md_text = convert_pdf_bytes(pdf_bytes, doc_info.title[:50])
 
                 # ALWAYS save to DB
                 metadata = dict(doc_info.metadata)
@@ -558,6 +577,7 @@ async def _process_new_records(client, new_records: list) -> None:
                 if md_text:
                     db_doc.markdown_content = md_text
                     db_doc.conversion_status = "converted"
+                    db_doc.converted_at = datetime.now(timezone.utc)
                 elif pdf_bytes:
                     db_doc.conversion_status = "no_text"
                 else:

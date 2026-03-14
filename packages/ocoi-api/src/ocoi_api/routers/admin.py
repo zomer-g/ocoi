@@ -593,6 +593,7 @@ async def _reconvert_all_bg():
     """Background worker: reconvert all documents in batches of 10."""
     import gc
     import httpx as _httpx
+    from datetime import datetime, timezone as tz
     from ocoi_api.services.pdf_converter import convert_pdf
 
     global _reconvert_state
@@ -616,6 +617,7 @@ async def _reconvert_all_bg():
                     if md_text:
                         doc.markdown_content = md_text
                         doc.conversion_status = "converted"
+                        doc.converted_at = datetime.now(tz.utc)
                         if not doc.pdf_content and pdf_path.exists():
                             doc.pdf_content = pdf_path.read_bytes()
                         _reconvert_state["updated"] += 1
@@ -665,6 +667,7 @@ async def _backfill_pdf_bg():
     """Download PDFs for documents missing pdf_content, then reconvert."""
     import hashlib
     import httpx as _httpx
+    from datetime import datetime, timezone as tz
     from ocoi_api.services.pdf_converter import convert_pdf_bytes
 
     async with async_session_factory() as db:
@@ -700,6 +703,7 @@ async def _backfill_pdf_bg():
                 if md_text:
                     doc.markdown_content = md_text
                     doc.conversion_status = "converted"
+                    doc.converted_at = datetime.now(tz.utc)
                     _log.info(f"Backfilled + converted '{doc.title[:40]}': {len(md_text)} chars")
                 else:
                     doc.conversion_status = "no_text"
@@ -759,20 +763,14 @@ async def upload_document(
         if len(content) == 0:
             raise HTTPException(400, "הקובץ ריק")
 
-        # Check for duplicate by content hash
+        # Check for duplicate using unified detection
+        from ocoi_api.services.import_service import check_duplicate
         content_hash = hashlib.sha256(content).hexdigest()
-        existing_hash = await db.execute(
-            select(Document).where(Document.content_hash == content_hash)
-        )
-        if existing_hash.scalars().first():
-            raise HTTPException(409, "מסמך זהה כבר קיים במערכת (תוכן זהה)")
-
-        # Check for duplicate by title
         title_to_check = filename.rsplit(".", 1)[0]
-        existing_title = await db.execute(
-            select(Document).where(Document.title == title_to_check)
-        )
-        if existing_title.scalars().first():
+        dup = await check_duplicate(db, content_hash=content_hash, title=title_to_check)
+        if dup:
+            if dup.content_hash == content_hash:
+                raise HTTPException(409, "מסמך זהה כבר קיים במערכת (תוכן זהה)")
             raise HTTPException(409, f"מסמך בשם '{title_to_check}' כבר קיים במערכת")
 
         # Convert PDF bytes to markdown (no disk needed)
@@ -804,9 +802,11 @@ async def upload_document(
         )
         logger.info(f"Upload DB record created: {db_doc.id}")
 
+        from datetime import datetime, timezone
         if md_text:
             db_doc.markdown_content = md_text
             db_doc.conversion_status = "converted"
+            db_doc.converted_at = datetime.now(timezone.utc)
         else:
             db_doc.conversion_status = "no_text"
         db_doc.pdf_content = content
@@ -867,8 +867,10 @@ async def reconvert_document(doc_id: uuid.UUID, db: AsyncSession = Depends(get_d
         await db.commit()
         raise HTTPException(500, "המרה נכשלה — לא הופק טקסט מה-PDF")
 
+    from datetime import datetime, timezone as tz
     doc.markdown_content = md_text
     doc.conversion_status = "converted"
+    doc.converted_at = datetime.now(tz.utc)
     # Store PDF in DB if not already there
     if not doc.pdf_content and pdf_path.exists():
         doc.pdf_content = pdf_path.read_bytes()
