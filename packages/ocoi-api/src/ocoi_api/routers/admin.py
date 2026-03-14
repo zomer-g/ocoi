@@ -31,6 +31,36 @@ router = APIRouter(
 )
 
 
+# ── Memory monitoring ─────────────────────────────────────────────────────
+
+@router.get("/memory")
+async def memory_info():
+    """Return current process memory usage for debugging OOM issues."""
+    import os
+    try:
+        import psutil
+        proc = psutil.Process(os.getpid())
+        mem = proc.memory_info()
+        return {
+            "status": "ok",
+            "data": {
+                "rss_mb": round(mem.rss / 1024 / 1024, 1),
+                "vms_mb": round(mem.vms / 1024 / 1024, 1),
+            },
+        }
+    except ImportError:
+        # Fallback: read from /proc on Linux
+        try:
+            with open(f"/proc/{os.getpid()}/status") as f:
+                for line in f:
+                    if line.startswith("VmRSS:"):
+                        rss_kb = int(line.split()[1])
+                        return {"status": "ok", "data": {"rss_mb": round(rss_kb / 1024, 1)}}
+        except Exception:
+            pass
+        return {"status": "ok", "data": {"rss_mb": None, "message": "psutil not installed"}}
+
+
 # ── Dashboard stats ───────────────────────────────────────────────────────
 
 @router.get("/stats")
