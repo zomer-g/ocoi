@@ -1522,6 +1522,17 @@ async def registry_sync_status():
     return {"status": "ok", "data": get_registry_sync_state()}
 
 
+@router.post("/registry/sync-all")
+async def registry_sync_all(background_tasks: BackgroundTasks):
+    """Trigger sync for all registry sources sequentially."""
+    from ocoi_api.services.registry_service import get_registry_sync_state, run_all_registry_syncs
+    state = get_registry_sync_state()
+    if state["running"]:
+        raise HTTPException(409, "סנכרון כבר רץ — נסה שוב אחרי שיסתיים")
+    background_tasks.add_task(run_all_registry_syncs)
+    return {"status": "ok", "message": "סנכרון כל המרשמים הופעל"}
+
+
 @router.post("/registry/sync/{source}")
 async def registry_sync(source: str, background_tasks: BackgroundTasks):
     """Trigger sync for a specific registry source."""

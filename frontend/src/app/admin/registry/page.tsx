@@ -6,6 +6,7 @@ import {
   getRegistrySyncStatus,
   getRegistryMatchStatus,
   triggerRegistrySync,
+  triggerRegistrySyncAll,
   triggerRegistryMatchAll,
   getRegistryRecords,
   type RegistrySource,
@@ -115,6 +116,17 @@ export default function RegistryPage() {
     }
   };
 
+  const handleSyncAll = async () => {
+    try {
+      setError(null);
+      await triggerRegistrySyncAll();
+      const res = await getRegistrySyncStatus();
+      setSyncState(res.data);
+    } catch (e: unknown) {
+      setError((e as Error).message);
+    }
+  };
+
   const handleMatchAll = async () => {
     try {
       setError(null);
@@ -151,6 +163,14 @@ export default function RegistryPage() {
       <p className="text-sm text-gray-500">
         סנכרון מרשמים ממאגרי מידע ממשלתיים (DATAGOV) והתאמה אוטומטית של ישויות שחולצו.
       </p>
+
+      <button
+        onClick={handleSyncAll}
+        disabled={!!syncState?.running}
+        className="text-sm bg-primary-600 text-white rounded-lg px-5 py-2.5 hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium"
+      >
+        {syncState?.running ? "מסנכרן..." : "סנכרן את כל המרשמים"}
+      </button>
 
       {error && (
         <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm">

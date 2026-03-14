@@ -169,7 +169,7 @@ async def run_registry_sync(source_type: str):
                     needed_fields.append(f)
         fields_param = ",".join(needed_fields)
 
-        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as http:
+        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as http:
             # First request to get total
             first_resp = await _fetch_ckan_page(http, base_url, resource_id, 0, batch_size, fields=fields_param)
             total_remote = first_resp.get("result", {}).get("total", 0)
@@ -238,9 +238,12 @@ async def run_registry_sync(source_type: str):
 
 async def _fetch_ckan_page(
     http: httpx.AsyncClient, base_url: str, resource_id: str, offset: int, limit: int,
-    retries: int = 3, fields: str = "",
+    retries: int = 5, fields: str = "",
 ) -> dict:
-    """Fetch a single page from the CKAN datastore API with retries."""
+    """Fetch a single page from the CKAN datastore API with retries.
+
+    Handles 409 Conflict (CKAN datastore busy) with longer delays.
+    """
     import asyncio
 
     url = f"{base_url}?resource_id={resource_id}&limit={limit}&offset={offset}&fields={fields}" if fields else f"{base_url}?resource_id={resource_id}&limit={limit}&offset={offset}"
@@ -249,6 +252,14 @@ async def _fetch_ckan_page(
             resp = await http.get(url)
             resp.raise_for_status()
             return resp.json()
+        except httpx.HTTPStatusError as e:
+            if attempt == retries - 1:
+                raise
+            if e.response.status_code == 409:
+                # 409 = CKAN datastore busy/rebuilding — retry with longer delay
+                await asyncio.sleep(5 * (attempt + 1))
+            else:
+                await asyncio.sleep(2 ** attempt)
         except Exception as e:
             if attempt == retries - 1:
                 raise
@@ -328,7 +339,7 @@ async def _process_batch(
                 existing.name = row["name"]
                 existing.name_normalized = row["name_normalized"]
                 existing.status = row["status"]
-                existing.updated_at = datetime.now(timezone.utc)
+                # updated_at handled automatically by onupdate=func.now()
             else:
                 session.add(RegistryRecord(**row))
             saved += 1
@@ -350,6 +361,16 @@ async def _get_or_create_sync_status(session, source_type: str, status: str) -> 
     else:
         row.sync_status = status
     return row
+
+
+async def run_all_registry_syncs():
+    """Sync all registry sources sequentially. Background task."""
+    for source_type in REGISTRY_SOURCES:
+        try:
+            await run_registry_sync(source_type)
+        except Exception as e:
+            logger.error(f"Sync failed for {source_type}: {e}", exc_info=True)
+            # Continue with next source even if one fails
 
 
 # ── Entity matching ──────────────────────────────────────────────────────

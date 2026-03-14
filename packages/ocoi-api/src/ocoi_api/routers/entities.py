@@ -3,11 +3,11 @@
 import json
 import uuid
 from fastapi import APIRouter, Depends, Query, HTTPException
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, func, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ocoi_api.dependencies import get_db
-from ocoi_db.models import Person, Company, Association, Domain, EntityRelationship, Document
+from ocoi_db.models import Person, Company, Association, Domain, EntityRelationship, Document, RegistryRecord
 
 router = APIRouter(tags=["entities"])
 
@@ -233,3 +233,133 @@ async def get_domain_documents(domain_id: uuid.UUID, db: AsyncSession = Depends(
     )
     docs = [{"id": str(r.id), "title": r.title, "file_url": r.file_url} for r in result.fetchall()]
     return {"status": "ok", "data": docs}
+
+
+# --- Lookup: search entities by registration number or name ---
+
+@router.get("/lookup")
+async def lookup_entity(
+    q: str = Query("", description="Search by name (partial match)"),
+    registration_number: str = Query("", description="Exact registration number"),
+    entity_type: str = Query("", description="Filter: person, company, association, domain"),
+    limit: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+):
+    """Unified entity lookup — search across all entity types by name or registration number."""
+    results = []
+
+    search_types = [entity_type] if entity_type else ["person", "company", "association", "domain"]
+
+    for etype in search_types:
+        if etype == "company":
+            stmt = select(Company)
+            if registration_number:
+                stmt = stmt.where(Company.registration_number == registration_number)
+            elif q.strip():
+                stmt = stmt.where(Company.name_hebrew.ilike(f"%{q.strip()}%"))
+            else:
+                continue
+            rows = (await db.execute(stmt.limit(limit))).scalars().all()
+            for c in rows:
+                results.append({
+                    "id": str(c.id), "entity_type": "company",
+                    "name_hebrew": c.name_hebrew, "registration_number": c.registration_number,
+                    "match_confidence": c.match_confidence,
+                })
+
+        elif etype == "association":
+            stmt = select(Association)
+            if registration_number:
+                stmt = stmt.where(Association.registration_number == registration_number)
+            elif q.strip():
+                stmt = stmt.where(Association.name_hebrew.ilike(f"%{q.strip()}%"))
+            else:
+                continue
+            rows = (await db.execute(stmt.limit(limit))).scalars().all()
+            for a in rows:
+                results.append({
+                    "id": str(a.id), "entity_type": "association",
+                    "name_hebrew": a.name_hebrew, "registration_number": a.registration_number,
+                    "match_confidence": a.match_confidence,
+                })
+
+        elif etype == "person":
+            if registration_number:
+                continue
+            if not q.strip():
+                continue
+            stmt = select(Person).where(Person.name_hebrew.ilike(f"%{q.strip()}%")).limit(limit)
+            rows = (await db.execute(stmt)).scalars().all()
+            for p in rows:
+                results.append({
+                    "id": str(p.id), "entity_type": "person",
+                    "name_hebrew": p.name_hebrew, "registration_number": None,
+                    "match_confidence": None,
+                })
+
+        elif etype == "domain":
+            if registration_number:
+                continue
+            if not q.strip():
+                continue
+            stmt = select(Domain).where(Domain.name_hebrew.ilike(f"%{q.strip()}%")).limit(limit)
+            rows = (await db.execute(stmt)).scalars().all()
+            for d in rows:
+                results.append({
+                    "id": str(d.id), "entity_type": "domain",
+                    "name_hebrew": d.name_hebrew, "registration_number": None,
+                    "match_confidence": None,
+                })
+
+    return {"status": "ok", "data": results[:limit]}
+
+
+# --- Registry lookup: search the full government registry ---
+
+@router.get("/registry/lookup")
+async def lookup_registry(
+    q: str = Query("", description="Search by name (partial match)"),
+    registration_number: str = Query("", description="Exact registration number"),
+    source_type: str = Query("", description="Filter: companies, associations, public_benefit, local_authorities, municipal_corporations"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+):
+    """Search the external government registry records (721K+ companies, associations, etc.)."""
+    offset = _paginate(page, limit)
+    stmt = select(RegistryRecord)
+    count_stmt = select(func.count()).select_from(RegistryRecord)
+    filters = []
+
+    if source_type:
+        filters.append(RegistryRecord.source_type == source_type)
+    if registration_number:
+        filters.append(RegistryRecord.registration_number == registration_number)
+    elif q.strip():
+        filters.append(RegistryRecord.name.ilike(f"%{q.strip()}%"))
+
+    if not registration_number and not q.strip():
+        return {"status": "ok", "data": [], "meta": {"total": 0, "page": page, "limit": limit}}
+
+    if filters:
+        stmt = stmt.where(and_(*filters))
+        count_stmt = count_stmt.where(and_(*filters))
+
+    total = (await db.execute(count_stmt)).scalar()
+    result = await db.execute(stmt.offset(offset).limit(limit).order_by(RegistryRecord.name))
+    records = result.scalars().all()
+
+    return {
+        "status": "ok",
+        "data": [
+            {
+                "id": str(r.id),
+                "name": r.name,
+                "registration_number": r.registration_number,
+                "source_type": r.source_type,
+                "status": r.status,
+            }
+            for r in records
+        ],
+        "meta": {"total": total, "page": page, "limit": limit},
+    }

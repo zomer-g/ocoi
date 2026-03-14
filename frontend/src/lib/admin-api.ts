@@ -472,6 +472,9 @@ export function getRegistrySources() {
 export function triggerRegistrySync(source: string) {
   return adminFetch<{ status: string; message: string }>(`/registry/sync/${source}`, { method: "POST" });
 }
+export function triggerRegistrySyncAll() {
+  return adminFetch<{ status: string; message: string }>("/registry/sync-all", { method: "POST" });
+}
 export function getRegistrySyncStatus() {
   return adminFetch<{ status: string; data: RegistrySyncState }>("/registry/sync/status");
 }
