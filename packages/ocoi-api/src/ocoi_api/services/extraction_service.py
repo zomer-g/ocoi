@@ -16,7 +16,7 @@ from ocoi_common.models import (
     ExtractionResult, ExtractedPerson, ExtractedCompany,
     ExtractedAssociation, ExtractedDomain, ExtractedRelationship,
 )
-from ocoi_db.engine import async_session_factory
+from ocoi_db.engine import async_session_factory, bg_session_factory
 from ocoi_db.models import Document
 from ocoi_db.crud import (
     upsert_person, upsert_company, upsert_association, upsert_domain,
@@ -230,7 +230,7 @@ async def _run_extraction(document_ids: list[str] | None):
     # Phase 2: Process each doc in its own session (commit after each)
     for doc_id in doc_ids:
         try:
-            async with async_session_factory() as session:
+            async with bg_session_factory() as session:
                 result = await session.execute(
                     select(Document).options(
                         undefer(Document.markdown_content),
@@ -383,7 +383,7 @@ async def _run_extraction(document_ids: list[str] | None):
             logger.error(f"Extraction failed for doc {doc_id}: {e}", exc_info=True)
             # Mark as failed in a fresh session
             try:
-                async with async_session_factory() as err_session:
+                async with bg_session_factory() as err_session:
                     result = await err_session.execute(
                         select(Document).where(Document.id == doc_id)
                     )

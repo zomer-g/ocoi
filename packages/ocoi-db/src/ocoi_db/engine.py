@@ -22,6 +22,10 @@ async_engine = create_async_engine(
 async_session_factory = async_sessionmaker(
     async_engine, class_=AsyncSession, expire_on_commit=False
 )
+# Background task session factory — expires objects on commit to free memory
+bg_session_factory = async_sessionmaker(
+    async_engine, class_=AsyncSession, expire_on_commit=True
+)
 
 # --- Sync engine ---
 sync_connect_args = {}

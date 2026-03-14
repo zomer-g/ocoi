@@ -18,7 +18,7 @@ from ocoi_api.schemas import (
     RelationshipCreate,
 )
 from ocoi_common.config import settings
-from ocoi_db.engine import async_session_factory
+from ocoi_db.engine import async_session_factory, bg_session_factory
 from ocoi_db.models import (
     Person, Company, Association, Domain,
     EntityRelationship, Document, Source, ExtractionRun, IgnoredResource,
@@ -701,7 +701,7 @@ async def _reconvert_all_bg():
     BATCH_SIZE = 10
 
     try:
-        async with async_session_factory() as db:
+        async with bg_session_factory() as db:
             # Only load IDs first — avoid loading all PDF blobs into memory
             id_result = await db.execute(select(Document.id))
             doc_ids = [r[0] for r in id_result.all()]
@@ -786,7 +786,7 @@ async def _backfill_pdf_bg():
     _log = logging.getLogger("ocoi.api.backfill")
 
     # Phase 1: Get IDs only (no BLOBs loaded)
-    async with async_session_factory() as db:
+    async with bg_session_factory() as db:
         result = await db.execute(
             select(Document.id).where(
                 Document.pdf_content.is_(None),
@@ -800,7 +800,7 @@ async def _backfill_pdf_bg():
     # Phase 2: Process one at a time in fresh sessions
     for i, doc_id in enumerate(doc_ids):
         try:
-            async with async_session_factory() as db:
+            async with bg_session_factory() as db:
                 result = await db.execute(select(Document).where(Document.id == doc_id))
                 doc = result.scalars().first()
                 if not doc:
@@ -998,7 +998,7 @@ async def _batch_reconvert_bg(document_ids: list[str]):
 
     for doc_id in document_ids:
         try:
-            async with async_session_factory() as db:
+            async with bg_session_factory() as db:
                 result = await db.execute(
                     select(Document).options(undefer(Document.pdf_content)).where(Document.id == doc_id)
                 )

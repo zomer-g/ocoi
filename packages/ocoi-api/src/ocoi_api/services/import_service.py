@@ -10,7 +10,7 @@ import httpx
 from sqlalchemy import select
 from ocoi_common.config import settings
 from ocoi_common.models import ImportedDocument
-from ocoi_db.engine import async_session_factory
+from ocoi_db.engine import async_session_factory, bg_session_factory
 from ocoi_db.crud import get_or_create_source, create_document
 from ocoi_db.models import Document, IgnoredResource
 
@@ -413,7 +413,7 @@ async def run_bulk_ckan_import(query: str) -> dict:
                 if not datasets:
                     break
 
-                async with async_session_factory() as session:
+                async with bg_session_factory() as session:
                     for ds in datasets:
                         docs = client.extract_documents(ds)
                         _import_state["total"] += len(docs)
@@ -620,35 +620,39 @@ async def _process_new_records(client, new_records: list) -> None:
     """Download PDFs, convert to markdown, save to DB.
 
     ALWAYS saves documents even if conversion fails — user can reconvert later.
+    Uses per-document sessions with bg_session_factory to prevent memory accumulation.
     """
+    import gc
     imported_at = datetime.now(timezone.utc).isoformat()
-    async with async_session_factory() as session:
-        for record in new_records:
-            try:
-                doc_info = client.record_to_document(record)
-                if not doc_info:
+
+    for record in new_records:
+        try:
+            doc_info = client.record_to_document(record)
+            if not doc_info:
+                _import_state["skipped"] += 1
+                continue
+
+            # Download PDF
+            pdf_bytes, download_error = await download_pdf(doc_info.file_url, doc_info.title[:50])
+
+            # Check duplicate by content hash
+            content_hash = None
+            if pdf_bytes:
+                content_hash = _compute_content_hash(pdf_bytes)
+                async with bg_session_factory() as dup_session:
+                    dup = await check_duplicate(dup_session, content_hash=content_hash)
+                if dup:
                     _import_state["skipped"] += 1
                     continue
 
-                # Download PDF
-                pdf_bytes, download_error = await download_pdf(doc_info.file_url, doc_info.title[:50])
+            # Try conversion (no OCR during bulk import)
+            md_text = None
+            if pdf_bytes:
+                from ocoi_api.services.pdf_converter import convert_pdf_bytes
+                md_text = convert_pdf_bytes(pdf_bytes, doc_info.title[:50])
 
-                # Check duplicate by content hash
-                content_hash = None
-                if pdf_bytes:
-                    content_hash = _compute_content_hash(pdf_bytes)
-                    dup = await check_duplicate(session, content_hash=content_hash)
-                    if dup:
-                        _import_state["skipped"] += 1
-                        continue
-
-                # Try conversion (no OCR during bulk import)
-                md_text = None
-                if pdf_bytes:
-                    from ocoi_api.services.pdf_converter import convert_pdf_bytes
-                    md_text = convert_pdf_bytes(pdf_bytes, doc_info.title[:50])
-
-                # ALWAYS save to DB
+            # ALWAYS save to DB — each doc in its own session
+            async with bg_session_factory() as session:
                 metadata = dict(doc_info.metadata)
                 metadata["imported_at"] = imported_at
                 metadata.update(record.raw_data)
@@ -685,12 +689,12 @@ async def _process_new_records(client, new_records: list) -> None:
                     db_doc.conversion_status = "failed"
 
                 _import_state["imported"] += 1
+                await session.commit()
 
-            except Exception as e:
-                _import_state["errors"] += 1
-                if len(_import_state["error_messages"]) < 20:
-                    _import_state["error_messages"].append(
-                        f"Gov.il '{record.name[:50]}': {e}"
-                    )
-
-        await session.commit()
+        except Exception as e:
+            _import_state["errors"] += 1
+            if len(_import_state["error_messages"]) < 20:
+                _import_state["error_messages"].append(
+                    f"Gov.il '{record.name[:50]}': {e}"
+                )
+        gc.collect()
