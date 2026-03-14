@@ -124,7 +124,7 @@ async def run_migrations():
             _log.info(f"Ran: {sql[:60]}...")
         except Exception as e:
             # Already TIMESTAMPTZ, column doesn't exist, or SQLite — all fine
-            _log.debug(f"TZ migration skipped: {e}")
+            _log.warning(f"TZ migration skipped ({sql[:50]}...): {e}")
 
     # --- Dedup + unique indexes (run once, idempotent) ---
     await _run_dedup_and_indexes(_log)

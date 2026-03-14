@@ -8,7 +8,7 @@ import httpx
 from sqlalchemy import select, func, and_
 
 from ocoi_common.config import settings
-from ocoi_common.timezone import now_israel
+from ocoi_common.timezone import now_israel, now_israel_naive
 from ocoi_common.logging import setup_logging
 from ocoi_db.engine import async_session_factory, bg_session_factory
 from ocoi_db.models import RegistryRecord, RegistrySyncStatus, Company, Association
@@ -213,7 +213,7 @@ async def run_registry_sync(source_type: str):
         async with bg_session_factory() as session:
             sync_row = await _get_or_create_sync_status(session, source_type, "completed")
             sync_row.record_count = total_saved
-            sync_row.last_synced_at = now_israel()
+            sync_row.last_synced_at = now_israel_naive()
             sync_row.error_message = None
             await session.commit()
 
@@ -239,12 +239,12 @@ async def run_registry_sync(source_type: str):
 
 async def _fetch_ckan_page(
     http: httpx.AsyncClient, base_url: str, resource_id: str, offset: int, limit: int,
-    retries: int = 8, fields: str = "",
+    retries: int = 12, fields: str = "",
 ) -> dict:
     """Fetch a single page from the CKAN datastore API with retries.
 
     Handles 409 Conflict (CKAN datastore busy/rebuilding) with aggressive
-    back-off — up to ~5 minutes total wait for 409s.
+    back-off — up to ~10 minutes total wait for 409s.
     """
     import asyncio
 
@@ -258,8 +258,8 @@ async def _fetch_ckan_page(
             if attempt == retries - 1:
                 raise
             if e.response.status_code == 409:
-                # 409 = CKAN datastore busy/rebuilding — wait 15-60s per attempt
-                delay = min(15 * (attempt + 1), 60)
+                # 409 = CKAN datastore busy/rebuilding — wait 20-90s per attempt
+                delay = min(20 * (attempt + 1), 90)
                 logger.warning(f"CKAN 409 (attempt {attempt + 1}/{retries}), retrying in {delay}s...")
                 await asyncio.sleep(delay)
             else:

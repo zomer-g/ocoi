@@ -7,7 +7,7 @@ from pathlib import Path
 
 import httpx
 
-from ocoi_common.timezone import now_israel
+from ocoi_common.timezone import now_israel, now_israel_naive
 
 from sqlalchemy import select
 from ocoi_common.config import settings
@@ -364,7 +364,7 @@ async def _import_single_ckan_doc(session, doc, ds, imported_at: str, stats: dic
     if md_text:
         db_doc.markdown_content = md_text
         db_doc.conversion_status = "converted"
-        db_doc.converted_at = now_israel()
+        db_doc.converted_at = now_israel_naive()
     elif pdf_bytes:
         db_doc.conversion_status = "no_text"  # PDF stored, needs OCR
     else:
@@ -684,7 +684,7 @@ async def _process_new_records(client, new_records: list) -> None:
                 if md_text:
                     db_doc.markdown_content = md_text
                     db_doc.conversion_status = "converted"
-                    db_doc.converted_at = now_israel()
+                    db_doc.converted_at = now_israel_naive()
                 elif pdf_bytes:
                     db_doc.conversion_status = "no_text"
                 else:

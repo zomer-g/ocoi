@@ -6,7 +6,7 @@ from pathlib import Path
 
 import httpx
 
-from ocoi_common.timezone import now_israel
+from ocoi_common.timezone import now_israel, now_israel_naive
 from openai import AsyncOpenAI
 from sqlalchemy import select
 from sqlalchemy.orm import undefer
@@ -370,7 +370,7 @@ async def _run_extraction(document_ids: list[str] | None):
                 )
 
                 doc.extraction_status = "extracted"
-                doc.extracted_at = now_israel()
+                doc.extracted_at = now_israel_naive()
                 await session.commit()
 
                 _extraction_state["entities_found"] += entities_count

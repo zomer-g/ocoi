@@ -19,7 +19,7 @@ from ocoi_api.schemas import (
     RelationshipCreate,
 )
 from ocoi_common.config import settings
-from ocoi_common.timezone import now_israel
+from ocoi_common.timezone import now_israel, now_israel_naive
 from ocoi_db.engine import async_session_factory, bg_session_factory
 from ocoi_db.crud import _add_alias, _get_aliases
 from ocoi_db.models import (
@@ -798,7 +798,7 @@ async def _reconvert_all_bg():
                     if md_text:
                         doc.markdown_content = md_text
                         doc.conversion_status = "converted"
-                        doc.converted_at = now_israel()
+                        doc.converted_at = now_israel_naive()
                         if not doc.pdf_content and pdf_path.exists():
                             doc.pdf_content = pdf_path.read_bytes()
                         _reconvert_state["updated"] += 1
@@ -889,7 +889,7 @@ async def _backfill_pdf_bg():
                 if md_text:
                     doc.markdown_content = md_text
                     doc.conversion_status = "converted"
-                    doc.converted_at = now_israel()
+                    doc.converted_at = now_israel_naive()
                     _log.info(f"Backfilled + converted '{doc.title[:40]}': {len(md_text)} chars")
                 else:
                     doc.conversion_status = "no_text"
@@ -989,7 +989,7 @@ async def upload_document(
         if md_text:
             db_doc.markdown_content = md_text
             db_doc.conversion_status = "converted"
-            db_doc.converted_at = now_israel()
+            db_doc.converted_at = now_israel_naive()
         else:
             db_doc.conversion_status = "no_text"
         db_doc.pdf_content = content
@@ -1078,7 +1078,7 @@ async def _batch_reconvert_bg(document_ids: list[str]):
                 if md_text:
                     doc.markdown_content = md_text
                     doc.conversion_status = "converted"
-                    doc.converted_at = now_israel()
+                    doc.converted_at = now_israel_naive()
                     if not doc.pdf_content and pdf_path.exists():
                         doc.pdf_content = pdf_path.read_bytes()
                 else:
@@ -1171,7 +1171,7 @@ async def reconvert_document(doc_id: uuid.UUID, db: AsyncSession = Depends(get_d
 
     doc.markdown_content = md_text
     doc.conversion_status = "converted"
-    doc.converted_at = now_israel()
+    doc.converted_at = now_israel_naive()
     # Store PDF in DB if not already there
     if not doc.pdf_content and pdf_path.exists():
         doc.pdf_content = pdf_path.read_bytes()
