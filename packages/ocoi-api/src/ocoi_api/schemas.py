@@ -73,3 +73,36 @@ class RelationshipCreate(BaseModel):
     restriction_type: str | None = None
     document_id: str
     confidence: float = 0.5
+
+
+# --- Push schemas (local processor → server) ---
+
+
+class PushDocumentItem(BaseModel):
+    title: str
+    file_url: str
+    file_format: str = "pdf"
+    file_size: int | None = None
+    content_hash: str | None = None
+    source_type: str = "ckan"
+    source_id: str = ""
+    source_title: str = ""
+    source_url: str = ""
+    markdown_content: str | None = None
+    extraction_json: dict | None = None
+    pdf_base64: str | None = None  # base64-encoded PDF bytes
+
+
+class PushDocumentResponse(BaseModel):
+    status: str  # "created" | "skipped" | "error"
+    document_id: str | None = None
+    extracted: bool = False
+    error: str | None = None
+
+
+class CheckDuplicatesRequest(BaseModel):
+    urls: list[str]
+
+
+class CheckDuplicatesResponse(BaseModel):
+    existing_urls: list[str]

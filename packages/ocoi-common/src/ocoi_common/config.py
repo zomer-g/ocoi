@@ -78,6 +78,9 @@ class Settings(BaseSettings):
     # Gov.il source
     govil_collector_url: str = "https://www.gov.il/he/api/DynamicCollector"
 
+    # Push API (local processor → server)
+    push_api_key: str = ""
+
     # Israeli Government Data Registry (DATAGOV)
     datagov_base_url: str = "https://data.gov.il"
     registry_match_threshold: float = 0.85
