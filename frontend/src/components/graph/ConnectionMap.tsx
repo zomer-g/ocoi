@@ -13,7 +13,7 @@ const NODE_COLORS: Record<string, string> = {
   domain: "#F59E0B",     // amber
 };
 
-const EDGE_LABELS: Record<string, string> = {
+export const EDGE_LABELS: Record<string, string> = {
   restricted_from: "מוגבל מ-",
   owns: "בעלות",
   manages: "מנהל",
@@ -23,6 +23,8 @@ const EDGE_LABELS: Record<string, string> = {
   operates_in: "פועל בתחום",
   family_member: "בן משפחה",
 };
+
+let fcoseRegistered = false;
 
 interface ConnectionMapProps {
   graph: SubGraph;
@@ -46,6 +48,17 @@ export function ConnectionMap({
     if (!containerRef.current) return;
 
     const cytoscape = (await import("cytoscape")).default;
+
+    // Register fcose layout extension (once)
+    if (!fcoseRegistered) {
+      try {
+        const fcose = (await import("cytoscape-fcose")).default;
+        cytoscape.use(fcose);
+      } catch {
+        // fcose not available, fall back to cose
+      }
+      fcoseRegistered = true;
+    }
 
     // Build elements
     const nodes = graph.nodes.map((node) => ({
@@ -81,54 +94,88 @@ export function ConnectionMap({
       container: containerRef.current,
       elements: [...nodes, ...validEdges],
       style: [
+        // ── Nodes ──
         {
           selector: "node",
           style: {
             label: "data(label)",
             "text-valign": "bottom",
-            "text-margin-y": 5,
-            "font-size": 11,
+            "text-margin-y": 6,
+            "font-size": 13,
             "font-family": "Rubik, Heebo, sans-serif",
-            width: 35,
-            height: 35,
+            "text-wrap": "wrap",
+            "text-max-width": "90px",
+            "text-outline-color": "#fff",
+            "text-outline-width": 2,
+            width: 45,
+            height: 45,
             "background-color": (ele: { data: (key: string) => string }) =>
               NODE_COLORS[ele.data("type")] || "#6B7280",
             "border-width": (ele: { data: (key: string) => boolean }) =>
               ele.data("isCenter") ? 3 : 1,
             "border-color": (ele: { data: (key: string) => boolean }) =>
-              ele.data("isCenter") ? "#06607C" : "#E5E7EB",
+              ele.data("isCenter") ? "#044E66" : "#E5E7EB",
           },
         },
+        // ── Edges: WITH restriction (thick, solid, teal) ──
         {
-          selector: "edge",
+          selector: "edge[relType = 'restricted_from']",
+          style: {
+            label: "data(label)",
+            "font-size": 10,
+            "font-family": "Rubik, Heebo, sans-serif",
+            "text-rotation": "autorotate",
+            "text-outline-color": "#fff",
+            "text-outline-width": 1.5,
+            "curve-style": "bezier",
+            width: 3,
+            "line-color": "#044E66",
+            "line-style": "solid",
+            "target-arrow-color": "#044E66",
+            "target-arrow-shape": "triangle",
+            "arrow-scale": 1.0,
+          },
+        },
+        // ── Edges: WITHOUT restriction (thin, dashed, gray) ──
+        {
+          selector: "edge[relType != 'restricted_from']",
           style: {
             label: "data(label)",
             "font-size": 9,
+            "font-family": "Rubik, Heebo, sans-serif",
             "text-rotation": "autorotate",
+            "text-outline-color": "#fff",
+            "text-outline-width": 1.5,
             "curve-style": "bezier",
             width: 1.5,
-            "line-color": "#D1D5DB",
-            "target-arrow-color": "#D1D5DB",
+            "line-color": "#9CA3AF",
+            "line-style": "dashed",
+            "line-dash-pattern": [6, 3] as unknown as number,
+            "target-arrow-color": "#9CA3AF",
             "target-arrow-shape": "triangle",
             "arrow-scale": 0.8,
           },
         },
+        // ── Selected node ──
         {
           selector: "node:selected",
           style: {
             "border-width": 3,
-            "border-color": "#06607C",
+            "border-color": "#044E66",
           },
         },
       ],
       layout: {
-        name: "cose",
+        name: "fcose",
         animate: true,
-        animationDuration: 500,
-        nodeRepulsion: () => 8000,
-        idealEdgeLength: () => 120,
-        gravity: 0.3,
-      },
+        animationDuration: 600,
+        nodeRepulsion: () => 20000,
+        idealEdgeLength: () => 180,
+        nodeSeparation: 80,
+        gravity: 0.25,
+        gravityRange: 3.8,
+        quality: "default",
+      } as import("cytoscape").LayoutOptions,
     });
 
     // Click handler
@@ -161,17 +208,37 @@ export function ConnectionMap({
   return (
     <div className="relative w-full h-full">
       <div ref={containerRef} className="w-full h-full" />
-      <div className="absolute bottom-3 start-3 flex gap-2 text-xs">
-        {Object.entries(NODE_COLORS).map(([type, color]) => (
-          <div key={type} className="flex items-center gap-1 bg-white/80 px-2 py-1 rounded">
-            <span className="w-3 h-3 rounded-full inline-block" style={{ backgroundColor: color }} />
-            <span>
-              {type === "person" ? "אנשים" :
-               type === "company" ? "חברות" :
-               type === "association" ? "עמותות" : "תחומים"}
-            </span>
+
+      {/* Legend */}
+      <div className="absolute bottom-3 start-3 flex flex-col gap-2 text-xs bg-white/90 backdrop-blur-sm rounded-lg p-3 shadow-sm border border-gray-200">
+        {/* Node types */}
+        <div className="flex flex-wrap gap-2">
+          {Object.entries(NODE_COLORS).map(([type, color]) => (
+            <div key={type} className="flex items-center gap-1">
+              <span className="w-3 h-3 rounded-full inline-block" style={{ backgroundColor: color }} />
+              <span>
+                {type === "person" ? "אנשים" :
+                 type === "company" ? "חברות" :
+                 type === "association" ? "עמותות" : "תחומים"}
+              </span>
+            </div>
+          ))}
+        </div>
+        {/* Connection types */}
+        <div className="flex gap-4 border-t border-gray-200 pt-2">
+          <div className="flex items-center gap-1.5">
+            <svg width="24" height="8" className="shrink-0">
+              <line x1="0" y1="4" x2="24" y2="4" stroke="#9CA3AF" strokeWidth="1.5" strokeDasharray="4 2" />
+            </svg>
+            <span>ללא מגבלה</span>
           </div>
-        ))}
+          <div className="flex items-center gap-1.5">
+            <svg width="24" height="8" className="shrink-0">
+              <line x1="0" y1="4" x2="24" y2="4" stroke="#044E66" strokeWidth="3" />
+            </svg>
+            <span>עם מגבלה</span>
+          </div>
+        </div>
       </div>
     </div>
   );
