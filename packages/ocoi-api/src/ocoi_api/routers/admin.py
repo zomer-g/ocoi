@@ -338,7 +338,19 @@ async def list_documents(
     db: AsyncSession = Depends(get_db),
 ):
     offset = (page - 1) * limit
-    query = select(Document).join(Source, Document.source_id == Source.id)
+
+    # Select only lightweight columns — skip pdf_content and markdown_content BLOBs
+    from sqlalchemy import case, literal
+    light_cols = [
+        Document.id, Document.title, Document.source_id,
+        Document.conversion_status, Document.extraction_status,
+        Document.file_url, Document.file_size,
+        Document.created_at, Document.converted_at, Document.extracted_at,
+        case((Document.markdown_content.isnot(None), literal(True)), else_=literal(False)).label("has_content"),
+        case((Document.pdf_content.isnot(None), literal(True)), else_=literal(False)).label("has_pdf"),
+        Source.source_type.label("src_type"),
+    ]
+    query = select(*light_cols).join(Source, Document.source_id == Source.id)
     count_q = select(func.count()).select_from(Document).join(Source, Document.source_id == Source.id)
 
     if status:
@@ -363,23 +375,22 @@ async def list_documents(
 
     total = (await db.execute(count_q)).scalar()
     result = await db.execute(query.order_by(Document.created_at.desc()).offset(offset).limit(limit))
-    docs = result.scalars().all()
+    rows = result.all()
     data = []
-    for d in docs:
-        source = await db.get(Source, d.source_id) if d.source_id else None
+    for r in rows:
         data.append({
-            "id": str(d.id),
-            "title": d.title,
-            "source_type": source.source_type if source else None,
-            "conversion_status": d.conversion_status,
-            "extraction_status": d.extraction_status,
-            "file_url": d.file_url,
-            "file_size": d.file_size,
-            "has_content": bool(d.markdown_content),
-            "has_pdf": bool(d.pdf_content),
-            "created_at": d.created_at.isoformat() if d.created_at else None,
-            "converted_at": d.converted_at.isoformat() if d.converted_at else None,
-            "extracted_at": d.extracted_at.isoformat() if d.extracted_at else None,
+            "id": str(r.id),
+            "title": r.title,
+            "source_type": r.src_type,
+            "conversion_status": r.conversion_status,
+            "extraction_status": r.extraction_status,
+            "file_url": r.file_url,
+            "file_size": r.file_size,
+            "has_content": bool(r.has_content),
+            "has_pdf": bool(r.has_pdf),
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "converted_at": r.converted_at.isoformat() if r.converted_at else None,
+            "extracted_at": r.extracted_at.isoformat() if r.extracted_at else None,
         })
     return {"status": "ok", "data": data, "meta": {"total": total, "page": page, "limit": limit}}
 
