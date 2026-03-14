@@ -150,7 +150,7 @@ export function ConnectionMap({
             width: 1.5,
             "line-color": "#9CA3AF",
             "line-style": "dashed",
-            "line-dash-pattern": [6, 3] as unknown as number,
+            "line-dash-pattern": [6, 3],
             "target-arrow-color": "#9CA3AF",
             "target-arrow-shape": "triangle",
             "arrow-scale": 0.8,

@@ -56,8 +56,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 מפת קשרים
               </a>
               <a
-                href="/api/docs"
-                target="_blank"
+                href="/api-docs"
                 className="px-3 sm:px-4 py-2 rounded-lg text-sm font-medium text-primary-100 hover:bg-white/10 hover:text-white transition-colors"
               >
                 API ציבורי
