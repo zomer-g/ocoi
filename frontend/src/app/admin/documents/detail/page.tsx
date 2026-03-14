@@ -26,6 +26,14 @@ const TYPE_TO_TAB: Record<string, string> = {
   domain: "domains",
 };
 
+interface ProcessingStep {
+  step: string;
+  label: string;
+  status: string;
+  timestamp: string | null;
+  details: string;
+}
+
 interface DocDetail {
   id: string;
   title: string;
@@ -34,11 +42,16 @@ interface DocDetail {
   file_format: string;
   file_url: string | null;
   file_size: number | null;
+  has_pdf: boolean;
+  pdf_size: number | null;
   conversion_status: string;
   extraction_status: string;
   markdown_content: string;
   markdown_length: number;
   created_at: string | null;
+  converted_at: string | null;
+  extracted_at: string | null;
+  processing_log: ProcessingStep[];
   extraction_runs: ExtractionRun[];
   relationships: Relationship[];
   entities: Entity[];
@@ -87,6 +100,32 @@ function formatSize(bytes: number | null) {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
+
+const STEP_ICONS: Record<string, string> = {
+  import: "📥",
+  storage: "💾",
+  conversion: "📝",
+  extraction: "🔍",
+};
+
+const STEP_STATUS_COLORS: Record<string, string> = {
+  // General
+  pending: "bg-gray-100 text-gray-500 border-gray-300",
+  failed: "bg-red-50 text-red-600 border-red-300",
+  missing: "bg-orange-50 text-orange-600 border-orange-300",
+  // Import
+  ckan: "bg-purple-50 text-purple-700 border-purple-300",
+  govil: "bg-blue-50 text-blue-700 border-blue-300",
+  upload: "bg-teal-50 text-teal-700 border-teal-300",
+  unknown: "bg-gray-100 text-gray-500 border-gray-300",
+  // Storage
+  stored: "bg-green-50 text-green-700 border-green-300",
+  // Conversion
+  converted: "bg-green-50 text-green-700 border-green-300",
+  no_text: "bg-amber-50 text-amber-700 border-amber-300",
+  // Extraction
+  extracted: "bg-blue-50 text-blue-700 border-blue-300",
+};
 
 type Tab = "content" | "entities" | "extraction";
 
@@ -149,14 +188,6 @@ export default function DocumentDetailPage() {
   if (loading) return <div className="text-gray-400 py-8 text-center">טוען...</div>;
   if (!doc) return <div className="text-red-500 py-8 text-center">מסמך לא נמצא</div>;
 
-  const statusColor: Record<string, string> = {
-    pending: "bg-gray-100 text-gray-600",
-    converted: "bg-green-100 text-green-700",
-    no_text: "bg-amber-100 text-amber-700",
-    extracted: "bg-blue-100 text-blue-700",
-    failed: "bg-red-100 text-red-700",
-  };
-
   const pdfUrl = doc.file_url && !doc.file_url.startsWith("upload://")
     ? doc.file_url
     : `/api/v1/admin/documents/${doc.id}/pdf`;
@@ -185,31 +216,9 @@ export default function DocumentDetailPage() {
             <span>{formatSize(doc.file_size)}</span>
             <span>·</span>
             <span>{formatDate(doc.created_at)}</span>
-            <span className={`inline-block px-2 py-0.5 rounded text-xs ${statusColor[doc.conversion_status] || "bg-gray-100 text-gray-600"}`}>
-              {doc.conversion_status}
-            </span>
-            <span className={`inline-block px-2 py-0.5 rounded text-xs ${statusColor[doc.extraction_status] || "bg-gray-100 text-gray-600"}`}>
-              {doc.extraction_status}
-            </span>
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <button
-            onClick={handleReconvert}
-            disabled={reconverting}
-            className="px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium disabled:opacity-50"
-            title="המרה מחדש של ה-PDF לטקסט (תיקון RTL)"
-          >
-            {reconverting ? "ממיר..." : "המר מחדש"}
-          </button>
-          <button
-            onClick={handleReextract}
-            disabled={reextracting}
-            className="px-3 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition-colors text-sm font-medium disabled:opacity-50"
-            title="מחיקת ישויות קיימות וחילוץ מחדש באמצעות LLM"
-          >
-            {reextracting ? "מחלץ..." : "חלץ מחדש"}
-          </button>
           <a
             href={pdfUrl}
             target="_blank"
@@ -231,6 +240,77 @@ export default function DocumentDetailPage() {
           {actionMsg.text}
         </div>
       )}
+
+      {/* Processing Timeline */}
+      <div className="bg-white rounded-lg border border-gray-200 p-5 mb-6">
+        <h2 className="text-sm font-semibold text-gray-700 mb-4">תהליך עיבוד</h2>
+        <div className="flex items-start gap-0">
+          {doc.processing_log.map((step, i) => {
+            const colors = STEP_STATUS_COLORS[step.status] || STEP_STATUS_COLORS.pending;
+            const isComplete = !["pending", "failed", "missing"].includes(step.status);
+            const isFailed = step.status === "failed";
+            const canRerun = step.step === "conversion" || step.step === "extraction";
+
+            return (
+              <div key={step.step} className="flex-1 relative">
+                {/* Connector line */}
+                {i > 0 && (
+                  <div className={`absolute top-5 -right-0 w-full h-0.5 -z-10 ${isComplete ? "bg-green-300" : "bg-gray-200"}`} />
+                )}
+
+                <div className="flex flex-col items-center text-center px-2">
+                  {/* Icon circle */}
+                  <div className={`w-10 h-10 rounded-full border-2 flex items-center justify-center text-lg ${colors}`}>
+                    {STEP_ICONS[step.step] || "•"}
+                  </div>
+
+                  {/* Label */}
+                  <span className="text-xs font-medium text-gray-700 mt-2">{step.label}</span>
+
+                  {/* Status badge */}
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full mt-1 ${colors}`}>
+                    {step.status === "stored" ? "נשמר" :
+                     step.status === "missing" ? "חסר" :
+                     step.status === "converted" ? "הומר" :
+                     step.status === "no_text" ? "ללא טקסט" :
+                     step.status === "extracted" ? "חולץ" :
+                     step.status === "pending" ? "ממתין" :
+                     step.status === "failed" ? "נכשל" :
+                     step.status}
+                  </span>
+
+                  {/* Details */}
+                  <span className="text-[10px] text-gray-400 mt-1 max-w-[120px] truncate" title={step.details}>
+                    {step.details}
+                  </span>
+
+                  {/* Timestamp */}
+                  {step.timestamp && (
+                    <span className="text-[10px] text-gray-300 mt-0.5">{formatDate(step.timestamp)}</span>
+                  )}
+
+                  {/* Action button */}
+                  {canRerun && (
+                    <button
+                      onClick={step.step === "conversion" ? handleReconvert : handleReextract}
+                      disabled={step.step === "conversion" ? reconverting : reextracting}
+                      className={`mt-2 px-2 py-1 text-[10px] font-medium rounded transition-colors disabled:opacity-50 ${
+                        isFailed
+                          ? "bg-red-100 text-red-700 hover:bg-red-200"
+                          : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                      }`}
+                    >
+                      {step.step === "conversion"
+                        ? (reconverting ? "ממיר..." : "המר מחדש")
+                        : (reextracting ? "מחלץ..." : "חלץ מחדש")}
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
 
       {/* Tabs */}
       <div className="flex gap-1 mb-4 border-b border-gray-200">

@@ -312,6 +312,17 @@ async def delete_relationships_bulk(body: dict, db: AsyncSession = Depends(get_d
     return {"status": "ok", "deleted": len(uuids)}
 
 
+def formatSize(size: int | None) -> str:
+    """Format file size for display."""
+    if not size:
+        return ""
+    if size < 1024:
+        return f"{size} B"
+    if size < 1024 * 1024:
+        return f"{size // 1024} KB"
+    return f"{size / (1024 * 1024):.1f} MB"
+
+
 # ── Documents management ──────────────────────────────────────────────────
 
 @router.get("/documents")
@@ -432,6 +443,44 @@ async def get_document_detail(doc_id: uuid.UUID, db: AsyncSession = Depends(get_
                 name = await _resolve_entity_name(db, etype, eid)
                 entities.append({"id": eid, "type": etype, "name": name})
 
+    # Build processing log
+    has_pdf = bool(doc.pdf_content)
+    pdf_size = len(doc.pdf_content) if doc.pdf_content else doc.file_size
+    md_len = len(doc.markdown_content) if doc.markdown_content else 0
+    total_entities = len(entities)
+    total_rels = len(relationships)
+
+    processing_log = [
+        {
+            "step": "import",
+            "label": "ייבוא",
+            "status": source.source_type if source else "unknown",
+            "timestamp": doc.created_at.isoformat() if doc.created_at else None,
+            "details": f"{source.source_type or '—'}" + (f" — {source.title[:40]}" if source and source.title else ""),
+        },
+        {
+            "step": "storage",
+            "label": "אחסון PDF",
+            "status": "stored" if has_pdf else "missing",
+            "timestamp": doc.created_at.isoformat() if doc.created_at and has_pdf else None,
+            "details": formatSize(pdf_size) if pdf_size else "חסר",
+        },
+        {
+            "step": "conversion",
+            "label": "המרה ל-MD",
+            "status": doc.conversion_status,
+            "timestamp": doc.converted_at.isoformat() if doc.converted_at else None,
+            "details": f"{md_len:,} תווים" if md_len else ("ללא טקסט" if doc.conversion_status == "no_text" else "ממתין"),
+        },
+        {
+            "step": "extraction",
+            "label": "חילוץ ישויות",
+            "status": doc.extraction_status,
+            "timestamp": doc.extracted_at.isoformat() if doc.extracted_at else None,
+            "details": f"{total_entities} ישויות, {total_rels} קשרים" if doc.extraction_status == "extracted" else ("ממתין" if doc.extraction_status == "pending" else "נכשל"),
+        },
+    ]
+
     return {
         "status": "ok",
         "data": {
@@ -443,11 +492,16 @@ async def get_document_detail(doc_id: uuid.UUID, db: AsyncSession = Depends(get_
             "file_url": doc.file_url,
             "file_size": doc.file_size,
             "file_path": doc.file_path,
+            "has_pdf": has_pdf,
+            "pdf_size": pdf_size,
             "conversion_status": doc.conversion_status,
             "extraction_status": doc.extraction_status,
             "markdown_content": doc.markdown_content or "",
-            "markdown_length": len(doc.markdown_content) if doc.markdown_content else 0,
+            "markdown_length": md_len,
             "created_at": doc.created_at.isoformat() if doc.created_at else None,
+            "converted_at": doc.converted_at.isoformat() if doc.converted_at else None,
+            "extracted_at": doc.extracted_at.isoformat() if doc.extracted_at else None,
+            "processing_log": processing_log,
             "extraction_runs": extraction_runs,
             "relationships": relationships,
             "entities": entities,
