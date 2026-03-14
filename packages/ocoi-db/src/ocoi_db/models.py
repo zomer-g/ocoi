@@ -185,7 +185,7 @@ class RegistrySyncStatus(Base):
 
     id: Mapped[str] = mapped_column(DBUUID(), primary_key=True, default=new_uuid)
     source_type: Mapped[str] = mapped_column(String(30), nullable=False, unique=True)
-    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     record_count: Mapped[int] = mapped_column(Integer, default=0)
     sync_status: Mapped[str] = mapped_column(String(20), default="never")
     error_message: Mapped[str | None] = mapped_column(Text)

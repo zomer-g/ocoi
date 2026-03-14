@@ -115,6 +115,7 @@ async def run_migrations():
     tz_alterations = [
         "ALTER TABLE documents ALTER COLUMN converted_at TYPE TIMESTAMPTZ USING converted_at AT TIME ZONE 'UTC'",
         "ALTER TABLE documents ALTER COLUMN extracted_at TYPE TIMESTAMPTZ USING extracted_at AT TIME ZONE 'UTC'",
+        "ALTER TABLE registry_sync_status ALTER COLUMN last_synced_at TYPE TIMESTAMPTZ USING last_synced_at AT TIME ZONE 'UTC'",
     ]
     for sql in tz_alterations:
         try:
