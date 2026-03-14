@@ -83,6 +83,10 @@ async def run_migrations():
         ("associations", "status", "ALTER TABLE associations ADD COLUMN status VARCHAR(50)"),
         ("associations", "match_confidence", "ALTER TABLE associations ADD COLUMN match_confidence FLOAT"),
         ("associations", "registry_record_id", "ALTER TABLE associations ADD COLUMN registry_record_id CHAR(36)"),
+        # Aliases columns — store old/wrong names so LLM re-extraction still maps to corrected entities
+        ("companies", "aliases", "ALTER TABLE companies ADD COLUMN aliases TEXT"),
+        ("associations", "aliases", "ALTER TABLE associations ADD COLUMN aliases TEXT"),
+        ("domains", "aliases", "ALTER TABLE domains ADD COLUMN aliases TEXT"),
     ]
 
     for table, column, sql in column_migrations:

@@ -120,6 +120,7 @@ class Company(Base):
     status: Mapped[str | None] = mapped_column(String(50))
     match_confidence: Mapped[float | None] = mapped_column(Float)
     registry_record_id: Mapped[str | None] = mapped_column(DBUUID(), ForeignKey("registry_records.id"), nullable=True)
+    aliases: Mapped[str | None] = mapped_column(Text)  # JSON string for SQLite compat
     created_at: Mapped[datetime | None] = mapped_column(DateTime, default=func.now())
 
     __table_args__ = (
@@ -138,6 +139,7 @@ class Association(Base):
     status: Mapped[str | None] = mapped_column(String(50))
     match_confidence: Mapped[float | None] = mapped_column(Float)
     registry_record_id: Mapped[str | None] = mapped_column(DBUUID(), ForeignKey("registry_records.id"), nullable=True)
+    aliases: Mapped[str | None] = mapped_column(Text)  # JSON string for SQLite compat
     created_at: Mapped[datetime | None] = mapped_column(DateTime, default=func.now())
 
     __table_args__ = (
@@ -152,6 +154,7 @@ class Domain(Base):
     name_hebrew: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     name_english: Mapped[str | None] = mapped_column(Text)
     description: Mapped[str | None] = mapped_column(Text)
+    aliases: Mapped[str | None] = mapped_column(Text)  # JSON string for SQLite compat
     created_at: Mapped[datetime | None] = mapped_column(DateTime, default=func.now())
 
 

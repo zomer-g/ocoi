@@ -19,6 +19,7 @@ from ocoi_api.schemas import (
 )
 from ocoi_common.config import settings
 from ocoi_db.engine import async_session_factory, bg_session_factory
+from ocoi_db.crud import _add_alias, _get_aliases
 from ocoi_db.models import (
     Person, Company, Association, Domain,
     EntityRelationship, Document, Source, ExtractionRun, IgnoredResource,
@@ -94,7 +95,11 @@ async def update_person(person_id: uuid.UUID, body: PersonUpdate, db: AsyncSessi
     person = result.scalars().first()
     if not person:
         raise HTTPException(404, "Person not found")
-    for field, value in body.model_dump(exclude_unset=True).items():
+    updates = body.model_dump(exclude_unset=True)
+    # If name is changing, store old name as alias so LLM re-extraction still maps here
+    if "name_hebrew" in updates and updates["name_hebrew"] and updates["name_hebrew"] != person.name_hebrew:
+        _add_alias(person, person.name_hebrew)
+    for field, value in updates.items():
         setattr(person, field, value)
     await db.commit()
     return {"status": "ok"}
@@ -133,7 +138,10 @@ async def update_company(company_id: uuid.UUID, body: CompanyUpdate, db: AsyncSe
     company = result.scalars().first()
     if not company:
         raise HTTPException(404, "Company not found")
-    for field, value in body.model_dump(exclude_unset=True).items():
+    updates = body.model_dump(exclude_unset=True)
+    if "name_hebrew" in updates and updates["name_hebrew"] and updates["name_hebrew"] != company.name_hebrew:
+        _add_alias(company, company.name_hebrew)
+    for field, value in updates.items():
         setattr(company, field, value)
     await db.commit()
     return {"status": "ok"}
@@ -172,7 +180,10 @@ async def update_association(assoc_id: uuid.UUID, body: AssociationUpdate, db: A
     assoc = result.scalars().first()
     if not assoc:
         raise HTTPException(404, "Association not found")
-    for field, value in body.model_dump(exclude_unset=True).items():
+    updates = body.model_dump(exclude_unset=True)
+    if "name_hebrew" in updates and updates["name_hebrew"] and updates["name_hebrew"] != assoc.name_hebrew:
+        _add_alias(assoc, assoc.name_hebrew)
+    for field, value in updates.items():
         setattr(assoc, field, value)
     await db.commit()
     return {"status": "ok"}
@@ -211,7 +222,10 @@ async def update_domain(domain_id: uuid.UUID, body: DomainUpdate, db: AsyncSessi
     domain = result.scalars().first()
     if not domain:
         raise HTTPException(404, "Domain not found")
-    for field, value in body.model_dump(exclude_unset=True).items():
+    updates = body.model_dump(exclude_unset=True)
+    if "name_hebrew" in updates and updates["name_hebrew"] and updates["name_hebrew"] != domain.name_hebrew:
+        _add_alias(domain, domain.name_hebrew)
+    for field, value in updates.items():
         setattr(domain, field, value)
     await db.commit()
     return {"status": "ok"}

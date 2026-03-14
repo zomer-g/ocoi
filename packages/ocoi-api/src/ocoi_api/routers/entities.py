@@ -1,5 +1,6 @@
 """Entity CRUD endpoints (persons, companies, associations, domains)."""
 
+import json
 import uuid
 from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy import select, func, or_
@@ -18,7 +19,14 @@ def _paginate(page: int, limit: int):
 def _entity_to_dict(entity, extra_fields: list[str] | None = None) -> dict:
     d = {"id": str(entity.id), "name_hebrew": entity.name_hebrew}
     for field in (extra_fields or []):
-        d[field] = getattr(entity, field, None)
+        val = getattr(entity, field, None)
+        # Parse aliases JSON string into a proper list for the API response
+        if field == "aliases" and isinstance(val, str):
+            try:
+                val = json.loads(val)
+            except (json.JSONDecodeError, TypeError):
+                val = []
+        d[field] = val
     return d
 
 
@@ -112,7 +120,7 @@ async def get_company(company_id: uuid.UUID, db: AsyncSession = Depends(get_db))
     return {
         "status": "ok",
         "data": _entity_to_dict(company, [
-            "name_english", "registration_number", "company_type", "status", "match_confidence",
+            "name_english", "registration_number", "company_type", "status", "match_confidence", "aliases",
         ]),
     }
 
@@ -166,7 +174,7 @@ async def get_association(assoc_id: uuid.UUID, db: AsyncSession = Depends(get_db
     assoc = result.scalars().first()
     if not assoc:
         raise HTTPException(404, "Association not found")
-    return {"status": "ok", "data": _entity_to_dict(assoc, ["name_english", "registration_number"])}
+    return {"status": "ok", "data": _entity_to_dict(assoc, ["name_english", "registration_number", "aliases"])}
 
 
 @router.get("/associations/{assoc_id}/documents")
@@ -207,7 +215,7 @@ async def get_domain(domain_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     domain = result.scalars().first()
     if not domain:
         raise HTTPException(404, "Domain not found")
-    return {"status": "ok", "data": _entity_to_dict(domain, ["description"])}
+    return {"status": "ok", "data": _entity_to_dict(domain, ["description", "aliases"])}
 
 
 @router.get("/domains/{domain_id}/documents")

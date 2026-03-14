@@ -1,9 +1,10 @@
 """CRUD operations for all entity types."""
 
+import json
 import uuid
 from typing import Sequence
 
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ocoi_db.models import (
@@ -16,6 +17,24 @@ from ocoi_db.models import (
     Person,
     Source,
 )
+
+
+def _get_aliases(entity) -> list[str]:
+    """Parse aliases JSON string into a list."""
+    if not entity.aliases:
+        return []
+    try:
+        return json.loads(entity.aliases)
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
+def _add_alias(entity, old_name: str) -> None:
+    """Add old_name to the entity's aliases list (if not already present)."""
+    aliases = _get_aliases(entity)
+    if old_name not in aliases:
+        aliases.append(old_name)
+        entity.aliases = json.dumps(aliases, ensure_ascii=False)
 
 
 # --- Sources ---
@@ -105,6 +124,7 @@ async def update_document_markdown(
 # --- Entities ---
 
 async def upsert_person(session: AsyncSession, name_hebrew: str, **kwargs) -> Person:
+    # 1. Try exact name match
     result = await session.execute(
         select(Person).where(Person.name_hebrew == name_hebrew).limit(1)
     )
@@ -114,6 +134,18 @@ async def upsert_person(session: AsyncSession, name_hebrew: str, **kwargs) -> Pe
             if value is not None:
                 setattr(person, key, value)
         return person
+    # 2. Try alias match — find entity where this name is stored as an alias
+    result = await session.execute(
+        select(Person).where(Person.aliases.contains(name_hebrew))
+    )
+    for p in result.scalars().all():
+        if name_hebrew in _get_aliases(p):
+            # Found via alias — update fields but keep the corrected canonical name
+            for key, value in kwargs.items():
+                if value is not None:
+                    setattr(p, key, value)
+            return p
+    # 3. Create new
     person = Person(name_hebrew=name_hebrew, **kwargs)
     session.add(person)
     await session.flush()
@@ -121,6 +153,7 @@ async def upsert_person(session: AsyncSession, name_hebrew: str, **kwargs) -> Pe
 
 
 async def upsert_company(session: AsyncSession, name_hebrew: str, **kwargs) -> Company:
+    # 1. Try exact name match
     result = await session.execute(
         select(Company).where(Company.name_hebrew == name_hebrew).limit(1)
     )
@@ -130,6 +163,17 @@ async def upsert_company(session: AsyncSession, name_hebrew: str, **kwargs) -> C
             if value is not None:
                 setattr(company, key, value)
         return company
+    # 2. Try alias match
+    result = await session.execute(
+        select(Company).where(Company.aliases.contains(name_hebrew))
+    )
+    for c in result.scalars().all():
+        if name_hebrew in _get_aliases(c):
+            for key, value in kwargs.items():
+                if value is not None:
+                    setattr(c, key, value)
+            return c
+    # 3. Create new
     company = Company(name_hebrew=name_hebrew, **kwargs)
     session.add(company)
     await session.flush()
@@ -137,6 +181,7 @@ async def upsert_company(session: AsyncSession, name_hebrew: str, **kwargs) -> C
 
 
 async def upsert_association(session: AsyncSession, name_hebrew: str, **kwargs) -> Association:
+    # 1. Try exact name match
     result = await session.execute(
         select(Association).where(Association.name_hebrew == name_hebrew).limit(1)
     )
@@ -146,6 +191,17 @@ async def upsert_association(session: AsyncSession, name_hebrew: str, **kwargs) 
             if value is not None:
                 setattr(assoc, key, value)
         return assoc
+    # 2. Try alias match
+    result = await session.execute(
+        select(Association).where(Association.aliases.contains(name_hebrew))
+    )
+    for a in result.scalars().all():
+        if name_hebrew in _get_aliases(a):
+            for key, value in kwargs.items():
+                if value is not None:
+                    setattr(a, key, value)
+            return a
+    # 3. Create new
     assoc = Association(name_hebrew=name_hebrew, **kwargs)
     session.add(assoc)
     await session.flush()
@@ -153,12 +209,21 @@ async def upsert_association(session: AsyncSession, name_hebrew: str, **kwargs) 
 
 
 async def upsert_domain(session: AsyncSession, name_hebrew: str, **kwargs) -> Domain:
+    # 1. Try exact name match
     result = await session.execute(
         select(Domain).where(Domain.name_hebrew == name_hebrew).limit(1)
     )
     domain = result.scalars().first()
     if domain:
         return domain
+    # 2. Try alias match
+    result = await session.execute(
+        select(Domain).where(Domain.aliases.contains(name_hebrew))
+    )
+    for d in result.scalars().all():
+        if name_hebrew in _get_aliases(d):
+            return d
+    # 3. Create new
     domain = Domain(name_hebrew=name_hebrew, **kwargs)
     session.add(domain)
     await session.flush()
