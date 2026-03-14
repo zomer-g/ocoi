@@ -690,7 +690,7 @@ async def reconvert_all_documents(background_tasks: BackgroundTasks, db: AsyncSe
 
 
 async def _reconvert_all_bg():
-    """Background worker: reconvert all documents in batches of 10."""
+    """Background worker: reconvert all documents one at a time with per-doc sessions."""
     import gc
     import httpx as _httpx
     from datetime import datetime, timezone as tz
@@ -698,25 +698,26 @@ async def _reconvert_all_bg():
     from sqlalchemy.orm import undefer
 
     global _reconvert_state
-    BATCH_SIZE = 10
 
     try:
+        # Phase 1: Get IDs only
         async with bg_session_factory() as db:
-            # Only load IDs first — avoid loading all PDF blobs into memory
             id_result = await db.execute(select(Document.id))
             doc_ids = [r[0] for r in id_result.all()]
-            _reconvert_state["total"] = len(doc_ids)
+        _reconvert_state["total"] = len(doc_ids)
 
-            for i, doc_id in enumerate(doc_ids):
-                # Load one document at a time with pdf_content undeferred for conversion
-                doc_result = await db.execute(
-                    select(Document).options(undefer(Document.pdf_content)).where(Document.id == doc_id)
-                )
-                doc = doc_result.scalars().first()
-                if not doc:
-                    _reconvert_state["processed"] += 1
-                    continue
-                try:
+        # Phase 2: Process each doc in its own session
+        for i, doc_id in enumerate(doc_ids):
+            try:
+                async with bg_session_factory() as db:
+                    doc_result = await db.execute(
+                        select(Document).options(undefer(Document.pdf_content)).where(Document.id == doc_id)
+                    )
+                    doc = doc_result.scalars().first()
+                    if not doc:
+                        _reconvert_state["processed"] += 1
+                        continue
+
                     pdf_path = await _resolve_pdf_path(doc, _httpx, db)
                     if not pdf_path:
                         _reconvert_state["skipped"] += 1
@@ -735,22 +736,16 @@ async def _reconvert_all_bg():
                         doc.conversion_status = "no_text"
                         _reconvert_state["skipped"] += 1
 
-                    gc.collect()
-
-                except Exception as e:
-                    if len(_reconvert_state["errors"]) < 20:
-                        _reconvert_state["errors"].append(f"{doc.title[:40]}: {e}")
-                    _reconvert_state["skipped"] += 1
-
-                _reconvert_state["processed"] += 1
-
-                # Commit in batches and free memory
-                if (i + 1) % BATCH_SIZE == 0:
                     await db.commit()
-                    db.expunge_all()
-                    gc.collect()
 
-            await db.commit()
+            except Exception as e:
+                if len(_reconvert_state["errors"]) < 20:
+                    _reconvert_state["errors"].append(f"doc {doc_id}: {e}")
+                _reconvert_state["skipped"] += 1
+
+            _reconvert_state["processed"] += 1
+            gc.collect()
+
     except Exception as e:
         _reconvert_state["errors"].append(f"Fatal: {e}")
     finally:
