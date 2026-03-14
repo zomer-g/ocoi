@@ -212,7 +212,7 @@ async def run_registry_sync(source_type: str):
         async with bg_session_factory() as session:
             sync_row = await _get_or_create_sync_status(session, source_type, "completed")
             sync_row.record_count = total_saved
-            sync_row.last_synced_at = datetime.now(timezone.utc)
+            sync_row.last_synced_at = datetime.utcnow()
             sync_row.error_message = None
             await session.commit()
 
