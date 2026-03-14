@@ -41,6 +41,9 @@ RUN sed -i '/^\[tool\.uv/,$d' packages/*/pyproject.toml
 # Strip heavy Python PDF libs — we use poppler pdftotext CLI instead (~5MB vs ~150MB)
 RUN sed -i '/"pdfplumber/d; /"pymupdf/d' packages/ocoi-api/pyproject.toml
 
+# Strip playwright — Gov.il scraping is a one-time op, saves ~15MB idle memory
+RUN sed -i '/"playwright/d' packages/ocoi-importer/pyproject.toml
+
 # Install via pip (bypasses workspace resolution — no torch/transformers)
 RUN uv pip install ./packages/ocoi-common ./packages/ocoi-db ./packages/ocoi-api ./packages/ocoi-importer ./packages/ocoi-matcher
 

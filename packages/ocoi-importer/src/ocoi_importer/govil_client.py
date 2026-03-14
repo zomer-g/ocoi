@@ -111,7 +111,10 @@ class GovILSession:
 
     async def _warm_with_playwright(self):
         """Use Playwright to solve Cloudflare challenge and extract cookies."""
-        from playwright.async_api import async_playwright
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            raise RuntimeError("Playwright not installed — Gov.il scraping unavailable in this environment")
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(
