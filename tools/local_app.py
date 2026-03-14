@@ -28,7 +28,7 @@ import webbrowser
 APP_DIR = Path(__file__).parent / "local_processor"
 STATE_FILE = APP_DIR / ".state.json"
 ENV_FILE = APP_DIR / ".env"
-CACHE_DIR = Path("./cache")
+CACHE_DIR = APP_DIR / "cache"
 PORT = 5555
 
 try:
@@ -146,9 +146,10 @@ async def _check_server_dupes(urls: list[str]) -> set[str]:
         log(f"Warning: server dedup check failed: {e}")
         return set()
 
-async def run_import(limit: int | None = None):
+async def run_import(limit: int | None = None, _standalone: bool = True):
     global _task_running
-    _task_running = True
+    if _standalone:
+        _task_running = True
     try:
         log("=== Import Phase ===")
         docs = await _search_ckan()
@@ -169,9 +170,11 @@ async def run_import(limit: int | None = None):
             log("Nothing to download.")
             return
 
+        log(f"Cache dir: {CACHE_DIR.resolve()}")
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         import httpx
         downloaded = 0
+        failed = 0
         async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
             for i, doc in enumerate(new_docs, 1):
                 url = doc["file_url"]
@@ -183,6 +186,7 @@ async def run_import(limit: int | None = None):
                     if not pdf[:5].startswith(b"%PDF"):
                         log(f"  Skipped — not a valid PDF")
                         mark(state, url, "failed", title=doc["title"], error="not_pdf")
+                        failed += 1
                         continue
                     h = hashlib.sha256(pdf).hexdigest()
                     path = CACHE_DIR / f"{h}.pdf"
@@ -197,17 +201,22 @@ async def run_import(limit: int | None = None):
                 except Exception as e:
                     log(f"  Failed: {e}")
                     mark(state, url, "failed", title=doc["title"], error=str(e)[:200])
-        log(f"Downloaded: {downloaded}/{len(new_docs)}")
+                    failed += 1
+        log(f"Downloaded: {downloaded}, Failed: {failed}, Total: {len(new_docs)}")
+    except Exception as e:
+        log(f"IMPORT ERROR: {e}")
     finally:
-        _task_running = False
+        if _standalone:
+            _task_running = False
 
 # ---------------------------------------------------------------------------
 # Convert
 # ---------------------------------------------------------------------------
 
-def run_convert(limit: int | None = None):
+def run_convert(limit: int | None = None, _standalone: bool = True):
     global _task_running
-    _task_running = True
+    if _standalone:
+        _task_running = True
     try:
         import pymupdf  # noqa: F401
         log("=== Convert Phase ===")
@@ -245,8 +254,11 @@ def run_convert(limit: int | None = None):
                 log(f"  Failed: {e}")
                 mark(state, url, "failed", error=str(e)[:200])
         log(f"Converted: {converted}/{len(to_convert)}")
+    except Exception as e:
+        log(f"CONVERT ERROR: {e}")
     finally:
-        _task_running = False
+        if _standalone:
+            _task_running = False
 
 def _convert_pdf(pdf_path: Path) -> str:
     import pymupdf
@@ -326,9 +338,10 @@ USER_PROMPT = """נתח את מסמך ניגוד העניינים הבא.
 {document_text}"""
 
 
-async def run_extract(limit: int | None = None):
+async def run_extract(limit: int | None = None, _standalone: bool = True):
     global _task_running
-    _task_running = True
+    if _standalone:
+        _task_running = True
     try:
         log("=== Extract Phase ===")
         if not DEEPSEEK_API_KEY:
@@ -384,16 +397,20 @@ async def run_extract(limit: int | None = None):
                 log(f"  Failed: {e}")
                 mark(state, url, "failed", error=str(e)[:200])
         log(f"Extracted: {extracted}/{len(to_extract)}")
+    except Exception as e:
+        log(f"EXTRACT ERROR: {e}")
     finally:
-        _task_running = False
+        if _standalone:
+            _task_running = False
 
 # ---------------------------------------------------------------------------
 # Push
 # ---------------------------------------------------------------------------
 
-async def run_push(limit: int | None = None, skip_extract: bool = False):
+async def run_push(limit: int | None = None, skip_extract: bool = False, _standalone: bool = True):
     global _task_running
-    _task_running = True
+    if _standalone:
+        _task_running = True
     try:
         import httpx
         log("=== Push Phase ===")
@@ -471,22 +488,35 @@ async def run_push(limit: int | None = None, skip_extract: bool = False):
                             failed += 1
                             break
         log(f"Pushed: {pushed}, Skipped: {skipped}, Failed: {failed}")
+    except Exception as e:
+        log(f"PUSH ERROR: {e}")
     finally:
-        _task_running = False
+        if _standalone:
+            _task_running = False
 
 # ---------------------------------------------------------------------------
 # Run All
 # ---------------------------------------------------------------------------
 
 async def run_all(limit: int | None = None):
-    await run_import(limit=limit)
-    run_convert()
-    if DEEPSEEK_API_KEY:
-        await run_extract()
-    else:
-        log("Skipping extraction (no DEEPSEEK_API_KEY)")
-    await run_push(skip_extract=not DEEPSEEK_API_KEY)
-    log("=== Done ===")
+    global _task_running
+    _task_running = True
+    try:
+        await run_import(limit=limit, _standalone=False)
+        run_convert(_standalone=False)
+        if DEEPSEEK_API_KEY:
+            await run_extract(_standalone=False)
+        else:
+            log("Skipping extraction (no DEEPSEEK_API_KEY)")
+        if PUSH_API_KEY:
+            await run_push(skip_extract=not DEEPSEEK_API_KEY, _standalone=False)
+        else:
+            log("Skipping push (no PUSH_API_KEY)")
+        log("=== Done ===")
+    except Exception as e:
+        log(f"RUN ALL ERROR: {e}")
+    finally:
+        _task_running = False
 
 # ---------------------------------------------------------------------------
 # Web UI
@@ -584,6 +614,7 @@ body { font-family: 'Segoe UI', Tahoma, sans-serif; background: #f0f2f5; color: 
           <button class="btn btn-green" onclick="doAction('extract')">🔍 חילוץ</button>
           <button class="btn btn-primary" onclick="doAction('push')">☁️ העלאה</button>
           <button class="btn btn-red" onclick="doAction('push_skip')">☁️ העלאה (ללא חילוץ)</button>
+          <button class="btn" style="background:#6b7280;color:white" onclick="if(confirm('לאפס את כל הסטטוסים?')) doAction('reset')">🔄 איפוס</button>
         </div>
         <div class="limit-group">
           <label>מגבלה:</label>
@@ -724,6 +755,10 @@ class Handler(BaseHTTPRequestHandler):
                 threading.Thread(target=lambda: asyncio.run(run_push(limit)), daemon=True).start()
             elif action == "push_skip":
                 threading.Thread(target=lambda: asyncio.run(run_push(limit, skip_extract=True)), daemon=True).start()
+            elif action == "reset":
+                if STATE_FILE.exists():
+                    STATE_FILE.unlink()
+                log("State reset — all progress cleared")
             else:
                 self._json({"error": f"Unknown action: {action}"})
                 return
