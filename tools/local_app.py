@@ -33,8 +33,11 @@ PORT = 5555
 
 try:
     from dotenv import load_dotenv
-    if ENV_FILE.exists():
-        load_dotenv(ENV_FILE, override=True)
+    # Load .env from multiple locations (later ones override earlier)
+    _app_env = Path(__file__).parent / ".env"          # tools/.env
+    for _ef in [ENV_FILE, _app_env]:
+        if _ef.exists():
+            load_dotenv(_ef, override=True)
 except ImportError:
     pass
 
@@ -146,6 +149,96 @@ async def _check_server_dupes(urls: list[str]) -> set[str]:
         log(f"Warning: server dedup check failed: {e}")
         return set()
 
+async def run_rebuild_state(_standalone: bool = True):
+    """Rebuild state from existing cache files + CKAN metadata."""
+    global _task_running
+    if _standalone:
+        _task_running = True
+    try:
+        log("=== Rebuild State from Cache ===")
+        # Index existing cache files by hash
+        existing_pdfs = {p.stem: p for p in CACHE_DIR.glob("*.pdf")}
+        existing_mds = {p.stem: p for p in CACHE_DIR.glob("*.md")}
+        existing_jsons = {p.stem: p for p in CACHE_DIR.glob("*.json")}
+        log(f"Cache: {len(existing_pdfs)} PDFs, {len(existing_mds)} MDs, {len(existing_jsons)} JSONs")
+
+        # Fetch CKAN metadata to get URL→title mappings
+        docs = await _search_ckan()
+        log(f"CKAN documents: {len(docs)}")
+
+        state = load_state()
+        rebuilt = 0
+        skipped = 0
+
+        import httpx
+        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+            for i, doc in enumerate(docs, 1):
+                url = doc["file_url"]
+                if url in state:
+                    skipped += 1
+                    continue
+                # Try to match by downloading and hashing — but first check
+                # if we can find the file by trying the URL hash
+                # We need to download to get the hash, but we can check smaller batches
+                # Actually, let's just download the PDF header to compute the hash
+                try:
+                    resp = await client.get(url)
+                    resp.raise_for_status()
+                    pdf = resp.content
+                    if not pdf[:5].startswith(b"%PDF"):
+                        continue
+                    h = hashlib.sha256(pdf).hexdigest()
+                    if h not in existing_pdfs:
+                        # Not in cache, save it
+                        path = CACHE_DIR / f"{h}.pdf"
+                        path.write_bytes(pdf)
+                        mark(state, url, "downloaded", title=doc["title"], content_hash=h,
+                             local_path=str(path), file_format=doc["file_format"],
+                             file_size=len(pdf), source_type=doc["source_type"],
+                             source_id=doc["source_id"], source_title=doc["source_title"],
+                             source_url=doc["source_url"])
+                    else:
+                        # Found in cache — determine status
+                        path = existing_pdfs[h]
+                        mdp = existing_mds.get(h)
+                        jsonp = existing_jsons.get(h)
+                        if jsonp:
+                            md_chars = mdp.stat().st_size if mdp else 0
+                            mark(state, url, "extracted", title=doc["title"], content_hash=h,
+                                 local_path=str(path), file_format=doc["file_format"],
+                                 file_size=path.stat().st_size, source_type=doc["source_type"],
+                                 source_id=doc["source_id"], source_title=doc["source_title"],
+                                 source_url=doc["source_url"], markdown_path=str(mdp) if mdp else "",
+                                 markdown_chars=md_chars, extraction_path=str(jsonp))
+                        elif mdp:
+                            md_text = mdp.read_text(encoding="utf-8", errors="ignore")
+                            mark(state, url, "converted", title=doc["title"], content_hash=h,
+                                 local_path=str(path), file_format=doc["file_format"],
+                                 file_size=path.stat().st_size, source_type=doc["source_type"],
+                                 source_id=doc["source_id"], source_title=doc["source_title"],
+                                 source_url=doc["source_url"], markdown_path=str(mdp),
+                                 markdown_chars=len(md_text))
+                        else:
+                            mark(state, url, "downloaded", title=doc["title"], content_hash=h,
+                                 local_path=str(path), file_format=doc["file_format"],
+                                 file_size=path.stat().st_size, source_type=doc["source_type"],
+                                 source_id=doc["source_id"], source_title=doc["source_title"],
+                                 source_url=doc["source_url"])
+                    rebuilt += 1
+                    if rebuilt % 50 == 0:
+                        log(f"  Rebuilt {rebuilt} entries...")
+                except Exception as e:
+                    log(f"  Skip {url[:60]}: {e}")
+        log(f"Rebuilt: {rebuilt}, Already in state: {skipped}")
+        # Summary
+        summary = get_summary(state)
+        log(f"State summary: {summary}")
+    except Exception as e:
+        log(f"REBUILD ERROR: {e}")
+    finally:
+        if _standalone:
+            _task_running = False
+
 async def run_import(limit: int | None = None, _standalone: bool = True):
     global _task_running
     if _standalone:
@@ -190,7 +283,8 @@ async def run_import(limit: int | None = None, _standalone: bool = True):
                         continue
                     h = hashlib.sha256(pdf).hexdigest()
                     path = CACHE_DIR / f"{h}.pdf"
-                    path.write_bytes(pdf)
+                    if not path.exists():
+                        path.write_bytes(pdf)
                     mark(state, url, "downloaded", title=doc["title"], content_hash=h,
                          local_path=str(path), file_format=doc["file_format"],
                          file_size=len(pdf), source_type=doc["source_type"],
@@ -350,7 +444,7 @@ async def run_extract(limit: int | None = None, _standalone: bool = True):
 
         state = load_state()
         to_extract = [u for u, i in state.items()
-                      if i.get("status") == "converted" and i.get("markdown_chars", 0) > 50]
+                      if i.get("status") in ("converted", "failed") and i.get("markdown_chars", 0) > 50]
         if limit:
             to_extract = to_extract[:limit]
         if not to_extract:
@@ -615,6 +709,7 @@ body { font-family: 'Segoe UI', Tahoma, sans-serif; background: #f0f2f5; color: 
           <button class="btn btn-primary" onclick="doAction('push')">☁️ העלאה</button>
           <button class="btn btn-red" onclick="doAction('push_skip')">☁️ העלאה (ללא חילוץ)</button>
           <button class="btn" style="background:#6b7280;color:white" onclick="if(confirm('לאפס את כל הסטטוסים?')) doAction('reset')">🔄 איפוס</button>
+          <button class="btn" style="background:#8b5cf6;color:white" onclick="doAction('rebuild')">🔧 שחזור מקאש</button>
         </div>
         <div class="limit-group">
           <label>מגבלה:</label>
@@ -755,6 +850,8 @@ class Handler(BaseHTTPRequestHandler):
                 threading.Thread(target=lambda: asyncio.run(run_push(limit)), daemon=True).start()
             elif action == "push_skip":
                 threading.Thread(target=lambda: asyncio.run(run_push(limit, skip_extract=True)), daemon=True).start()
+            elif action == "rebuild":
+                threading.Thread(target=lambda: asyncio.run(run_rebuild_state()), daemon=True).start()
             elif action == "reset":
                 if STATE_FILE.exists():
                     STATE_FILE.unlink()

@@ -499,3 +499,15 @@ export function getRegistryRecords(source?: string, search?: string, page = 1) {
 export function getAdminUsers() {
   return adminFetch<{ status: string; data: string[] }>("/users");
 }
+
+// Site Content
+export function getSiteContent(key: string) {
+  return adminFetch<{ status: string; data: { key: string; value: string } }>(`/site-content/${key}`);
+}
+
+export function updateSiteContent(key: string, value: string) {
+  return adminFetch<{ status: string }>(`/site-content/${key}`, {
+    method: "PUT",
+    body: JSON.stringify({ value }),
+  });
+}

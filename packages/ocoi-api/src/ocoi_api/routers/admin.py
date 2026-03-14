@@ -25,6 +25,7 @@ from ocoi_db.crud import _add_alias, _get_aliases
 from ocoi_db.models import (
     Person, Company, Association, Domain,
     EntityRelationship, Document, Source, ExtractionRun, IgnoredResource,
+    SiteContent,
 )
 
 router = APIRouter(
@@ -1611,3 +1612,28 @@ async def list_admin_users():
         "status": "ok",
         "data": sorted(settings.admin_email_set),
     }
+
+
+# ── Site Content CMS ─────────────────────────────────────────────────────
+
+ALLOWED_CONTENT_KEYS = {"header_links", "footer_text", "about_content"}
+
+@router.get("/site-content/{key}")
+async def get_site_content(key: str, db: AsyncSession = Depends(get_db)):
+    if key not in ALLOWED_CONTENT_KEYS:
+        raise HTTPException(404, f"Unknown content key: {key}")
+    row = await db.get(SiteContent, key)
+    return {"status": "ok", "data": {"key": key, "value": row.value if row else ""}}
+
+@router.put("/site-content/{key}")
+async def update_site_content(key: str, body: dict, db: AsyncSession = Depends(get_db)):
+    if key not in ALLOWED_CONTENT_KEYS:
+        raise HTTPException(404, f"Unknown content key: {key}")
+    value = body.get("value", "")
+    row = await db.get(SiteContent, key)
+    if row:
+        row.value = value
+    else:
+        db.add(SiteContent(key=key, value=value))
+    await db.commit()
+    return {"status": "ok"}

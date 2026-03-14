@@ -238,3 +238,12 @@ class ExtractionRun(Base):
     created_at: Mapped[datetime | None] = mapped_column(DateTime, default=func.now())
 
     document = relationship("Document", back_populates="extraction_runs")
+
+
+class SiteContent(Base):
+    """Key-value store for editable site content (header, footer, about page)."""
+    __tablename__ = "site_content"
+
+    key: Mapped[str] = mapped_column(String(50), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, default=func.now(), onupdate=func.now())

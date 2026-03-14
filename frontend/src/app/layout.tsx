@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Script from "next/script";
+import SiteShell from "@/components/SiteShell";
 import "./globals.css";
 
 const GA_ID = "G-PLRGJXQMGB";
@@ -34,52 +35,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           דלג לתוכן
         </a>
 
-        <header className="bg-primary-800 sticky top-0 z-50">
-          <nav className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-14 sm:h-16 flex items-center justify-between">
-            <a href="/" className="flex items-center gap-2 text-white">
-              <svg xmlns="http://www.w3.org/2000/svg" className="w-7 h-7 sm:w-8 sm:h-8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-              </svg>
-              <span className="text-lg sm:text-xl font-bold">ניגוד עניינים לעם</span>
-            </a>
-            <div className="flex gap-1">
-              <a
-                href="/"
-                className="px-3 sm:px-4 py-2 rounded-lg text-sm font-medium text-primary-100 hover:bg-white/10 hover:text-white transition-colors"
-              >
-                חיפוש
-              </a>
-              <a
-                href="/graph"
-                className="px-3 sm:px-4 py-2 rounded-lg text-sm font-medium text-primary-100 hover:bg-white/10 hover:text-white transition-colors"
-              >
-                מפת קשרים
-              </a>
-              <a
-                href="/api-docs"
-                className="px-3 sm:px-4 py-2 rounded-lg text-sm font-medium text-primary-100 hover:bg-white/10 hover:text-white transition-colors"
-              >
-                API ציבורי
-              </a>
-              <a
-                href="/admin"
-                className="px-3 sm:px-4 py-2 rounded-lg text-sm font-medium text-primary-100 hover:bg-white/10 hover:text-white transition-colors"
-              >
-                ניהול
-              </a>
-            </div>
-          </nav>
-        </header>
-
-        <main id="main-content" className="flex-1">
-          {children}
-        </main>
-
-        <footer className="bg-primary-900 text-primary-100 py-6 text-center text-sm">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            ניגוד עניינים לעם — שקיפות ניגודי עניינים של בעלי תפקידים ציבוריים בישראל
-          </div>
-        </footer>
+        <SiteShell>{children}</SiteShell>
       </body>
     </html>
   );

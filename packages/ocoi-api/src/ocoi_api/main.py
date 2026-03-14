@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
-from ocoi_api.routers import search, entities, connections, documents, external, auth, admin, push
+from ocoi_api.routers import search, entities, connections, documents, external, auth, admin, push, site
 from ocoi_api.auth import get_current_admin
 from ocoi_common.config import settings
 
@@ -154,6 +154,7 @@ def create_app() -> FastAPI:
     app.include_router(auth.router, prefix="/api/v1")
     app.include_router(admin.router, prefix="/api/v1")
     app.include_router(push.router, prefix="/api/v1")
+    app.include_router(site.router, prefix="/api/v1")
 
     @app.get("/api/health")
     async def health():

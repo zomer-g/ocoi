@@ -10,6 +10,7 @@ const NAV_ITEMS = [
   { href: "/admin/documents", label: "מסמכים" },
   { href: "/admin/import", label: "ייבוא" },
   { href: "/admin/registry", label: "מרשמים" },
+  { href: "/admin/site-content", label: "תוכן האתר" },
   { href: "/api/admin-docs", label: "API", external: true },
   { href: "/admin/settings", label: "הגדרות" },
 ] as const;
