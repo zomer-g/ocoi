@@ -346,6 +346,7 @@ async def _run_extraction(document_ids: list[str] | None):
                 )
 
                 doc.extraction_status = "extracted"
+                doc.extracted_at = datetime.now(timezone.utc)
                 await session.commit()
 
                 _extraction_state["entities_found"] += entities_count

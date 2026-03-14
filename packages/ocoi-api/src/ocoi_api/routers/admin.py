@@ -319,19 +319,37 @@ async def list_documents(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     status: str | None = None,
+    conversion: str | None = None,
+    source_type: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
     q: str = Query("", alias="search", description="Search by title"),
     db: AsyncSession = Depends(get_db),
 ):
     offset = (page - 1) * limit
     query = select(Document).join(Source, Document.source_id == Source.id)
-    count_q = select(func.count()).select_from(Document)
+    count_q = select(func.count()).select_from(Document).join(Source, Document.source_id == Source.id)
+
     if status:
         query = query.where(Document.extraction_status == status)
         count_q = count_q.where(Document.extraction_status == status)
+    if conversion:
+        query = query.where(Document.conversion_status == conversion)
+        count_q = count_q.where(Document.conversion_status == conversion)
+    if source_type:
+        query = query.where(Source.source_type == source_type)
+        count_q = count_q.where(Source.source_type == source_type)
+    if date_from:
+        query = query.where(Document.created_at >= date_from)
+        count_q = count_q.where(Document.created_at >= date_from)
+    if date_to:
+        query = query.where(Document.created_at <= date_to)
+        count_q = count_q.where(Document.created_at <= date_to)
     if q.strip():
         search_filter = Document.title.ilike(f"%{q.strip()}%")
         query = query.where(search_filter)
         count_q = count_q.where(search_filter)
+
     total = (await db.execute(count_q)).scalar()
     result = await db.execute(query.order_by(Document.created_at.desc()).offset(offset).limit(limit))
     docs = result.scalars().all()
@@ -349,6 +367,8 @@ async def list_documents(
             "has_content": bool(d.markdown_content),
             "has_pdf": bool(d.pdf_content),
             "created_at": d.created_at.isoformat() if d.created_at else None,
+            "converted_at": d.converted_at.isoformat() if d.converted_at else None,
+            "extracted_at": d.extracted_at.isoformat() if d.extracted_at else None,
         })
     return {"status": "ok", "data": data, "meta": {"total": total, "page": page, "limit": limit}}
 
@@ -912,6 +932,116 @@ async def reextract_document(
 
     background_tasks.add_task(run_extraction, [str(doc_id)])
     return {"status": "ok", "message": "חילוץ מחדש הופעל"}
+
+
+# ── Batch operations ─────────────────────────────────────────────────────
+
+@router.post("/documents/batch/reconvert")
+async def batch_reconvert(body: dict, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
+    """Batch reconvert documents — by IDs or by filter."""
+    document_ids = body.get("document_ids", [])
+    filter_type = body.get("filter")
+
+    if filter_type == "no_text":
+        result = await db.execute(
+            select(Document.id).where(Document.conversion_status == "no_text")
+        )
+        document_ids = [str(row[0]) for row in result.all()]
+    elif not document_ids:
+        raise HTTPException(400, "Provide document_ids or filter")
+
+    if not document_ids:
+        return {"status": "ok", "message": "אין מסמכים להמרה מחדש", "count": 0}
+
+    background_tasks.add_task(_batch_reconvert_bg, document_ids)
+    return {"status": "ok", "message": f"המרה מחדש הופעלה ל-{len(document_ids)} מסמכים", "count": len(document_ids)}
+
+
+async def _batch_reconvert_bg(document_ids: list[str]):
+    """Background worker for batch reconvert."""
+    import gc
+    import httpx as _httpx
+    from datetime import datetime, timezone as tz
+    from ocoi_api.services.pdf_converter import convert_pdf
+
+    for doc_id in document_ids:
+        try:
+            async with async_session_factory() as db:
+                result = await db.execute(select(Document).where(Document.id == doc_id))
+                doc = result.scalars().first()
+                if not doc:
+                    continue
+
+                pdf_path = await _resolve_pdf_path(doc, _httpx, db)
+                if not pdf_path:
+                    continue
+
+                md_text = convert_pdf(pdf_path, str(doc.id), use_ocr=True)
+                if md_text:
+                    doc.markdown_content = md_text
+                    doc.conversion_status = "converted"
+                    doc.converted_at = datetime.now(tz.utc)
+                    if not doc.pdf_content and pdf_path.exists():
+                        doc.pdf_content = pdf_path.read_bytes()
+                else:
+                    doc.conversion_status = "no_text"
+
+                await db.commit()
+        except Exception as e:
+            logger.warning(f"Batch reconvert failed for {doc_id}: {e}")
+        gc.collect()
+
+
+@router.post("/documents/batch/extract")
+async def batch_extract(body: dict, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
+    """Batch extract entities — by IDs or by filter."""
+    from ocoi_api.services.extraction_service import get_extraction_status, run_extraction
+
+    document_ids = body.get("document_ids", [])
+    filter_type = body.get("filter")
+
+    if filter_type == "pending":
+        result = await db.execute(
+            select(Document.id).where(
+                Document.extraction_status == "pending",
+                Document.conversion_status == "converted",
+            )
+        )
+        document_ids = [str(row[0]) for row in result.all()]
+    elif not document_ids:
+        raise HTTPException(400, "Provide document_ids or filter")
+
+    if not document_ids:
+        return {"status": "ok", "message": "אין מסמכים לחילוץ", "count": 0}
+
+    status = get_extraction_status()
+    if status["running"]:
+        raise HTTPException(409, "חילוץ כבר רץ — נסה שוב אחרי שיסתיים")
+
+    background_tasks.add_task(run_extraction, document_ids)
+    return {"status": "ok", "message": f"חילוץ הופעל ל-{len(document_ids)} מסמכים", "count": len(document_ids)}
+
+
+@router.post("/documents/batch/reset-status")
+async def batch_reset_status(body: dict, db: AsyncSession = Depends(get_db)):
+    """Reset conversion_status or extraction_status for selected documents."""
+    document_ids = body.get("document_ids", [])
+    field = body.get("field", "extraction_status")
+    value = body.get("value", "pending")
+
+    if not document_ids:
+        raise HTTPException(400, "Provide document_ids")
+    if field not in ("conversion_status", "extraction_status"):
+        raise HTTPException(400, "field must be conversion_status or extraction_status")
+
+    for doc_id in document_ids:
+        result = await db.execute(select(Document).where(Document.id == doc_id))
+        doc = result.scalars().first()
+        if doc:
+            setattr(doc, field, value)
+
+    await db.commit()
+    return {"status": "ok", "message": f"אופס {len(document_ids)} מסמכים", "count": len(document_ids)}
 
 
 # ── CKAN: search + selective import ───────────────────────────────────────
