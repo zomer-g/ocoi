@@ -204,6 +204,13 @@ export function importCkanResources(resources: CkanResourceImport[]) {
   });
 }
 
+export function bulkImportCkan(query: string) {
+  return adminFetch<{ status: string; message: string }>("/import/ckan/bulk", {
+    method: "POST",
+    body: JSON.stringify({ query }),
+  });
+}
+
 // Import — CKAN ignore/unignore
 export function ignoreResources(resources: { url: string; title: string }[]) {
   return adminFetch("/import/ignore", {
@@ -419,6 +426,66 @@ export function triggerExtraction(documentIds?: string[]) {
 
 export function getExtractionStatus() {
   return adminFetch<{ status: string; data: ExtractionStatus }>("/extraction/status");
+}
+
+// Registry
+export interface RegistrySource {
+  key: string;
+  label: string;
+  entity_type: string;
+  last_synced_at: string | null;
+  record_count: number;
+  sync_status: "never" | "syncing" | "completed" | "failed";
+  error_message: string | null;
+}
+
+export interface RegistrySyncState {
+  running: boolean;
+  source: string | null;
+  total_remote: number;
+  fetched: number;
+  saved: number;
+  errors: number;
+  error_messages: string[];
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface RegistryMatchState {
+  running: boolean;
+  total: number;
+  processed: number;
+  matched: number;
+  errors: number;
+  error_messages: string[];
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export function getRegistrySources() {
+  return adminFetch<{ status: string; data: RegistrySource[] }>("/registry/sources");
+}
+export function triggerRegistrySync(source: string) {
+  return adminFetch<{ status: string; message: string }>(`/registry/sync/${source}`, { method: "POST" });
+}
+export function getRegistrySyncStatus() {
+  return adminFetch<{ status: string; data: RegistrySyncState }>("/registry/sync/status");
+}
+export function triggerRegistryMatchAll() {
+  return adminFetch<{ status: string; message: string }>("/registry/match-all", { method: "POST" });
+}
+export function getRegistryMatchStatus() {
+  return adminFetch<{ status: string; data: RegistryMatchState }>("/registry/match/status");
+}
+export function getRegistryRecords(source?: string, search?: string, page = 1) {
+  const params = new URLSearchParams({ page: String(page) });
+  if (source) params.set("source", source);
+  if (search) params.set("search", search);
+  return adminFetch<{
+    status: string;
+    data: { id: string; name: string; registration_number: string | null; source_type: string; status: string | null }[];
+    meta: { total: number; page: number; limit: number };
+  }>(`/registry/records?${params}`);
 }
 
 // Users

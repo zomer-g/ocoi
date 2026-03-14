@@ -4,6 +4,7 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import {
   searchCkan,
   importCkanResources,
+  bulkImportCkan,
   ignoreResources,
   unignoreResources,
   triggerGovilImport,
@@ -101,6 +102,10 @@ function CkanTab() {
   const [hideImported, setHideImported] = useState(true);
   const [hideOcr, setHideOcr] = useState(true);
   const [hideIgnored, setHideIgnored] = useState(true);
+  // Bulk import
+  const [bulkRunning, setBulkRunning] = useState(false);
+  const [bulkStatus, setBulkStatus] = useState<ImportStatus | null>(null);
+  const bulkPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Shift-click range selection
   const lastClickedRef = useRef<string | null>(null);
 
@@ -258,6 +263,35 @@ function CkanTab() {
     }
   };
 
+  const doBulkImport = async () => {
+    if (!query.trim()) return;
+    try {
+      await bulkImportCkan(query.trim());
+      setBulkRunning(true);
+      // Start polling
+      bulkPollRef.current = setInterval(async () => {
+        try {
+          const res = await getImportStatus();
+          setBulkStatus(res.data);
+          if (!res.data.running) {
+            if (bulkPollRef.current) clearInterval(bulkPollRef.current);
+            bulkPollRef.current = null;
+            setBulkRunning(false);
+          }
+        } catch {}
+      }, 2000);
+    } catch (e: unknown) {
+      alert((e as Error).message);
+    }
+  };
+
+  // Cleanup bulk poll on unmount
+  useEffect(() => {
+    return () => {
+      if (bulkPollRef.current) clearInterval(bulkPollRef.current);
+    };
+  }, []);
+
   const totalPages = Math.ceil(total / 20);
   const currentPage = Math.floor(page / 20) + 1;
 
@@ -294,6 +328,14 @@ function CkanTab() {
             className="px-6 py-2.5 bg-primary-700 text-white rounded-lg hover:bg-primary-800 transition-colors text-sm font-medium disabled:opacity-50"
           >
             {searching ? "מחפש..." : "חיפוש"}
+          </button>
+          <button
+            onClick={doBulkImport}
+            disabled={!query.trim() || bulkRunning || importing}
+            className="px-5 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors text-sm font-medium disabled:opacity-50 whitespace-nowrap"
+            title="ייבא את כל המסמכים התואמים לחיפוש (ללא הגבלת כמות)"
+          >
+            {bulkRunning ? "מייבא..." : "ייבא הכל"}
           </button>
         </div>
         {total > 0 && (
@@ -332,6 +374,46 @@ function CkanTab() {
           </div>
         )}
       </div>
+
+      {/* Bulk import progress */}
+      {(bulkRunning || (bulkStatus && bulkStatus.finished_at)) && bulkStatus && (
+        <div className={`rounded-lg border p-4 mb-4 ${bulkRunning ? "bg-blue-50 border-blue-200" : "bg-green-50 border-green-200"}`}>
+          <div className="flex items-center justify-between text-sm mb-2">
+            <span className={bulkRunning ? "text-blue-700 font-medium" : "text-green-700 font-medium"}>
+              {bulkRunning ? "מייבא את כל המסמכים..." : "ייבוא הושלם"}
+            </span>
+            <span className={bulkRunning ? "text-blue-600" : "text-green-600"}>
+              {bulkStatus.imported} יובאו · {bulkStatus.skipped} דולגו · {bulkStatus.errors} שגיאות
+            </span>
+          </div>
+          {bulkRunning && bulkStatus.total > 0 && (
+            <div className="w-full bg-blue-200 rounded-full h-2 mb-2">
+              <div
+                className="bg-blue-600 h-2 rounded-full transition-all"
+                style={{ width: `${((bulkStatus.imported + bulkStatus.skipped + bulkStatus.errors) / bulkStatus.total) * 100}%` }}
+              />
+            </div>
+          )}
+          {bulkStatus.total_on_website > 0 && (
+            <div className="text-xs text-gray-500">
+              {bulkStatus.total_on_website} מערכי נתונים · {bulkStatus.new_to_import} חדשים · {bulkStatus.already_in_db} כבר קיימים
+            </div>
+          )}
+          {!bulkRunning && bulkStatus.error_messages.length > 0 && (
+            <div className="mt-2 text-xs text-red-600 font-mono max-h-32 overflow-auto">
+              {bulkStatus.error_messages.map((m, i) => <div key={i}>{m}</div>)}
+            </div>
+          )}
+          {!bulkRunning && (
+            <button
+              onClick={() => setBulkStatus(null)}
+              className="mt-2 text-xs text-gray-500 hover:text-gray-700"
+            >
+              סגור
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Results */}
       {filteredResults.length > 0 && (

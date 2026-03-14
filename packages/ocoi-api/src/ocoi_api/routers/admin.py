@@ -920,75 +920,7 @@ async def delete_document(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db))
     return {"status": "ok"}
 
 
-@router.post("/documents/{doc_id}/reconvert")
-async def reconvert_document(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """Re-extract markdown from a single document's PDF (download if needed) using RTL-safe pymupdf."""
-    import httpx as _httpx
-    from ocoi_api.services.pdf_converter import convert_pdf
-
-    result = await db.execute(select(Document).where(Document.id == doc_id))
-    doc = result.scalars().first()
-    if not doc:
-        raise HTTPException(404, "Document not found")
-
-    pdf_path = await _resolve_pdf_path(doc, _httpx, db)
-    if not pdf_path:
-        raise HTTPException(404, "לא ניתן למצוא או להוריד את ה-PDF")
-
-    md_text = convert_pdf(pdf_path, str(doc.id), use_ocr=True)
-    if not md_text:
-        doc.conversion_status = "no_text"
-        await db.commit()
-        raise HTTPException(500, "המרה נכשלה — לא הופק טקסט מה-PDF")
-
-    from datetime import datetime, timezone as tz
-    doc.markdown_content = md_text
-    doc.conversion_status = "converted"
-    doc.converted_at = datetime.now(tz.utc)
-    # Store PDF in DB if not already there
-    if not doc.pdf_content and pdf_path.exists():
-        doc.pdf_content = pdf_path.read_bytes()
-    await db.commit()
-
-    return {
-        "status": "ok",
-        "data": {
-            "id": str(doc.id),
-            "markdown_length": len(md_text),
-        },
-    }
-
-
-@router.post("/documents/{doc_id}/reextract")
-async def reextract_document(
-    doc_id: uuid.UUID,
-    background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db),
-):
-    """Delete existing extraction data for a document and re-run LLM extraction."""
-    from ocoi_api.services.extraction_service import get_extraction_status, run_extraction
-
-    result = await db.execute(select(Document).where(Document.id == doc_id))
-    doc = result.scalars().first()
-    if not doc:
-        raise HTTPException(404, "Document not found")
-
-    # Delete old extraction data for this document
-    await db.execute(delete(ExtractionRun).where(ExtractionRun.document_id == doc_id))
-    await db.execute(delete(EntityRelationship).where(EntityRelationship.document_id == doc_id))
-    doc.extraction_status = "pending"
-    await db.commit()
-
-    # Trigger extraction for just this document
-    status = get_extraction_status()
-    if status["running"]:
-        raise HTTPException(409, "חילוץ כבר רץ — נסה שוב אחרי שיסתיים")
-
-    background_tasks.add_task(run_extraction, [str(doc_id)])
-    return {"status": "ok", "message": "חילוץ מחדש הופעל"}
-
-
-# ── Batch operations ─────────────────────────────────────────────────────
+# ── Batch operations (MUST be before {doc_id} routes to avoid FastAPI path capture) ──
 
 @router.post("/documents/batch/reconvert")
 async def batch_reconvert(body: dict, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
@@ -1098,6 +1030,76 @@ async def batch_reset_status(body: dict, db: AsyncSession = Depends(get_db)):
     return {"status": "ok", "message": f"אופס {len(document_ids)} מסמכים", "count": len(document_ids)}
 
 
+# ── Single-document operations (AFTER batch to avoid {doc_id} capturing "batch") ──
+
+@router.post("/documents/{doc_id}/reconvert")
+async def reconvert_document(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """Re-extract markdown from a single document's PDF (download if needed) using RTL-safe pymupdf."""
+    import httpx as _httpx
+    from ocoi_api.services.pdf_converter import convert_pdf
+
+    result = await db.execute(select(Document).where(Document.id == doc_id))
+    doc = result.scalars().first()
+    if not doc:
+        raise HTTPException(404, "Document not found")
+
+    pdf_path = await _resolve_pdf_path(doc, _httpx, db)
+    if not pdf_path:
+        raise HTTPException(404, "לא ניתן למצוא או להוריד את ה-PDF")
+
+    md_text = convert_pdf(pdf_path, str(doc.id), use_ocr=True)
+    if not md_text:
+        doc.conversion_status = "no_text"
+        await db.commit()
+        raise HTTPException(500, "המרה נכשלה — לא הופק טקסט מה-PDF")
+
+    from datetime import datetime, timezone as tz
+    doc.markdown_content = md_text
+    doc.conversion_status = "converted"
+    doc.converted_at = datetime.now(tz.utc)
+    # Store PDF in DB if not already there
+    if not doc.pdf_content and pdf_path.exists():
+        doc.pdf_content = pdf_path.read_bytes()
+    await db.commit()
+
+    return {
+        "status": "ok",
+        "data": {
+            "id": str(doc.id),
+            "markdown_length": len(md_text),
+        },
+    }
+
+
+@router.post("/documents/{doc_id}/reextract")
+async def reextract_document(
+    doc_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete existing extraction data for a document and re-run LLM extraction."""
+    from ocoi_api.services.extraction_service import get_extraction_status, run_extraction
+
+    result = await db.execute(select(Document).where(Document.id == doc_id))
+    doc = result.scalars().first()
+    if not doc:
+        raise HTTPException(404, "Document not found")
+
+    # Delete old extraction data for this document
+    await db.execute(delete(ExtractionRun).where(ExtractionRun.document_id == doc_id))
+    await db.execute(delete(EntityRelationship).where(EntityRelationship.document_id == doc_id))
+    doc.extraction_status = "pending"
+    await db.commit()
+
+    # Trigger extraction for just this document
+    status = get_extraction_status()
+    if status["running"]:
+        raise HTTPException(409, "חילוץ כבר רץ — נסה שוב אחרי שיסתיים")
+
+    background_tasks.add_task(run_extraction, [str(doc_id)])
+    return {"status": "ok", "message": "חילוץ מחדש הופעל"}
+
+
 # ── CKAN: search + selective import ───────────────────────────────────────
 
 @router.get("/import/ckan/search")
@@ -1127,6 +1129,23 @@ async def ckan_import(body: dict):
         raise HTTPException(400, "No dataset_ids or resources provided")
     stats = await import_ckan_datasets(dataset_ids)
     return {"status": "ok", "data": stats}
+
+
+@router.post("/import/ckan/bulk")
+async def ckan_bulk_import(body: dict, background_tasks: BackgroundTasks):
+    """Import ALL CKAN resources matching a query. Runs as background task."""
+    from ocoi_api.services.import_service import run_bulk_ckan_import, get_import_status
+
+    query = body.get("query", "")
+    if not query:
+        raise HTTPException(400, "query is required")
+
+    status = get_import_status()
+    if status["running"]:
+        raise HTTPException(409, "ייבוא כבר רץ — נסה שוב אחרי שיסתיים")
+
+    background_tasks.add_task(run_bulk_ckan_import, query)
+    return {"status": "ok", "message": f"ייבוא מתחיל עבור חיפוש: {query}"}
 
 
 # ── Ignored resources ─────────────────────────────────────────────────────
@@ -1352,6 +1371,110 @@ async def trigger_extraction(background_tasks: BackgroundTasks, body: dict = {})
 async def extraction_status():
     from ocoi_api.services.extraction_service import get_extraction_status
     return {"status": "ok", "data": get_extraction_status()}
+
+
+# ── External entity registry ──────────────────────────────────────────────
+
+@router.get("/registry/sources")
+async def registry_sources(db: AsyncSession = Depends(get_db)):
+    """List all registry sources with their sync status."""
+    from ocoi_api.services.registry_service import REGISTRY_SOURCES
+    from ocoi_db.models import RegistrySyncStatus
+
+    result = await db.execute(select(RegistrySyncStatus))
+    sync_rows = {r.source_type: r for r in result.scalars().all()}
+
+    sources = []
+    for key, config in REGISTRY_SOURCES.items():
+        sync = sync_rows.get(key)
+        sources.append({
+            "key": key,
+            "label": config["label"],
+            "entity_type": config["entity_type"],
+            "last_synced_at": sync.last_synced_at.isoformat() if sync and sync.last_synced_at else None,
+            "record_count": sync.record_count if sync else 0,
+            "sync_status": sync.sync_status if sync else "never",
+            "error_message": sync.error_message if sync else None,
+        })
+    return {"status": "ok", "data": sources}
+
+
+@router.get("/registry/sync/status")
+async def registry_sync_status():
+    """Get current sync progress (for polling)."""
+    from ocoi_api.services.registry_service import get_registry_sync_state
+    return {"status": "ok", "data": get_registry_sync_state()}
+
+
+@router.post("/registry/sync/{source}")
+async def registry_sync(source: str, background_tasks: BackgroundTasks):
+    """Trigger sync for a specific registry source."""
+    from ocoi_api.services.registry_service import REGISTRY_SOURCES, get_registry_sync_state, run_registry_sync
+    if source not in REGISTRY_SOURCES:
+        raise HTTPException(400, f"Unknown source: {source}")
+    state = get_registry_sync_state()
+    if state["running"]:
+        raise HTTPException(409, "סנכרון כבר רץ — נסה שוב אחרי שיסתיים")
+    background_tasks.add_task(run_registry_sync, source)
+    return {"status": "ok", "message": f"סנכרון {REGISTRY_SOURCES[source]['label']} הופעל"}
+
+
+@router.get("/registry/records")
+async def registry_records(
+    source: str | None = Query(None),
+    search: str | None = Query(None),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+):
+    """Browse registry records with optional source and search filter."""
+    from ocoi_db.models import RegistryRecord
+
+    query = select(RegistryRecord)
+    if source:
+        query = query.where(RegistryRecord.source_type == source)
+    if search:
+        query = query.where(RegistryRecord.name.ilike(f"%{search}%"))
+
+    count_q = select(func.count()).select_from(query.subquery())
+    total = (await db.execute(count_q)).scalar() or 0
+
+    records = (await db.execute(
+        query.order_by(RegistryRecord.name).offset((page - 1) * limit).limit(limit)
+    )).scalars().all()
+
+    return {
+        "status": "ok",
+        "data": [
+            {
+                "id": r.id,
+                "name": r.name,
+                "registration_number": r.registration_number,
+                "source_type": r.source_type,
+                "status": r.status,
+            }
+            for r in records
+        ],
+        "meta": {"total": total, "page": page, "limit": limit},
+    }
+
+
+@router.post("/registry/match-all")
+async def registry_match_all(background_tasks: BackgroundTasks):
+    """Trigger matching all unmatched entities against the registry."""
+    from ocoi_api.services.registry_service import get_registry_match_state, match_all_unmatched
+    state = get_registry_match_state()
+    if state["running"]:
+        raise HTTPException(409, "התאמה כבר רצה — נסה שוב אחרי שתסתיים")
+    background_tasks.add_task(match_all_unmatched)
+    return {"status": "ok", "message": "התאמת ישויות הופעלה"}
+
+
+@router.get("/registry/match/status")
+async def registry_match_status():
+    """Get current match-all progress (for polling)."""
+    from ocoi_api.services.registry_service import get_registry_match_state
+    return {"status": "ok", "data": get_registry_match_state()}
 
 
 # ── Admin users (read-only from env) ──────────────────────────────────────

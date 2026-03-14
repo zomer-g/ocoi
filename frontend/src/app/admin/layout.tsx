@@ -9,6 +9,7 @@ const NAV_ITEMS = [
   { href: "/admin/relationships", label: "קשרים" },
   { href: "/admin/documents", label: "מסמכים" },
   { href: "/admin/import", label: "ייבוא" },
+  { href: "/admin/registry", label: "מרשמים" },
   { href: "/admin/settings", label: "הגדרות" },
 ];
 

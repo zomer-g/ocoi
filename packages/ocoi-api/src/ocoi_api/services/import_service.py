@@ -371,6 +371,107 @@ async def _import_single_ckan_doc(session, doc, ds, imported_at: str, stats: dic
     stats["imported"] += 1
 
 
+# ── Bulk CKAN import (all results for a query) ───────────────────────────
+
+
+async def run_bulk_ckan_import(query: str) -> dict:
+    """Import ALL CKAN resources matching a query. Background task with progress via _import_state."""
+    import gc
+    from ocoi_importer.ckan_client import CkanClient
+
+    global _import_state
+    if _import_state["running"]:
+        return {"status": "error", "message": "Import already running"}
+
+    _import_state.update({
+        "running": True,
+        "source": "ckan-bulk",
+        "total_on_website": 0,
+        "already_in_db": 0,
+        "new_to_import": 0,
+        "total": 0,
+        "imported": 0,
+        "skipped": 0,
+        "errors": 0,
+        "error_messages": [],
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "finished_at": None,
+    })
+
+    try:
+        client = CkanClient()
+        total_datasets = await client.get_total_count(query=query)
+        _import_state["total_on_website"] = total_datasets
+
+        page_size = 20
+        offset = 0
+        imported_at = datetime.now(timezone.utc).isoformat()
+
+        while offset < total_datasets:
+            try:
+                datasets = await client.search_datasets(query=query, rows=page_size, start=offset)
+                if not datasets:
+                    break
+
+                async with async_session_factory() as session:
+                    for ds in datasets:
+                        docs = client.extract_documents(ds)
+                        _import_state["total"] += len(docs)
+
+                        for doc in docs:
+                            try:
+                                # Check if already imported
+                                existing = await session.execute(
+                                    select(Document).where(Document.file_url == doc.file_url)
+                                )
+                                if existing.scalars().first():
+                                    _import_state["skipped"] += 1
+                                    _import_state["already_in_db"] += 1
+                                    continue
+
+                                # Check if ignored
+                                ignored = await session.execute(
+                                    select(IgnoredResource).where(IgnoredResource.file_url == doc.file_url)
+                                )
+                                if ignored.scalars().first():
+                                    _import_state["skipped"] += 1
+                                    continue
+
+                                _import_state["new_to_import"] += 1
+                                stats_tmp = {"imported": 0, "skipped": 0, "errors": 0, "error_messages": []}
+                                await _import_single_ckan_doc(session, doc, ds, imported_at, stats_tmp)
+                                _import_state["imported"] += stats_tmp["imported"]
+                                _import_state["skipped"] += stats_tmp["skipped"]
+                                _import_state["errors"] += stats_tmp["errors"]
+                                for msg in stats_tmp["error_messages"]:
+                                    if len(_import_state["error_messages"]) < 50:
+                                        _import_state["error_messages"].append(msg)
+
+                            except Exception as e:
+                                _import_state["errors"] += 1
+                                if len(_import_state["error_messages"]) < 50:
+                                    _import_state["error_messages"].append(f"{doc.title[:40]}: {e}")
+
+                    await session.commit()
+
+            except Exception as e:
+                _import_state["errors"] += 1
+                if len(_import_state["error_messages"]) < 50:
+                    _import_state["error_messages"].append(f"Page {offset}: {e}")
+
+            offset += page_size
+            gc.collect()
+
+    except Exception as e:
+        _import_state["errors"] += 1
+        _import_state["error_messages"].append(f"Fatal: {e}")
+    finally:
+        _import_state["running"] = False
+        _import_state["finished_at"] = datetime.now(timezone.utc).isoformat()
+
+    return get_import_status()
+
+
 # ── Gov.il: Automated bulk import ────────────────────────────────────────
 
 

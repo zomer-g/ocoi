@@ -75,6 +75,10 @@ async def run_migrations():
         ("documents", "content_hash", "ALTER TABLE documents ADD COLUMN content_hash VARCHAR(64)"),
         ("documents", "converted_at", "ALTER TABLE documents ADD COLUMN converted_at TIMESTAMP"),
         ("documents", "extracted_at", "ALTER TABLE documents ADD COLUMN extracted_at TIMESTAMP"),
+        ("companies", "registry_record_id", "ALTER TABLE companies ADD COLUMN registry_record_id CHAR(36)"),
+        ("associations", "status", "ALTER TABLE associations ADD COLUMN status VARCHAR(50)"),
+        ("associations", "match_confidence", "ALTER TABLE associations ADD COLUMN match_confidence FLOAT"),
+        ("associations", "registry_record_id", "ALTER TABLE associations ADD COLUMN registry_record_id CHAR(36)"),
     ]
 
     async with async_engine.begin() as conn:

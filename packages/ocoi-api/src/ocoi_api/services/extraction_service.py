@@ -298,6 +298,15 @@ async def _run_extraction(document_ids: list[str] | None):
                         company_type=company.company_type,
                     )
                     entity_id_map[("company", company.name_hebrew)] = db_company.id
+                    # Try matching against external registry
+                    if not db_company.registration_number:
+                        try:
+                            from ocoi_api.services.registry_service import match_entity_against_registry
+                            await match_entity_against_registry(
+                                session, "company", company.name_hebrew, db_company.id
+                            )
+                        except Exception as match_err:
+                            logger.debug(f"Registry match failed for company '{company.name_hebrew}': {match_err}")
 
                 for assoc in extraction.associations:
                     db_assoc = await upsert_association(
@@ -306,6 +315,15 @@ async def _run_extraction(document_ids: list[str] | None):
                         registration_number=assoc.registration_number,
                     )
                     entity_id_map[("association", assoc.name_hebrew)] = db_assoc.id
+                    # Try matching against external registry
+                    if not db_assoc.registration_number:
+                        try:
+                            from ocoi_api.services.registry_service import match_entity_against_registry
+                            await match_entity_against_registry(
+                                session, "association", assoc.name_hebrew, db_assoc.id
+                            )
+                        except Exception as match_err:
+                            logger.debug(f"Registry match failed for association '{assoc.name_hebrew}': {match_err}")
 
                 for domain in extraction.domains:
                     db_domain = await upsert_domain(

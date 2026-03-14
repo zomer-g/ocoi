@@ -119,6 +119,7 @@ class Company(Base):
     company_type: Mapped[str | None] = mapped_column(String(100))
     status: Mapped[str | None] = mapped_column(String(50))
     match_confidence: Mapped[float | None] = mapped_column(Float)
+    registry_record_id: Mapped[str | None] = mapped_column(DBUUID(), ForeignKey("registry_records.id"), nullable=True)
     created_at: Mapped[datetime | None] = mapped_column(DateTime, default=func.now())
 
     __table_args__ = (
@@ -134,6 +135,9 @@ class Association(Base):
     name_hebrew: Mapped[str] = mapped_column(Text, nullable=False)
     name_english: Mapped[str | None] = mapped_column(Text)
     registration_number: Mapped[str | None] = mapped_column(String(50))
+    status: Mapped[str | None] = mapped_column(String(50))
+    match_confidence: Mapped[float | None] = mapped_column(Float)
+    registry_record_id: Mapped[str | None] = mapped_column(DBUUID(), ForeignKey("registry_records.id"), nullable=True)
     created_at: Mapped[datetime | None] = mapped_column(DateTime, default=func.now())
 
     __table_args__ = (
@@ -149,6 +153,39 @@ class Domain(Base):
     name_english: Mapped[str | None] = mapped_column(Text)
     description: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime | None] = mapped_column(DateTime, default=func.now())
+
+
+class RegistryRecord(Base):
+    """External registry records from Israeli government CKAN DATAGOV."""
+    __tablename__ = "registry_records"
+
+    id: Mapped[str] = mapped_column(DBUUID(), primary_key=True, default=new_uuid)
+    source_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    name_normalized: Mapped[str] = mapped_column(Text, nullable=False)
+    registration_number: Mapped[str | None] = mapped_column(String(50))
+    status: Mapped[str | None] = mapped_column(String(100))
+    raw_data: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime, default=func.now())
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        Index("ix_registry_source_type", "source_type"),
+        Index("ix_registry_reg_number", "registration_number"),
+        Index("ix_registry_name_normalized", "name_normalized"),
+    )
+
+
+class RegistrySyncStatus(Base):
+    """Tracks per-source sync state for external registries."""
+    __tablename__ = "registry_sync_status"
+
+    id: Mapped[str] = mapped_column(DBUUID(), primary_key=True, default=new_uuid)
+    source_type: Mapped[str] = mapped_column(String(30), nullable=False, unique=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime)
+    record_count: Mapped[int] = mapped_column(Integer, default=0)
+    sync_status: Mapped[str] = mapped_column(String(20), default="never")
+    error_message: Mapped[str | None] = mapped_column(Text)
 
 
 class IgnoredResource(Base):
