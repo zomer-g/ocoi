@@ -302,18 +302,79 @@ async def top_connected(
             await db.execute(select(model).where(model.id == row.entity_id))
         ).scalars().first()
         if entity:
-            data.append({
+            item = {
                 "id": str(row.entity_id),
                 "entity_type": row.entity_type,
                 "name": entity.name_hebrew,
                 "connection_count": row.connection_count,
-            })
+            }
+            if row.entity_type == "person":
+                item["position"] = getattr(entity, "position", None) or None
+                item["ministry"] = getattr(entity, "ministry", None) or None
+            data.append(item)
 
     return {
         "status": "ok",
         "data": data,
         "meta": {"total": total, "page": page, "limit": limit, "pages": (total + limit - 1) // limit},
     }
+
+
+# --- Ministries aggregation ---
+
+@router.get("/entities/ministries")
+async def list_ministries(
+    db: AsyncSession = Depends(get_db),
+):
+    """Return ministries ranked by number of associated persons and their total connections."""
+    # Get all persons grouped by ministry
+    ministry_q = (
+        select(
+            Person.ministry,
+            func.count(Person.id).label("person_count"),
+        )
+        .where(Person.ministry.isnot(None), Person.ministry != "")
+        .group_by(Person.ministry)
+    )
+    ministry_rows = (await db.execute(ministry_q)).fetchall()
+
+    # For each ministry, count total connections of its persons
+    data = []
+    for row in ministry_rows:
+        ministry_name = row.ministry
+        person_count = row.person_count
+
+        # Get person IDs in this ministry
+        person_ids_q = select(Person.id).where(Person.ministry == ministry_name)
+        person_ids = [r[0] for r in (await db.execute(person_ids_q)).fetchall()]
+
+        # Count connections for these persons
+        conn_count = 0
+        if person_ids:
+            source_count = await db.execute(
+                select(func.count()).select_from(EntityRelationship).where(
+                    EntityRelationship.source_entity_type == "person",
+                    EntityRelationship.source_entity_id.in_(person_ids),
+                )
+            )
+            target_count = await db.execute(
+                select(func.count()).select_from(EntityRelationship).where(
+                    EntityRelationship.target_entity_type == "person",
+                    EntityRelationship.target_entity_id.in_(person_ids),
+                )
+            )
+            conn_count = (source_count.scalar() or 0) + (target_count.scalar() or 0)
+
+        data.append({
+            "ministry": ministry_name,
+            "person_count": person_count,
+            "connection_count": conn_count,
+        })
+
+    # Sort by connection count descending
+    data.sort(key=lambda x: x["connection_count"], reverse=True)
+
+    return {"status": "ok", "data": data}
 
 
 # --- Lookup: search entities by registration number or name ---

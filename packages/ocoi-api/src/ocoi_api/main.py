@@ -218,6 +218,10 @@ def create_app() -> FastAPI:
         # Catch-all: serve static files or SPA fallback
         @app.get("/{path:path}", include_in_schema=False)
         async def spa_fallback(request: Request, path: str):
+            # Never intercept API routes — let FastAPI routers handle them
+            if path.startswith("api/"):
+                raise HTTPException(status_code=404, detail="Not found")
+
             # Try to serve the exact file first
             file_path = static_dir / path
             if file_path.is_file():

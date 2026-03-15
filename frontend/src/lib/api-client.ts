@@ -82,10 +82,22 @@ export interface RankedEntity {
   entity_type: "person" | "company" | "association" | "domain";
   name: string;
   connection_count: number;
+  position?: string | null;
+  ministry?: string | null;
 }
 
 export async function getTopConnected(type?: string, page = 1, limit = 20) {
   const params = new URLSearchParams({ page: String(page), limit: String(limit) });
   if (type) params.set("type", type);
   return fetchApi<PaginatedResponse<RankedEntity>>(`/entities/top-connected?${params}`);
+}
+
+export interface MinistryInfo {
+  ministry: string;
+  person_count: number;
+  connection_count: number;
+}
+
+export async function getMinistries() {
+  return fetchApi<{ data: MinistryInfo[] }>("/entities/ministries");
 }
