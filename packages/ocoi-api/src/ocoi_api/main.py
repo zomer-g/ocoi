@@ -73,9 +73,11 @@ async def lifespan(app: FastAPI):
 def _get_allowed_origins() -> list[str]:
     """Return allowed origins from env var for external API consumers."""
     origins_env = os.getenv("ALLOWED_ORIGINS", "")
-    if origins_env:
-        return [o.strip() for o in origins_env.split(",") if o.strip()]
-    return []
+    origins = [o.strip() for o in origins_env.split(",") if o.strip()] if origins_env else []
+    # In dev mode, allow the frontend dev server
+    if os.getenv("ENV", "dev") != "production" and not origins:
+        origins = ["http://localhost:3000", "http://localhost"]
+    return origins
 
 
 def _get_static_dir() -> Path | None:

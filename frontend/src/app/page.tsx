@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { SearchBar } from "@/components/search/SearchBar";
 import { SearchResults } from "@/components/search/SearchResults";
+import { EntityDiscovery } from "@/components/EntityDiscovery";
 import type { EntitySummary } from "@/lib/api-client";
 import { getStats } from "@/lib/api-client";
 
@@ -75,20 +76,23 @@ export default function HomePage() {
       </section>
 
       {/* Results section */}
-      <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {loading && (
+      {loading && (
+        <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
           <div className="text-center py-8 text-gray-400">טוען...</div>
-        )}
+        </div>
+      )}
 
-        {!loading && query && (
-          <div>
-            <p className="text-sm text-gray-500 mb-4">
-              {total} תוצאות עבור &quot;{query}&quot;
-            </p>
-            <SearchResults results={results} />
-          </div>
-        )}
-      </div>
+      {!loading && query && (
+        <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+          <p className="text-sm text-gray-500 mb-4">
+            {total} תוצאות עבור &quot;{query}&quot;
+          </p>
+          <SearchResults results={results} />
+        </div>
+      )}
+
+      {/* Entity Discovery - shown when not searching */}
+      {!loading && !query && <EntityDiscovery />}
     </>
   );
 }

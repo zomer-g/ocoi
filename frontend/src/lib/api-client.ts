@@ -1,4 +1,4 @@
-const API_BASE = "/api/v1";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api/v1";
 
 export interface EntitySummary {
   id: string;
@@ -75,4 +75,17 @@ export async function getPath(fromId: string, fromType: string, toId: string, to
 
 export async function getStats() {
   return fetchApi<{ data: Record<string, number> }>("/external/stats");
+}
+
+export interface RankedEntity {
+  id: string;
+  entity_type: "person" | "company" | "association" | "domain";
+  name: string;
+  connection_count: number;
+}
+
+export async function getTopConnected(type?: string, page = 1, limit = 20) {
+  const params = new URLSearchParams({ page: String(page), limit: String(limit) });
+  if (type) params.set("type", type);
+  return fetchApi<PaginatedResponse<RankedEntity>>(`/entities/top-connected?${params}`);
 }

@@ -3,7 +3,7 @@
 import json
 import uuid
 from fastapi import APIRouter, Depends, Query, HTTPException
-from sqlalchemy import select, func, or_, and_
+from sqlalchemy import select, func, or_, and_, union_all, literal_column, cast, String
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ocoi_api.dependencies import get_db
@@ -233,6 +233,87 @@ async def get_domain_documents(domain_id: uuid.UUID, db: AsyncSession = Depends(
     )
     docs = [{"id": str(r.id), "title": r.title, "file_url": r.file_url} for r in result.fetchall()]
     return {"status": "ok", "data": docs}
+
+
+# --- Top connected entities ---
+
+@router.get("/entities/top-connected")
+async def top_connected(
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    type: str = Query("", description="Filter: person, company, association"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return entities ranked by number of connections (descending)."""
+    # Build a union of all entity references from both sides of relationships
+    source_refs = select(
+        EntityRelationship.source_entity_id.label("entity_id"),
+        EntityRelationship.source_entity_type.label("entity_type"),
+    )
+    target_refs = select(
+        EntityRelationship.target_entity_id.label("entity_id"),
+        EntityRelationship.target_entity_type.label("entity_type"),
+    )
+
+    if type:
+        source_refs = source_refs.where(EntityRelationship.source_entity_type == type)
+        target_refs = target_refs.where(EntityRelationship.target_entity_type == type)
+
+    all_refs = union_all(source_refs, target_refs).subquery("all_refs")
+
+    # Count connections per entity
+    counted = (
+        select(
+            all_refs.c.entity_id,
+            all_refs.c.entity_type,
+            func.count().label("connection_count"),
+        )
+        .group_by(all_refs.c.entity_id, all_refs.c.entity_type)
+    ).subquery("counted")
+
+    # Get total count
+    total = (await db.execute(select(func.count()).select_from(counted))).scalar()
+
+    # Paginate
+    offset = _paginate(page, limit)
+    rows = (
+        await db.execute(
+            select(counted)
+            .order_by(counted.c.connection_count.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+    ).fetchall()
+
+    # Resolve names by looking up each entity
+    model_map = {
+        "person": Person,
+        "company": Company,
+        "association": Association,
+        "domain": Domain,
+    }
+
+    data = []
+    for row in rows:
+        model = model_map.get(row.entity_type)
+        if not model:
+            continue
+        entity = (
+            await db.execute(select(model).where(model.id == row.entity_id))
+        ).scalars().first()
+        if entity:
+            data.append({
+                "id": str(row.entity_id),
+                "entity_type": row.entity_type,
+                "name": entity.name_hebrew,
+                "connection_count": row.connection_count,
+            })
+
+    return {
+        "status": "ok",
+        "data": data,
+        "meta": {"total": total, "page": page, "limit": limit, "pages": (total + limit - 1) // limit},
+    }
 
 
 # --- Lookup: search entities by registration number or name ---
