@@ -1,15 +1,28 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { SearchBar } from "@/components/search/SearchBar";
 import { SearchResults } from "@/components/search/SearchResults";
 import type { EntitySummary } from "@/lib/api-client";
+import { getStats } from "@/lib/api-client";
 
 export default function HomePage() {
   const [results, setResults] = useState<EntitySummary[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState("");
+  const [stats, setStats] = useState<{ documents: number; entities: number; connections: number } | null>(null);
+
+  useEffect(() => {
+    getStats().then((res) => {
+      const d = res.data;
+      setStats({
+        documents: d.documents ?? 0,
+        entities: (d.persons ?? 0) + (d.companies ?? 0) + (d.associations ?? 0),
+        connections: d.relationships ?? 0,
+      });
+    }).catch(() => {});
+  }, []);
 
   const handleSearch = async (q: string) => {
     setQuery(q);
@@ -42,19 +55,19 @@ export default function HomePage() {
 
           <SearchBar onSearch={handleSearch} />
 
-          {!loading && !query && (
+          {!loading && !query && stats && (
             <div className="flex justify-center gap-8 sm:gap-12 mt-8">
               <div className="text-center">
-                <div className="text-2xl sm:text-3xl font-bold text-white">988+</div>
+                <div className="text-2xl sm:text-3xl font-bold text-white">{stats.documents.toLocaleString()}</div>
                 <div className="text-xs sm:text-sm text-primary-200">מסמכים</div>
               </div>
               <div className="text-center">
-                <div className="text-2xl sm:text-3xl font-bold text-white">345</div>
-                <div className="text-xs sm:text-sm text-primary-200">הסדרי שרים</div>
+                <div className="text-2xl sm:text-3xl font-bold text-white">{stats.entities.toLocaleString()}</div>
+                <div className="text-xs sm:text-sm text-primary-200">ישויות</div>
               </div>
               <div className="text-center">
-                <div className="text-2xl sm:text-3xl font-bold text-white">API</div>
-                <div className="text-xs sm:text-sm text-primary-200">ממשק פתוח</div>
+                <div className="text-2xl sm:text-3xl font-bold text-white">{stats.connections.toLocaleString()}</div>
+                <div className="text-xs sm:text-sm text-primary-200">קשרים</div>
               </div>
             </div>
           )}
