@@ -80,6 +80,20 @@ export function deleteRelationshipsBulk(ids: string[]) {
     body: JSON.stringify({ ids }),
   });
 }
+export interface RelationshipCreateData {
+  source_entity_type: string;
+  source_entity_id: string;
+  target_entity_type: string;
+  target_entity_id: string;
+  relationship_type: string;
+  details?: string | null;
+  restriction_type?: string | null;
+  document_id: string;
+  confidence?: number;
+}
+export function createRelationship(data: RelationshipCreateData) {
+  return adminFetch("/relationships", { method: "POST", body: JSON.stringify(data) });
+}
 
 // Documents
 export function getAdminDocuments(page = 1, status?: string) {

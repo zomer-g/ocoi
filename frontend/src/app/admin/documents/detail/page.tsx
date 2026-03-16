@@ -1,9 +1,21 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { reconvertDocument, reextractDocument } from "@/lib/admin-api";
+import {
+  reconvertDocument,
+  reextractDocument,
+  deleteRelationship,
+  deletePerson,
+  deleteCompany,
+  deleteAssociation,
+  deleteDomain,
+  createRelationship,
+  type RelationshipCreateData,
+} from "@/lib/admin-api";
+
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api/v1";
 
 const TYPE_LABELS: Record<string, string> = {
   person: "אדם",
@@ -24,6 +36,13 @@ const TYPE_TO_TAB: Record<string, string> = {
   company: "companies",
   association: "associations",
   domain: "domains",
+};
+
+const DELETE_ENTITY_FN: Record<string, (id: string) => Promise<unknown>> = {
+  person: deletePerson,
+  company: deleteCompany,
+  association: deleteAssociation,
+  domain: deleteDomain,
 };
 
 interface ProcessingStep {
@@ -84,6 +103,12 @@ interface Entity {
   name: string;
 }
 
+interface LookupResult {
+  id: string;
+  entity_type: string;
+  name_hebrew: string;
+}
+
 function formatDate(iso: string | null): string {
   if (!iso) return "—";
   try {
@@ -109,23 +134,128 @@ const STEP_ICONS: Record<string, string> = {
 };
 
 const STEP_STATUS_COLORS: Record<string, string> = {
-  // General
   pending: "bg-gray-100 text-gray-500 border-gray-300",
   failed: "bg-red-50 text-red-600 border-red-300",
   missing: "bg-orange-50 text-orange-600 border-orange-300",
-  // Import
   ckan: "bg-purple-50 text-purple-700 border-purple-300",
   govil: "bg-blue-50 text-blue-700 border-blue-300",
   upload: "bg-teal-50 text-teal-700 border-teal-300",
   unknown: "bg-gray-100 text-gray-500 border-gray-300",
-  // Storage
   stored: "bg-green-50 text-green-700 border-green-300",
-  // Conversion
   converted: "bg-green-50 text-green-700 border-green-300",
   no_text: "bg-amber-50 text-amber-700 border-amber-300",
-  // Extraction
   extracted: "bg-blue-50 text-blue-700 border-blue-300",
 };
+
+/* ── Entity Autocomplete ──────────────────────────────────────────── */
+
+interface SelectedEntity {
+  id: string;
+  type: string;
+  name: string;
+}
+
+function EntityAutocomplete({
+  value,
+  onChange,
+  placeholder,
+}: {
+  value: SelectedEntity | null;
+  onChange: (e: SelectedEntity | null) => void;
+  placeholder?: string;
+}) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<LookupResult[]>([]);
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+
+  const search = useCallback(async (q: string) => {
+    if (q.length < 2) { setResults([]); return; }
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/lookup?q=${encodeURIComponent(q)}&limit=10`, { credentials: "include" });
+      const data = await res.json();
+      setResults(data.data || []);
+      setOpen(true);
+    } catch {
+      setResults([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const handleInput = (text: string) => {
+    setQuery(text);
+    onChange(null);
+    clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => search(text), 300);
+  };
+
+  const pick = (r: LookupResult) => {
+    onChange({ id: r.id, type: r.entity_type, name: r.name_hebrew });
+    setQuery(r.name_hebrew);
+    setOpen(false);
+  };
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  return (
+    <div ref={wrapperRef} className="relative">
+      <input
+        type="text"
+        value={value ? value.name : query}
+        onChange={(e) => handleInput(e.target.value)}
+        onFocus={() => results.length > 0 && setOpen(true)}
+        placeholder={placeholder || "חפש ישות..."}
+        className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
+      />
+      {value && (
+        <button
+          onClick={() => { onChange(null); setQuery(""); }}
+          className="absolute left-1 top-1/2 -translate-y-1/2 text-gray-400 hover:text-red-500 text-xs px-1"
+          title="נקה"
+        >
+          ✕
+        </button>
+      )}
+      {loading && (
+        <span className="absolute left-6 top-1/2 -translate-y-1/2 text-[10px] text-gray-400">...</span>
+      )}
+      {open && results.length > 0 && (
+        <div className="absolute z-50 top-full mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+          {results.map((r) => (
+            <button
+              key={`${r.entity_type}:${r.id}`}
+              onClick={() => pick(r)}
+              className="w-full text-start px-3 py-2 text-sm hover:bg-primary-50 flex items-center gap-2"
+            >
+              <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${TYPE_COLORS[r.entity_type] || "bg-gray-100 text-gray-700"}`}>
+                {TYPE_LABELS[r.entity_type] || r.entity_type}
+              </span>
+              <span className="text-gray-800">{r.name_hebrew}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {open && query.length >= 2 && results.length === 0 && !loading && (
+        <div className="absolute z-50 top-full mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg p-3 text-sm text-gray-400 text-center">
+          לא נמצאו תוצאות
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Main Page ─────────────────────────────────────────────────── */
 
 type Tab = "content" | "entities" | "extraction";
 
@@ -139,6 +269,15 @@ export default function DocumentDetailPage() {
   const [reconverting, setReconverting] = useState(false);
   const [reextracting, setReextracting] = useState(false);
   const [actionMsg, setActionMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
+
+  // Add-relationship form state
+  const [showAddRel, setShowAddRel] = useState(false);
+  const [newRelEntity1, setNewRelEntity1] = useState<SelectedEntity | null>(null);
+  const [newRelEntity2, setNewRelEntity2] = useState<SelectedEntity | null>(null);
+  const [newRelType, setNewRelType] = useState("");
+  const [newRelDetails, setNewRelDetails] = useState("");
+  const [newRelConfidence, setNewRelConfidence] = useState("0.8");
+  const [saving, setSaving] = useState(false);
 
   const loadDoc = async () => {
     if (!docId) { setLoading(false); return; }
@@ -181,6 +320,61 @@ export default function DocumentDetailPage() {
       setActionMsg({ type: "err", text: e instanceof Error ? e.message : "שגיאה בחילוץ" });
     } finally {
       setReextracting(false);
+    }
+  };
+
+  const handleDeleteRelationship = async (relId: string) => {
+    if (!confirm("למחוק קשר זה?")) return;
+    try {
+      await deleteRelationship(relId);
+      setActionMsg({ type: "ok", text: "הקשר נמחק" });
+      await loadDoc();
+    } catch (e) {
+      setActionMsg({ type: "err", text: e instanceof Error ? e.message : "שגיאה במחיקת קשר" });
+    }
+  };
+
+  const handleDeleteEntity = async (entity: Entity) => {
+    const fn = DELETE_ENTITY_FN[entity.type];
+    if (!fn) return;
+    if (!confirm(`למחוק את "${entity.name}"?\nשימו לב: כל הקשרים של ישות זו יימחקו גם כן.`)) return;
+    try {
+      await fn(entity.id);
+      setActionMsg({ type: "ok", text: `"${entity.name}" נמחק/ה` });
+      await loadDoc();
+    } catch (e) {
+      setActionMsg({ type: "err", text: e instanceof Error ? e.message : "שגיאה במחיקת ישות" });
+    }
+  };
+
+  const handleAddRelationship = async () => {
+    if (!doc || !newRelEntity1 || !newRelEntity2 || !newRelType.trim()) return;
+    setSaving(true);
+    try {
+      const data: RelationshipCreateData = {
+        source_entity_type: newRelEntity1.type,
+        source_entity_id: newRelEntity1.id,
+        target_entity_type: newRelEntity2.type,
+        target_entity_id: newRelEntity2.id,
+        relationship_type: newRelType.trim(),
+        details: newRelDetails.trim() || null,
+        document_id: doc.id,
+        confidence: parseFloat(newRelConfidence) || 0.8,
+      };
+      await createRelationship(data);
+      setActionMsg({ type: "ok", text: "קשר חדש נוצר" });
+      // Reset form
+      setNewRelEntity1(null);
+      setNewRelEntity2(null);
+      setNewRelType("");
+      setNewRelDetails("");
+      setNewRelConfidence("0.8");
+      setShowAddRel(false);
+      await loadDoc();
+    } catch (e) {
+      setActionMsg({ type: "err", text: e instanceof Error ? e.message : "שגיאה ביצירת קשר" });
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -253,21 +447,14 @@ export default function DocumentDetailPage() {
 
             return (
               <div key={step.step} className="flex-1 relative">
-                {/* Connector line */}
                 {i > 0 && (
                   <div className={`absolute top-5 -right-0 w-full h-0.5 -z-10 ${isComplete ? "bg-green-300" : "bg-gray-200"}`} />
                 )}
-
                 <div className="flex flex-col items-center text-center px-2">
-                  {/* Icon circle */}
                   <div className={`w-10 h-10 rounded-full border-2 flex items-center justify-center text-lg ${colors}`}>
                     {STEP_ICONS[step.step] || "•"}
                   </div>
-
-                  {/* Label */}
                   <span className="text-xs font-medium text-gray-700 mt-2">{step.label}</span>
-
-                  {/* Status badge */}
                   <span className={`text-[10px] px-2 py-0.5 rounded-full mt-1 ${colors}`}>
                     {step.status === "stored" ? "נשמר" :
                      step.status === "missing" ? "חסר" :
@@ -278,18 +465,12 @@ export default function DocumentDetailPage() {
                      step.status === "failed" ? "נכשל" :
                      step.status}
                   </span>
-
-                  {/* Details */}
                   <span className="text-[10px] text-gray-400 mt-1 max-w-[120px] truncate" title={step.details}>
                     {step.details}
                   </span>
-
-                  {/* Timestamp */}
                   {step.timestamp && (
                     <span className="text-[10px] text-gray-300 mt-0.5">{formatDate(step.timestamp)}</span>
                   )}
-
-                  {/* Action button */}
                   {canRerun && (
                     <button
                       onClick={step.step === "conversion" ? handleReconvert : handleReextract}
@@ -385,16 +566,27 @@ export default function DocumentDetailPage() {
             ) : (
               <div className="flex flex-wrap gap-2">
                 {doc.entities.map((e) => (
-                  <Link
+                  <div
                     key={`${e.type}:${e.id}`}
-                    href={`/admin/entities/detail?type=${TYPE_TO_TAB[e.type] || e.type}&id=${e.id}`}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-200 hover:border-primary-300 hover:bg-primary-50 transition-colors"
+                    className="group flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-200 hover:border-primary-300 hover:bg-primary-50 transition-colors"
                   >
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${TYPE_COLORS[e.type] || "bg-gray-100 text-gray-700"}`}>
-                      {TYPE_LABELS[e.type] || e.type}
-                    </span>
-                    <span className="text-sm font-medium text-gray-800">{e.name}</span>
-                  </Link>
+                    <Link
+                      href={`/admin/entities/detail?type=${TYPE_TO_TAB[e.type] || e.type}&id=${e.id}`}
+                      className="flex items-center gap-1.5"
+                    >
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${TYPE_COLORS[e.type] || "bg-gray-100 text-gray-700"}`}>
+                        {TYPE_LABELS[e.type] || e.type}
+                      </span>
+                      <span className="text-sm font-medium text-gray-800">{e.name}</span>
+                    </Link>
+                    <button
+                      onClick={() => handleDeleteEntity(e)}
+                      className="opacity-0 group-hover:opacity-100 mr-1 text-gray-400 hover:text-red-600 transition-opacity text-xs leading-none"
+                      title="מחק ישות"
+                    >
+                      ✕
+                    </button>
+                  </div>
                 ))}
               </div>
             )}
@@ -402,12 +594,85 @@ export default function DocumentDetailPage() {
 
           {/* Relationships */}
           <div className="bg-white rounded-lg border border-gray-200 p-5">
-            <h2 className="text-lg font-semibold text-gray-800 mb-3">
-              קשרים ({doc.relationships.length})
-            </h2>
-            {doc.relationships.length === 0 ? (
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-lg font-semibold text-gray-800">
+                קשרים ({doc.relationships.length})
+              </h2>
+              <button
+                onClick={() => setShowAddRel(!showAddRel)}
+                className="px-3 py-1.5 text-sm font-medium bg-primary-700 text-white rounded-lg hover:bg-primary-800 transition-colors"
+              >
+                {showAddRel ? "ביטול" : "הוסף קשר"}
+              </button>
+            </div>
+
+            {/* Add relationship form */}
+            {showAddRel && (
+              <div className="mb-4 p-4 bg-gray-50 rounded-lg border border-gray-200 space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">ישות 1</label>
+                    <EntityAutocomplete value={newRelEntity1} onChange={setNewRelEntity1} placeholder="חפש ישות מקור..." />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">ישות 2</label>
+                    <EntityAutocomplete value={newRelEntity2} onChange={setNewRelEntity2} placeholder="חפש ישות יעד..." />
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">סוג קשר</label>
+                    <input
+                      type="text"
+                      value={newRelType}
+                      onChange={(e) => setNewRelType(e.target.value)}
+                      placeholder="לדוגמה: employed_by, board_member..."
+                      className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">פרטים (אופציונלי)</label>
+                    <input
+                      type="text"
+                      value={newRelDetails}
+                      onChange={(e) => setNewRelDetails(e.target.value)}
+                      className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">ביטחון (0-1)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="1"
+                      step="0.1"
+                      value={newRelConfidence}
+                      onChange={(e) => setNewRelConfidence(e.target.value)}
+                      className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
+                    />
+                  </div>
+                </div>
+                <div className="flex gap-2 justify-end">
+                  <button
+                    onClick={() => setShowAddRel(false)}
+                    className="px-3 py-1.5 text-sm text-gray-600 hover:text-gray-800"
+                  >
+                    ביטול
+                  </button>
+                  <button
+                    onClick={handleAddRelationship}
+                    disabled={saving || !newRelEntity1 || !newRelEntity2 || !newRelType.trim()}
+                    className="px-4 py-1.5 text-sm font-medium bg-primary-700 text-white rounded-lg hover:bg-primary-800 transition-colors disabled:opacity-50"
+                  >
+                    {saving ? "שומר..." : "שמור קשר"}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {doc.relationships.length === 0 && !showAddRel ? (
               <p className="text-sm text-gray-400">לא נמצאו קשרים במסמך זה</p>
-            ) : (
+            ) : doc.relationships.length > 0 && (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead className="bg-gray-50 border-b border-gray-200">
@@ -417,11 +682,12 @@ export default function DocumentDetailPage() {
                       <th className="text-start px-3 py-2 font-medium text-gray-700">ישות 2</th>
                       <th className="text-start px-3 py-2 font-medium text-gray-700">פרטים</th>
                       <th className="text-start px-3 py-2 font-medium text-gray-700 w-16">ביטחון</th>
+                      <th className="w-10"></th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
                     {doc.relationships.map((r) => (
-                      <tr key={r.id} className="hover:bg-gray-50">
+                      <tr key={r.id} className="hover:bg-gray-50 group">
                         <td className="px-3 py-2">
                           <div className="flex flex-col gap-0.5">
                             <span className="font-medium text-gray-900">{r.entity1_name}</span>
@@ -444,6 +710,18 @@ export default function DocumentDetailPage() {
                         </td>
                         <td className="px-3 py-2 text-gray-500 text-xs">
                           {Math.round(r.confidence * 100)}%
+                        </td>
+                        <td className="px-3 py-2">
+                          <button
+                            onClick={() => handleDeleteRelationship(r.id)}
+                            className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-600 transition-opacity"
+                            title="מחק קשר"
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <polyline points="3 6 5 6 21 6" />
+                              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                            </svg>
+                          </button>
                         </td>
                       </tr>
                     ))}
