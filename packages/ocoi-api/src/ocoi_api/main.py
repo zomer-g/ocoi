@@ -30,16 +30,15 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Create database tables on startup. Retries on cold-start when DB may still be waking up."""
+async def _init_db():
+    """Initialize DB tables and run migrations with retries."""
     import asyncio
-    settings.ensure_dirs()
     from ocoi_db.engine import create_all_tables, run_migrations
     for attempt in range(5):
         try:
             await create_all_tables()
             await run_migrations()
+            print("DB initialized successfully.")
             break
         except Exception as e:
             if attempt < 4:
@@ -47,10 +46,7 @@ async def lifespan(app: FastAPI):
                 print(f"DB connect attempt {attempt + 1}/5 failed: {e}. Retrying in {wait}s...")
                 await asyncio.sleep(wait)
             else:
-                print(f"DB connection failed after 5 attempts: {e}. Starting anyway.")
-
-    # NOTE: Auto-delete of metadata-only docs was removed — it destroyed
-    # scanned PDFs that hadn't been OCR'd yet. Use DELETE /admin/documents/purge/metadata-only instead.
+                print(f"DB connection failed after 5 attempts: {e}.")
 
     # One-shot Gov.il import: if govil_records.json exists, import and delete
     import json
@@ -67,6 +63,13 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"Gov.il one-shot import failed: {e}")
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Yield immediately so the server binds its port, then init DB in background."""
+    import asyncio
+    settings.ensure_dirs()
+    asyncio.ensure_future(_init_db())
     yield
 
 
