@@ -95,6 +95,17 @@ export function createRelationship(data: RelationshipCreateData) {
   return adminFetch("/relationships", { method: "POST", body: JSON.stringify(data) });
 }
 
+export interface ReplaceEntityData {
+  old_entity_type: string;
+  old_entity_id: string;
+  new_entity_type: string;
+  new_entity_id: string;
+  document_id: string;
+}
+export function replaceEntity(data: ReplaceEntityData) {
+  return adminFetch("/relationships/replace-entity", { method: "POST", body: JSON.stringify(data) });
+}
+
 // Documents
 export function getAdminDocuments(page = 1, status?: string) {
   const params = new URLSearchParams({ page: String(page) });

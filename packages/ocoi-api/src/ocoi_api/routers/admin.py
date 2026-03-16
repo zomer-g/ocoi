@@ -6,7 +6,7 @@ import uuid
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, HTTPException, Request, UploadFile, File
 
 logger = logging.getLogger("ocoi.api.admin")
-from sqlalchemy import select, func, delete
+from sqlalchemy import select, func, delete, update, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ocoi_api.auth import get_current_admin
@@ -382,6 +382,55 @@ async def delete_relationships_bulk(body: dict, db: AsyncSession = Depends(get_d
     await db.execute(delete(EntityRelationship).where(EntityRelationship.id.in_(uuids)))
     await db.commit()
     return {"status": "ok", "deleted": len(uuids)}
+
+
+@router.post("/relationships/replace-entity")
+async def replace_entity_in_relationships(body: dict, db: AsyncSession = Depends(get_db)):
+    """Replace one entity with another across all relationships in a document.
+
+    Body: {old_entity_type, old_entity_id, new_entity_type, new_entity_id, document_id}
+    Updates all relationships where the old entity appears (as source or target).
+    """
+    required = ["old_entity_type", "old_entity_id", "new_entity_type", "new_entity_id", "document_id"]
+    for field in required:
+        if field not in body:
+            raise HTTPException(400, f"Missing field: {field}")
+
+    doc_id = uuid.UUID(body["document_id"])
+    old_type = body["old_entity_type"]
+    old_id = body["old_entity_id"]
+    new_type = body["new_entity_type"]
+    new_id = body["new_entity_id"]
+
+    # Update source side
+    source_result = await db.execute(
+        update(EntityRelationship)
+        .where(
+            and_(
+                EntityRelationship.document_id == doc_id,
+                EntityRelationship.source_entity_type == old_type,
+                EntityRelationship.source_entity_id == old_id,
+            )
+        )
+        .values(source_entity_type=new_type, source_entity_id=new_id)
+    )
+
+    # Update target side
+    target_result = await db.execute(
+        update(EntityRelationship)
+        .where(
+            and_(
+                EntityRelationship.document_id == doc_id,
+                EntityRelationship.target_entity_type == old_type,
+                EntityRelationship.target_entity_id == old_id,
+            )
+        )
+        .values(target_entity_type=new_type, target_entity_id=new_id)
+    )
+
+    await db.commit()
+    updated = source_result.rowcount + target_result.rowcount
+    return {"status": "ok", "updated": updated}
 
 
 def formatSize(size: int | None) -> str:

@@ -12,7 +12,9 @@ import {
   deleteAssociation,
   deleteDomain,
   createRelationship,
+  replaceEntity,
   type RelationshipCreateData,
+  type ReplaceEntityData,
 } from "@/lib/admin-api";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api/v1";
@@ -279,6 +281,10 @@ export default function DocumentDetailPage() {
   const [newRelConfidence, setNewRelConfidence] = useState("0.8");
   const [saving, setSaving] = useState(false);
 
+  // Replace entity state
+  const [replacingEntity, setReplacingEntity] = useState<Entity | null>(null);
+  const [replaceTarget, setReplaceTarget] = useState<SelectedEntity | null>(null);
+
   const loadDoc = async () => {
     if (!docId) { setLoading(false); return; }
     try {
@@ -375,6 +381,26 @@ export default function DocumentDetailPage() {
       setActionMsg({ type: "err", text: e instanceof Error ? e.message : "שגיאה ביצירת קשר" });
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleReplaceEntity = async () => {
+    if (!doc || !replacingEntity || !replaceTarget) return;
+    const data: ReplaceEntityData = {
+      old_entity_type: replacingEntity.type,
+      old_entity_id: replacingEntity.id,
+      new_entity_type: replaceTarget.type,
+      new_entity_id: replaceTarget.id,
+      document_id: doc.id,
+    };
+    try {
+      const res = await replaceEntity(data) as { updated: number };
+      setActionMsg({ type: "ok", text: `הוחלפו ${res.updated} קשרים מ-"${replacingEntity.name}" ל-"${replaceTarget.name}"` });
+      setReplacingEntity(null);
+      setReplaceTarget(null);
+      await loadDoc();
+    } catch (e) {
+      setActionMsg({ type: "err", text: e instanceof Error ? e.message : "שגיאה בהחלפת ישות" });
     }
   };
 
@@ -580,14 +606,48 @@ export default function DocumentDetailPage() {
                       <span className="text-sm font-medium text-gray-800">{e.name}</span>
                     </Link>
                     <button
+                      onClick={() => { setReplacingEntity(e); setReplaceTarget(null); }}
+                      className="opacity-0 group-hover:opacity-100 mr-0.5 text-gray-400 hover:text-primary-600 transition-opacity text-xs leading-none"
+                      title="החלף ישות"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="17 1 21 5 17 9" /><path d="M3 11V9a4 4 0 0 1 4-4h14" /><polyline points="7 23 3 19 7 15" /><path d="M21 13v2a4 4 0 0 1-4 4H3" /></svg>
+                    </button>
+                    <button
                       onClick={() => handleDeleteEntity(e)}
-                      className="opacity-0 group-hover:opacity-100 mr-1 text-gray-400 hover:text-red-600 transition-opacity text-xs leading-none"
+                      className="opacity-0 group-hover:opacity-100 mr-0.5 text-gray-400 hover:text-red-600 transition-opacity text-xs leading-none"
                       title="מחק ישות"
                     >
                       ✕
                     </button>
                   </div>
                 ))}
+              </div>
+            )}
+            {/* Replace entity inline form */}
+            {replacingEntity && (
+              <div className="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                <div className="flex items-center gap-2 mb-2 text-sm font-medium text-amber-800">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="17 1 21 5 17 9" /><path d="M3 11V9a4 4 0 0 1 4-4h14" /><polyline points="7 23 3 19 7 15" /><path d="M21 13v2a4 4 0 0 1-4 4H3" /></svg>
+                  החלפת &quot;{replacingEntity.name}&quot; בישות אחרת
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="flex-1">
+                    <EntityAutocomplete value={replaceTarget} onChange={setReplaceTarget} placeholder="חפש ישות חלופית..." />
+                  </div>
+                  <button
+                    onClick={handleReplaceEntity}
+                    disabled={!replaceTarget}
+                    className="px-3 py-1.5 text-sm font-medium bg-amber-600 text-white rounded-lg hover:bg-amber-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  >
+                    החלף
+                  </button>
+                  <button
+                    onClick={() => { setReplacingEntity(null); setReplaceTarget(null); }}
+                    className="px-3 py-1.5 text-sm font-medium text-gray-600 hover:text-gray-800 transition-colors"
+                  >
+                    ביטול
+                  </button>
+                </div>
               </div>
             )}
           </div>
