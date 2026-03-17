@@ -130,6 +130,7 @@ export default function GraphPage() {
           <h2 className="text-lg font-semibold text-gray-900 mb-3">טבלת קשרים</h2>
           <ConnectionTable
             edges={graph.edges}
+            nodes={graph.nodes}
             caption="רשימת כל הקשרים המוצגים במפה"
           />
         </div>

@@ -165,6 +165,7 @@ function EntityContent() {
             <div className="p-4 border-t border-gray-200">
               <ConnectionTable
                 edges={graph.edges}
+                nodes={graph.nodes}
                 caption={`קשרים של ${entity?.name_hebrew || ""}`}
               />
             </div>

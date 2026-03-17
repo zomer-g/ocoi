@@ -1,6 +1,6 @@
 "use client";
 
-import type { ConnectionEdge } from "@/lib/api-client";
+import type { ConnectionEdge, EntitySummary } from "@/lib/api-client";
 
 const EDGE_LABELS: Record<string, string> = {
   restricted_from: "מוגבל מ-",
@@ -22,11 +22,21 @@ const TYPE_LABELS: Record<string, string> = {
 
 interface ConnectionTableProps {
   edges: ConnectionEdge[];
+  nodes?: EntitySummary[];
   caption?: string;
   className?: string;
 }
 
-export function ConnectionTable({ edges, caption, className }: ConnectionTableProps) {
+function formatName(name: string, id: string, nodes?: EntitySummary[]) {
+  if (!nodes) return name;
+  const node = nodes.find((n) => n.id === id);
+  if (!node?.extra) return name;
+  const meta = [node.extra.title, node.extra.position, node.extra.ministry].filter(Boolean) as string[];
+  if (meta.length === 0) return name;
+  return <>{name} <span className="text-gray-400 text-xs">({meta.join(", ")})</span></>;
+}
+
+export function ConnectionTable({ edges, nodes, caption, className }: ConnectionTableProps) {
   if (!edges.length) return null;
 
   return (
@@ -51,9 +61,9 @@ export function ConnectionTable({ edges, caption, className }: ConnectionTablePr
             {edges.map((edge, i) => (
               <tr key={`${edge.source_id}-${edge.target_id}-${edge.relationship_type}-${i}`}
                   className={i % 2 === 0 ? "bg-white" : "bg-gray-50"}>
-                <td className="px-4 py-3">{edge.source_name}</td>
+                <td className="px-4 py-3">{formatName(edge.source_name, edge.source_id, nodes)}</td>
                 <td className="px-4 py-3 text-gray-500">{TYPE_LABELS[edge.source_type] || edge.source_type}</td>
-                <td className="px-4 py-3">{edge.target_name}</td>
+                <td className="px-4 py-3">{formatName(edge.target_name, edge.target_id, nodes)}</td>
                 <td className="px-4 py-3 text-gray-500">{TYPE_LABELS[edge.target_type] || edge.target_type}</td>
                 <td className="px-4 py-3">{EDGE_LABELS[edge.relationship_type] || edge.relationship_type}</td>
                 <td className="px-4 py-3">
