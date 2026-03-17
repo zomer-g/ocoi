@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
 import type { SubGraph } from "@/lib/api-client";
 
 // Cytoscape types
@@ -43,6 +43,7 @@ export function ConnectionMap({
 }: ConnectionMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<CyInstance | null>(null);
+  const [tooltip, setTooltip] = useState<{ x: number; y: number; name: string; title?: string; position?: string; ministry?: string } | null>(null);
 
   const initGraph = useCallback(async () => {
     if (!containerRef.current) return;
@@ -67,6 +68,9 @@ export function ConnectionMap({
         label: node.name || node.id.slice(0, 8),
         type: node.entity_type,
         isCenter: node.id === centerId,
+        extraTitle: node.extra?.title || "",
+        extraPosition: node.extra?.position || "",
+        extraMinistry: node.extra?.ministry || "",
       },
     }));
 
@@ -222,6 +226,19 @@ export function ConnectionMap({
       if (url) window.open(url, "_blank", "noopener,noreferrer");
     });
 
+    // Hover tooltip for person nodes
+    cy.on("mouseover", "node", (evt: { target: { data: (key: string) => string }; renderedPosition: { x: number; y: number } }) => {
+      const node = evt.target;
+      const title = node.data("extraTitle");
+      const position = node.data("extraPosition");
+      const ministry = node.data("extraMinistry");
+      if (title || position || ministry) {
+        const pos = evt.renderedPosition || { x: 0, y: 0 };
+        setTooltip({ x: pos.x, y: pos.y, name: node.data("label"), title, position, ministry });
+      }
+    });
+    cy.on("mouseout", "node", () => setTooltip(null));
+
     cyRef.current = cy;
   }, [graph, centerId, onNodeClick, onExpandNode]);
 
@@ -238,6 +255,26 @@ export function ConnectionMap({
   return (
     <div className="relative w-full h-full">
       <div ref={containerRef} className="w-full h-full" />
+
+      {/* Hover tooltip */}
+      {tooltip && (
+        <div
+          className="absolute z-50 pointer-events-none bg-white border border-gray-200 rounded-lg shadow-lg px-3 py-2 text-sm"
+          style={{ left: tooltip.x + 12, top: tooltip.y - 10, maxWidth: 320 }}
+          dir="rtl"
+        >
+          <div className="font-semibold text-gray-900 mb-1">{tooltip.name}</div>
+          {tooltip.title && (
+            <div className="text-gray-600"><span className="text-gray-400">תואר: </span>{tooltip.title}</div>
+          )}
+          {tooltip.position && (
+            <div className="text-gray-600"><span className="text-gray-400">תפקיד: </span>{tooltip.position}</div>
+          )}
+          {tooltip.ministry && (
+            <div className="text-gray-600"><span className="text-gray-400">משרד: </span>{tooltip.ministry}</div>
+          )}
+        </div>
+      )}
 
       {/* Legend */}
       <div className="absolute bottom-3 start-3 flex flex-col gap-2 text-xs bg-white/90 backdrop-blur-sm rounded-lg p-3 shadow-sm border border-gray-200">

@@ -39,18 +39,35 @@ async def _enrich_subgraph(db: AsyncSession, subgraph):
         entity_ids.add((edge.target_type.value, edge.target_id))
 
     names = {}
+    extras = {}
     for etype, eid in entity_ids:
         model = _MODEL_MAP.get(etype)
         if model:
-            result = await db.execute(
-                select(model.name_hebrew).where(model.id == eid)
-            )
-            row = result.fetchone()
-            if row:
-                names[eid] = row[0]
+            if etype == "person":
+                result = await db.execute(
+                    select(model.name_hebrew, model.title, model.position, model.ministry).where(model.id == eid)
+                )
+                row = result.fetchone()
+                if row:
+                    names[eid] = row[0]
+                    extra = {}
+                    if row[1]: extra["title"] = row[1]
+                    if row[2]: extra["position"] = row[2]
+                    if row[3]: extra["ministry"] = row[3]
+                    if extra:
+                        extras[eid] = extra
+            else:
+                result = await db.execute(
+                    select(model.name_hebrew).where(model.id == eid)
+                )
+                row = result.fetchone()
+                if row:
+                    names[eid] = row[0]
 
     for node in subgraph.nodes:
         node.name = names.get(node.id, "")
+        if node.id in extras:
+            node.extra = extras[node.id]
     for edge in subgraph.edges:
         edge.source_name = names.get(edge.source_id, "")
         edge.target_name = names.get(edge.target_id, "")

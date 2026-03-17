@@ -6,8 +6,8 @@ import Link from "next/link";
 
 type Tab = "persons" | "companies" | "associations" | "domains";
 
-const TABS: { key: Tab; label: string; fields: string[] }[] = [
-  { key: "persons", label: "אנשים", fields: ["name_hebrew", "title", "position", "ministry"] },
+const TABS: { key: Tab; label: string; fields: string[]; metaFields?: string[] }[] = [
+  { key: "persons", label: "אנשים", fields: ["name_hebrew"], metaFields: ["title", "position", "ministry"] },
   { key: "companies", label: "חברות", fields: ["name_hebrew", "registration_number", "company_type", "status"] },
   { key: "associations", label: "עמותות", fields: ["name_hebrew", "registration_number"] },
   { key: "domains", label: "תחומים", fields: ["name_hebrew", "description"] },
@@ -136,9 +136,23 @@ export default function EntitiesPage() {
             <tbody className="divide-y divide-gray-100">
               {items.map((item) => (
                 <tr key={item.id} className="hover:bg-gray-50">
-                  {tabConfig.fields.map((f) => (
-                    <td key={f} className="px-4 py-3 text-gray-700">{item[f] || "—"}</td>
-                  ))}
+                  {tabConfig.fields.map((f) => {
+                    // For the name field, append metadata in parentheses
+                    if (f === "name_hebrew" && tabConfig.metaFields) {
+                      const meta = tabConfig.metaFields.map((mf) => item[mf]).filter(Boolean);
+                      return (
+                        <td key={f} className="px-4 py-3 text-gray-700">
+                          <span className="font-medium">{item[f] || "—"}</span>
+                          {meta.length > 0 && (
+                            <span className="text-gray-400 text-xs mr-1">
+                              ({meta.join(", ")})
+                            </span>
+                          )}
+                        </td>
+                      );
+                    }
+                    return <td key={f} className="px-4 py-3 text-gray-700">{item[f] || "—"}</td>;
+                  })}
                   <td className="px-4 py-3">
                     <Link
                       href={`/admin/entities/detail?type=${tab}&id=${item.id}`}
