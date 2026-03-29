@@ -71,6 +71,12 @@ async def lifespan(app: FastAPI):
     settings.ensure_dirs()
     asyncio.ensure_future(_init_db())
     yield
+    # On shutdown: signal extraction to stop gracefully
+    try:
+        from ocoi_api.services.extraction_service import stop_extraction
+        stop_extraction()
+    except Exception:
+        pass
 
 
 def _get_allowed_origins() -> list[str]:

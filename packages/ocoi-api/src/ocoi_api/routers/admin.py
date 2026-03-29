@@ -1141,8 +1141,9 @@ async def _batch_reconvert_bg(document_ids: list[str]):
 
 
 @router.post("/documents/batch/extract")
-async def batch_extract(body: dict, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
+async def batch_extract(body: dict, db: AsyncSession = Depends(get_db)):
     """Batch extract entities — by IDs or by filter."""
+    import asyncio
     from ocoi_api.services.extraction_service import get_extraction_status, run_extraction
 
     document_ids = body.get("document_ids", [])
@@ -1166,7 +1167,7 @@ async def batch_extract(body: dict, background_tasks: BackgroundTasks, db: Async
     if status["running"]:
         raise HTTPException(409, "חילוץ כבר רץ — נסה שוב אחרי שיסתיים")
 
-    background_tasks.add_task(run_extraction, document_ids)
+    asyncio.create_task(run_extraction(document_ids))
     return {"status": "ok", "message": f"חילוץ הופעל ל-{len(document_ids)} מסמכים", "count": len(document_ids)}
 
 
@@ -1239,10 +1240,10 @@ async def reconvert_document(doc_id: uuid.UUID, db: AsyncSession = Depends(get_d
 @router.post("/documents/{doc_id}/reextract")
 async def reextract_document(
     doc_id: uuid.UUID,
-    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
     """Delete existing extraction data for a document and re-run LLM extraction."""
+    import asyncio
     from ocoi_api.services.extraction_service import get_extraction_status, run_extraction
 
     result = await db.execute(select(Document).where(Document.id == doc_id))
@@ -1261,7 +1262,7 @@ async def reextract_document(
     if status["running"]:
         raise HTTPException(409, "חילוץ כבר רץ — נסה שוב אחרי שיסתיים")
 
-    background_tasks.add_task(run_extraction, [str(doc_id)])
+    asyncio.create_task(run_extraction([str(doc_id)]))
     return {"status": "ok", "message": "חילוץ מחדש הופעל"}
 
 
@@ -1522,13 +1523,14 @@ async def update_prompt(body: dict):
 
 
 @router.post("/extraction/trigger")
-async def trigger_extraction(background_tasks: BackgroundTasks, body: dict = {}):
+async def trigger_extraction(body: dict = {}):
+    import asyncio
     from ocoi_api.services.extraction_service import get_extraction_status, run_extraction
     status = get_extraction_status()
     if status["running"]:
         raise HTTPException(409, "Extraction already running")
     document_ids = body.get("document_ids")
-    background_tasks.add_task(run_extraction, document_ids)
+    asyncio.create_task(run_extraction(document_ids))
     return {"status": "ok", "message": "Extraction started"}
 
 

@@ -155,6 +155,8 @@ def set_extraction_prompt(system_prompt: str, user_prompt: str) -> None:
 
 # ── Extraction state (same polling pattern as import) ────────────────────
 
+_extraction_stop = False  # Set True on SIGTERM to stop extraction gracefully
+
 _extraction_state: dict = {
     "running": False,
     "total": 0,
@@ -166,6 +168,12 @@ _extraction_state: dict = {
     "started_at": None,
     "finished_at": None,
 }
+
+
+def stop_extraction():
+    """Signal extraction to stop gracefully."""
+    global _extraction_stop
+    _extraction_stop = True
 
 
 def get_extraction_status() -> dict:
@@ -181,6 +189,9 @@ async def run_extraction(document_ids: list[str] | None = None) -> dict:
 
     if _extraction_state["running"]:
         return {"status": "error", "message": "Extraction already running"}
+
+    global _extraction_stop
+    _extraction_stop = False
 
     _extraction_state.update({
         "running": True,
@@ -232,12 +243,15 @@ async def _run_extraction(document_ids: list[str] | None):
 
     # Phase 2: Process each doc in its own session (commit after each)
     for doc_id in doc_ids:
+        if _extraction_stop:
+            logger.info("Extraction stopped by shutdown signal")
+            break
         try:
             async with bg_session_factory() as session:
+                # Only load markdown_content first — pdf_content is large and rarely needed
                 result = await session.execute(
                     select(Document).options(
                         undefer(Document.markdown_content),
-                        undefer(Document.pdf_content),
                     ).where(Document.id == doc_id)
                 )
                 doc = result.scalars().first()
@@ -248,11 +262,12 @@ async def _run_extraction(document_ids: list[str] | None):
                 # Cache scalar fields before any commit (bg_session expires on commit)
                 doc_title = doc.title or ""
                 doc_file_id = doc.id
+                doc_file_url = doc.file_url or ""
 
                 # Step 1: Get text content (convert PDF if needed)
                 text = doc.markdown_content
                 if not text:
-                    text = await _download_and_convert(doc)
+                    text = await _download_and_convert(session, doc_file_id, doc_file_url)
                     if text:
                         doc.markdown_content = text
                         doc.conversion_status = "converted"
@@ -423,38 +438,42 @@ async def _run_extraction(document_ids: list[str] | None):
 # ── PDF download + text extraction ───────────────────────────────────────
 
 
-async def _download_and_convert(doc: Document) -> str | None:
+async def _download_and_convert(session, doc_id: str, file_url: str) -> str | None:
     """Get PDF bytes (from DB, disk, or URL) and convert to markdown.
 
     Uses the centralized pdf_converter module for all conversion logic.
+    Runs CPU-intensive conversion in a thread to avoid blocking the event loop.
     """
     from ocoi_api.services.pdf_converter import convert_pdf_bytes
 
     try:
-        # Get PDF bytes: DB → disk → download
+        # Get PDF bytes: disk → download (avoid loading large blob from DB)
         pdf_bytes = None
-        if doc.pdf_content:
-            pdf_bytes = doc.pdf_content
-        else:
-            pdf_path = Path(settings.pdf_dir) / f"{doc.id}.pdf"
-            if pdf_path.exists():
-                pdf_bytes = pdf_path.read_bytes()
+        pdf_path = Path(settings.pdf_dir) / f"{doc_id}.pdf"
+        if pdf_path.exists():
+            pdf_bytes = await asyncio.to_thread(pdf_path.read_bytes)
 
-        if not pdf_bytes and doc.file_url and not doc.file_url.startswith("upload://"):
+        if not pdf_bytes and file_url and not file_url.startswith("upload://"):
             async with httpx.AsyncClient(timeout=60, follow_redirects=True) as http:
-                resp = await http.get(doc.file_url)
+                resp = await http.get(file_url)
                 resp.raise_for_status()
                 pdf_bytes = resp.content
-                # Store in DB for next time
-                doc.pdf_content = pdf_bytes
+
+        if not pdf_bytes:
+            # Last resort: load from DB
+            result = await session.execute(
+                select(Document.pdf_content).where(Document.id == doc_id)
+            )
+            pdf_bytes = result.scalar()
 
         if not pdf_bytes:
             return None
 
-        return convert_pdf_bytes(pdf_bytes, doc.id, use_ocr=True)
+        # Run CPU-intensive conversion in thread to keep event loop responsive
+        return await asyncio.to_thread(convert_pdf_bytes, pdf_bytes, doc_id, use_ocr=True)
 
     except Exception as e:
-        logger.error(f"PDF download/convert failed for {doc.file_url}: {e}")
+        logger.error(f"PDF download/convert failed for {file_url}: {e}")
         return None
 
 
