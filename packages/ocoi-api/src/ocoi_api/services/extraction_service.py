@@ -245,6 +245,10 @@ async def _run_extraction(document_ids: list[str] | None):
                     _extraction_state["processed"] += 1
                     continue
 
+                # Cache scalar fields before any commit (bg_session expires on commit)
+                doc_title = doc.title or ""
+                doc_file_id = doc.id
+
                 # Step 1: Get text content (convert PDF if needed)
                 text = doc.markdown_content
                 if not text:
@@ -258,13 +262,13 @@ async def _run_extraction(document_ids: list[str] | None):
                         await session.commit()
                         _extraction_state["errors"] += 1
                         _extraction_state["error_messages"].append(
-                            f"Failed to extract text: {doc.title[:60]}"
+                            f"Failed to extract text: {doc_title[:60]}"
                         )
                         _extraction_state["processed"] += 1
                         continue
 
                 # Step 2: Send to DeepSeek
-                title_prefix = f"כותרת המסמך: {doc.title}\n\n" if doc.title else ""
+                title_prefix = f"כותרת המסמך: {doc_title}\n\n" if doc_title else ""
                 truncated = title_prefix + text[:15000]
                 user_prompt = prompt_config["user_prompt"].format(document_text=truncated)
 
@@ -361,7 +365,7 @@ async def _run_extraction(document_ids: list[str] | None):
                             target_entity_type=rel.target_type.value,
                             target_entity_id=tgt_id,
                             relationship_type=rel.relationship_type.value,
-                            document_id=doc.id,
+                            document_id=doc_file_id,
                             details=rel.details,
                             restriction_type=rel.restriction_type.value if rel.restriction_type else None,
                             confidence=rel.confidence,
@@ -372,7 +376,7 @@ async def _run_extraction(document_ids: list[str] | None):
                 entities_count = len(extraction.persons) + len(extraction.companies) + len(extraction.associations) + len(extraction.domains)
                 await create_extraction_run(
                     session,
-                    document_id=doc.id,
+                    document_id=doc_file_id,
                     extractor_type="llm",
                     model_version="deepseek-chat",
                     entities_found=entities_count,
@@ -388,7 +392,7 @@ async def _run_extraction(document_ids: list[str] | None):
                 _extraction_state["relationships_found"] += rels_saved
 
                 logger.info(
-                    f"Extracted: {doc.title[:50]} → "
+                    f"Extracted: {doc_title[:50]} → "
                     f"{len(extraction.persons)}P, {len(extraction.companies)}C, {rels_saved}R"
                 )
 
