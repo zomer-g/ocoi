@@ -1326,6 +1326,14 @@ function ExtractionTab() {
               <div className="text-xs text-gray-500">שגיאות</div>
             </div>
           </div>
+          {status.error_messages.length > 0 && (
+            <div className="mt-3 p-2 bg-red-50 rounded-lg">
+              <div className="text-xs font-medium text-red-700 mb-1">שגיאות:</div>
+              <div className="text-xs text-red-600 font-mono space-y-0.5 max-h-32 overflow-y-auto">
+                {status.error_messages.map((m, i) => <div key={i}>{m}</div>)}
+              </div>
+            </div>
+          )}
         </div>
       )}
 

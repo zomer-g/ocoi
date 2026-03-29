@@ -1,5 +1,6 @@
 """Extraction service — PDF→text→DeepSeek→entities, with configurable prompts."""
 
+import asyncio
 import json
 from datetime import datetime
 from pathlib import Path
@@ -267,16 +268,26 @@ async def _run_extraction(document_ids: list[str] | None):
                 truncated = title_prefix + text[:15000]
                 user_prompt = prompt_config["user_prompt"].format(document_text=truncated)
 
-                response = await client.chat.completions.create(
-                    model="deepseek-chat",
-                    messages=[
-                        {"role": "system", "content": prompt_config["system_prompt"]},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    temperature=0.1,
-                    max_tokens=4000,
-                    response_format={"type": "json_object"},
-                )
+                for attempt in range(3):
+                    try:
+                        response = await client.chat.completions.create(
+                            model="deepseek-chat",
+                            messages=[
+                                {"role": "system", "content": prompt_config["system_prompt"]},
+                                {"role": "user", "content": user_prompt},
+                            ],
+                            temperature=0.1,
+                            max_tokens=4000,
+                            response_format={"type": "json_object"},
+                        )
+                        break
+                    except Exception as api_err:
+                        if attempt < 2:
+                            wait = 2 ** (attempt + 1)
+                            logger.warning(f"DeepSeek API error (attempt {attempt+1}/3), retrying in {wait}s: {api_err}")
+                            await asyncio.sleep(wait)
+                        else:
+                            raise
 
                 content = response.choices[0].message.content
                 data = json.loads(content)
