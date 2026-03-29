@@ -114,7 +114,7 @@ function CkanTab() {
     setSearching(true);
     setImportResult(null);
     try {
-      const res = await searchCkan(query.trim(), 20, start);
+      const res = await searchCkan(query.trim(), 50, start);
       setResults(res.data.results);
       setTotal(res.data.total);
       setPage(start);
@@ -292,8 +292,8 @@ function CkanTab() {
     };
   }, []);
 
-  const totalPages = Math.ceil(total / 20);
-  const currentPage = Math.floor(page / 20) + 1;
+  const totalPages = Math.ceil(total / 50);
+  const currentPage = Math.floor(page / 50) + 1;
 
   // Auto-advance to next page when all results on current page are filtered out
   useEffect(() => {
@@ -301,9 +301,9 @@ function CkanTab() {
       results.length > 0 &&
       filteredResults.length === 0 &&
       !searching &&
-      page + 20 < total
+      page + 50 < total
     ) {
-      doSearch(page + 20);
+      doSearch(page + 50);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [results, filteredResults.length, searching, page, total]);
@@ -527,7 +527,7 @@ function CkanTab() {
           {totalPages > 1 && (
             <div className="flex items-center justify-center gap-2 p-3">
               <button
-                onClick={() => doSearch(page - 20)}
+                onClick={() => doSearch(page - 50)}
                 disabled={page === 0 || searching}
                 className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-30"
               >
@@ -537,8 +537,8 @@ function CkanTab() {
                 עמוד {currentPage} מתוך {totalPages}
               </span>
               <button
-                onClick={() => doSearch(page + 20)}
-                disabled={page + 20 >= total || searching}
+                onClick={() => doSearch(page + 50)}
+                disabled={page + 50 >= total || searching}
                 className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-30"
               >
                 הבא

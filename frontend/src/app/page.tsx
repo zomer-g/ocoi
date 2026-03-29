@@ -30,7 +30,7 @@ export default function HomePage() {
     setLoading(true);
     try {
       const res = await fetch(
-        `/api/v1/search?q=${encodeURIComponent(q)}&limit=20`
+        `/api/v1/search?q=${encodeURIComponent(q)}&limit=50`
       );
       const data = await res.json();
       setResults(data.data || []);

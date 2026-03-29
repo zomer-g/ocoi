@@ -36,7 +36,7 @@ export default function EntitiesPage() {
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const params = new URLSearchParams({ page: String(page), limit: "20" });
+      const params = new URLSearchParams({ page: String(page), limit: "50" });
       if (search) params.set("q", search);
       const res = await fetch(`/api/v1/${tab}?${params}`, { credentials: "include" });
       const data = await res.json();
@@ -66,7 +66,7 @@ export default function EntitiesPage() {
   };
 
   const tabConfig = TABS.find((t) => t.key === tab)!;
-  const totalPages = Math.ceil(total / 20);
+  const totalPages = Math.ceil(total / 50);
 
   return (
     <div>

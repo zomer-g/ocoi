@@ -43,7 +43,7 @@ export async function search(
   query: string,
   type?: string,
   page = 1,
-  limit = 20
+  limit = 50
 ) {
   const params = new URLSearchParams({ q: query, page: String(page), limit: String(limit) });
   if (type) params.set("type", type);
@@ -86,7 +86,7 @@ export interface RankedEntity {
   ministry?: string | null;
 }
 
-export async function getTopConnected(type?: string, page = 1, limit = 20) {
+export async function getTopConnected(type?: string, page = 1, limit = 50) {
   const params = new URLSearchParams({ page: String(page), limit: String(limit) });
   if (type) params.set("type", type);
   return fetchApi<PaginatedResponse<RankedEntity>>(`/entities/top-connected?${params}`);

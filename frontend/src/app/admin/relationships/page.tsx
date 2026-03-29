@@ -67,7 +67,7 @@ export default function RelationshipsPage() {
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const params = new URLSearchParams({ page: String(page), limit: "20" });
+      const params = new URLSearchParams({ page: String(page), limit: "50" });
       if (search) params.set("q", search);
       const res = await fetch(`/api/v1/admin/relationships?${params}`, { credentials: "include" });
       const data = await res.json();
@@ -122,7 +122,7 @@ export default function RelationshipsPage() {
     fetchData();
   };
 
-  const totalPages = Math.ceil(total / 20);
+  const totalPages = Math.ceil(total / 50);
 
   return (
     <div>

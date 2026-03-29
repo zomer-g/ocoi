@@ -90,7 +90,7 @@ export default function DocumentsPage() {
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const params = new URLSearchParams({ page: String(page), limit: "20" });
+      const params = new URLSearchParams({ page: String(page), limit: "50" });
       if (statusFilter) params.set("status", statusFilter);
       if (conversionFilter) params.set("conversion", conversionFilter);
       if (sourceFilter) params.set("source_type", sourceFilter);
@@ -619,7 +619,7 @@ export default function DocumentsPage() {
           {total > 20 && (
             <div className="flex items-center justify-between px-4 py-3 border-t border-gray-200">
               <span className="text-xs text-gray-500">
-                עמוד {page} מתוך {Math.ceil(total / 20)}
+                עמוד {page} מתוך {Math.ceil(total / 50)}
               </span>
               <div className="flex gap-1">
                 <button disabled={page <= 1} onClick={() => setPage((p) => p - 1)} className="px-3 py-1 text-xs rounded border disabled:opacity-50 hover:bg-gray-50">הקודם</button>

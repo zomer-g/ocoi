@@ -25,7 +25,7 @@ const TYPE_COLORS: Record<string, string> = {
   domain: "bg-amber-50 text-amber-800 border-amber-200",
 };
 
-const PAGE_SIZE = 12;
+const PAGE_SIZE = 50;
 
 export function EntityDiscovery() {
   const [activeTab, setActiveTab] = useState("");
