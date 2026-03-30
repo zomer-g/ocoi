@@ -62,30 +62,36 @@ def _get_page_count(pdf_path: Path) -> int:
     return 0
 
 
-def _ocr_pdf(pdf_path: Path) -> str | None:
-    """OCR a scanned PDF using pdftoppm + tesseract (page by page to save memory)."""
+def _ocr_pdf(pdf_path: Path, *, max_pages: int = 8) -> str | None:
+    """OCR a scanned PDF using pdftoppm + tesseract (page by page to save memory).
+
+    max_pages limits how many pages to OCR (keeps memory bounded on 512MB Render).
+    """
     if not _has_tool("pdftoppm") or not _has_tool("tesseract"):
         logger.warning("pdftoppm or tesseract not installed — cannot OCR scanned PDFs")
         return None
 
     page_count = _get_page_count(pdf_path) or 20  # guess max if pdfinfo unavailable
+    ocr_pages = min(page_count, max_pages)
+    if page_count > max_pages:
+        logger.info(f"PDF has {page_count} pages, OCR limited to first {max_pages}")
     pages_text = []
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        for page_num in range(1, page_count + 1):
+        for page_num in range(1, ocr_pages + 1):
             try:
-                # Convert single page to PPM image (low DPI to save memory)
+                # Convert single page to grayscale PGM (much smaller than color PPM)
                 ppm_prefix = os.path.join(tmpdir, f"page")
                 result = subprocess.run(
                     ["pdftoppm", "-f", str(page_num), "-l", str(page_num),
-                     "-r", "200", str(pdf_path), ppm_prefix],
+                     "-r", "150", "-gray", str(pdf_path), ppm_prefix],
                     capture_output=True, timeout=30,
                 )
                 if result.returncode != 0:
                     break  # Past last page or error
 
-                # Find the generated image
-                ppm_files = list(Path(tmpdir).glob("page-*.ppm"))
+                # Find the generated image (PGM for grayscale, PPM for color)
+                ppm_files = list(Path(tmpdir).glob("page-*.*"))
                 if not ppm_files:
                     break
 

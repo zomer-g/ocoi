@@ -496,6 +496,9 @@ async def _download_and_convert(session, doc_id: str, file_url: str) -> str | No
             tmp.write(pdf_bytes)
             tmp_path = Path(tmp.name)
 
+        # Free PDF bytes from memory before OCR (saves ~1MB+ on 512MB Render)
+        del pdf_bytes
+
         md_text = await asyncio.to_thread(convert_pdf, tmp_path, str(doc_id), use_ocr=True)
 
         # Clean up temp file
