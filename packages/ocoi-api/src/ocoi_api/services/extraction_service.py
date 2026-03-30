@@ -439,41 +439,84 @@ async def _run_extraction(document_ids: list[str] | None):
 
 
 async def _download_and_convert(session, doc_id: str, file_url: str) -> str | None:
-    """Get PDF bytes (from DB, disk, or URL) and convert to markdown.
+    """Get PDF bytes and convert to markdown with OCR.
 
-    Uses the centralized pdf_converter module for all conversion logic.
+    Priority order: DB blob (most reliable on Render) → disk → URL download.
     Runs CPU-intensive conversion in a thread to avoid blocking the event loop.
     """
-    from ocoi_api.services.pdf_converter import convert_pdf_bytes
+    import tempfile
+    from ocoi_api.services.pdf_converter import convert_pdf
 
+    pdf_bytes = None
+
+    # 1. Load from DB (primary source — Render has no persistent disk)
     try:
-        # Get PDF bytes: disk → download (avoid loading large blob from DB)
-        pdf_bytes = None
+        result = await session.execute(
+            select(Document.pdf_content).where(Document.id == doc_id)
+        )
+        pdf_bytes = result.scalar()
+        if pdf_bytes:
+            logger.info(f"Loaded PDF from DB for {doc_id} ({len(pdf_bytes)} bytes)")
+    except Exception as e:
+        logger.warning(f"DB pdf_content load failed for {doc_id}: {e}")
+
+    # 2. Try disk cache
+    if not pdf_bytes:
         pdf_path = Path(settings.pdf_dir) / f"{doc_id}.pdf"
         if pdf_path.exists():
-            pdf_bytes = await asyncio.to_thread(pdf_path.read_bytes)
+            try:
+                pdf_bytes = await asyncio.to_thread(pdf_path.read_bytes)
+                logger.info(f"Loaded PDF from disk for {doc_id}")
+            except Exception as e:
+                logger.warning(f"Disk read failed for {doc_id}: {e}")
 
-        if not pdf_bytes and file_url and not file_url.startswith("upload://"):
+    # 3. Download from URL
+    if not pdf_bytes and file_url and not file_url.startswith("upload://"):
+        try:
             async with httpx.AsyncClient(timeout=60, follow_redirects=True) as http:
                 resp = await http.get(file_url)
                 resp.raise_for_status()
                 pdf_bytes = resp.content
+                logger.info(f"Downloaded PDF for {doc_id} from {file_url[:80]} ({len(pdf_bytes)} bytes)")
+        except Exception as e:
+            logger.warning(f"PDF download failed for {doc_id} from {file_url[:80]}: {e}")
 
-        if not pdf_bytes:
-            # Last resort: load from DB
-            result = await session.execute(
-                select(Document.pdf_content).where(Document.id == doc_id)
-            )
-            pdf_bytes = result.scalar()
+    if not pdf_bytes:
+        logger.error(f"No PDF source available for {doc_id} (url={file_url[:80] if file_url else 'none'})")
+        return None
 
-        if not pdf_bytes:
-            return None
+    # Validate PDF header
+    if not pdf_bytes[:5].startswith(b"%PDF"):
+        logger.error(f"Invalid PDF for {doc_id}: starts with {pdf_bytes[:20]!r}")
+        return None
 
-        # Run CPU-intensive conversion in thread to keep event loop responsive
-        return await asyncio.to_thread(convert_pdf_bytes, pdf_bytes, doc_id, use_ocr=True)
+    # Write to temp file and convert with OCR in a thread
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            tmp.write(pdf_bytes)
+            tmp_path = Path(tmp.name)
+
+        md_text = await asyncio.to_thread(convert_pdf, tmp_path, str(doc_id), use_ocr=True)
+
+        # Clean up temp file
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+        if md_text:
+            logger.info(f"Converted PDF for {doc_id}: {len(md_text)} chars")
+        else:
+            logger.warning(f"PDF conversion produced no text for {doc_id}")
+
+        return md_text
 
     except Exception as e:
-        logger.error(f"PDF download/convert failed for {file_url}: {e}")
+        logger.error(f"PDF conversion failed for {doc_id}: {e}")
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
         return None
 
 
