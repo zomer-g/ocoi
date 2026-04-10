@@ -233,8 +233,32 @@ async def _run_extraction(document_ids: list[str] | None):
                 select(Document.id).where(Document.id.in_(document_ids))
             )
         else:
+            # Auto-retry: reset failed extractions that have a chance of succeeding
+            # (conversion didn't permanently fail — OOM/crash may have caused the failure)
+            retry_result = await session.execute(
+                select(Document.id).where(
+                    Document.extraction_status == "failed",
+                    Document.conversion_status != "failed",
+                )
+            )
+            retry_ids = [row[0] for row in retry_result.all()]
+            if retry_ids:
+                from sqlalchemy import update
+                await session.execute(
+                    update(Document)
+                    .where(Document.id.in_(retry_ids))
+                    .values(extraction_status="pending")
+                )
+                await session.commit()
+                logger.info(f"Auto-reset {len(retry_ids)} failed extractions for retry")
+
+            # Select pending docs, skip those with conversion_status == "failed"
+            # (no PDF available at all — retrying won't help)
             result = await session.execute(
-                select(Document.id).where(Document.extraction_status == "pending")
+                select(Document.id).where(
+                    Document.extraction_status == "pending",
+                    Document.conversion_status != "failed",
+                )
             )
         doc_ids = [row[0] for row in result.all()]
 
@@ -267,18 +291,22 @@ async def _run_extraction(document_ids: list[str] | None):
                 # Step 1: Get text content (convert PDF if needed)
                 text = doc.markdown_content
                 if not text:
-                    text = await _download_and_convert(session, doc_file_id, doc_file_url)
+                    text, had_pdf = await _download_and_convert(session, doc_file_id, doc_file_url)
                     if text:
                         doc.markdown_content = text
                         doc.conversion_status = "converted"
                     else:
-                        doc.conversion_status = "failed"
+                        # Distinguish: no PDF source vs OCR produced nothing
+                        if had_pdf:
+                            doc.conversion_status = "no_text"  # PDF exists, OCR failed — retryable
+                            error_msg = f"OCR produced no text: {doc_title[:60]}"
+                        else:
+                            doc.conversion_status = "failed"  # no PDF at all — permanent
+                            error_msg = f"No PDF source: {doc_title[:60]}"
                         doc.extraction_status = "failed"
                         await session.commit()
                         _extraction_state["errors"] += 1
-                        _extraction_state["error_messages"].append(
-                            f"Failed to extract text: {doc_title[:60]}"
-                        )
+                        _extraction_state["error_messages"].append(error_msg)
                         _extraction_state["processed"] += 1
                         continue
 
@@ -438,11 +466,14 @@ async def _run_extraction(document_ids: list[str] | None):
 # ── PDF download + text extraction ───────────────────────────────────────
 
 
-async def _download_and_convert(session, doc_id: str, file_url: str) -> str | None:
+async def _download_and_convert(session, doc_id: str, file_url: str) -> tuple[str | None, bool]:
     """Get PDF bytes and convert to markdown with OCR.
 
     Priority order: DB blob (most reliable on Render) → disk → URL download.
     Runs CPU-intensive conversion in a thread to avoid blocking the event loop.
+
+    Returns (text, had_pdf): text is the converted markdown, had_pdf indicates
+    whether a PDF was found at all (to distinguish 'no PDF' from 'OCR failed').
     """
     import tempfile
     from ocoi_api.services.pdf_converter import convert_pdf
@@ -483,12 +514,12 @@ async def _download_and_convert(session, doc_id: str, file_url: str) -> str | No
 
     if not pdf_bytes:
         logger.error(f"No PDF source available for {doc_id} (url={file_url[:80] if file_url else 'none'})")
-        return None
+        return None, False
 
     # Validate PDF header
     if not pdf_bytes[:5].startswith(b"%PDF"):
         logger.error(f"Invalid PDF for {doc_id}: starts with {pdf_bytes[:20]!r}")
-        return None
+        return None, False
 
     # Write to temp file and convert with OCR in a thread
     try:
@@ -512,7 +543,7 @@ async def _download_and_convert(session, doc_id: str, file_url: str) -> str | No
         else:
             logger.warning(f"PDF conversion produced no text for {doc_id}")
 
-        return md_text
+        return md_text, True  # had_pdf=True, even if OCR produced nothing
 
     except Exception as e:
         logger.error(f"PDF conversion failed for {doc_id}: {e}")
@@ -520,7 +551,7 @@ async def _download_and_convert(session, doc_id: str, file_url: str) -> str | No
             tmp_path.unlink(missing_ok=True)
         except Exception:
             pass
-        return None
+        return None, True  # had_pdf=True (PDF existed but conversion crashed)
 
 
 # ── LLM response parsing (adapted from ocoi-extractor/llm_extractor.py) ─

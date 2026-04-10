@@ -812,10 +812,11 @@ async def reconvert_all_documents(background_tasks: BackgroundTasks, db: AsyncSe
 
 async def _reconvert_all_bg():
     """Background worker: reconvert all documents one at a time with per-doc sessions."""
+    import asyncio
     import gc
+    import tempfile
     import httpx as _httpx
     from ocoi_api.services.pdf_converter import convert_pdf
-    from sqlalchemy.orm import undefer
 
     global _reconvert_state
 
@@ -830,27 +831,79 @@ async def _reconvert_all_bg():
         for i, doc_id in enumerate(doc_ids):
             try:
                 async with bg_session_factory() as db:
+                    # Don't load pdf_content eagerly — fetch it separately to control memory
                     doc_result = await db.execute(
-                        select(Document).options(undefer(Document.pdf_content)).where(Document.id == doc_id)
+                        select(Document).where(Document.id == doc_id)
                     )
                     doc = doc_result.scalars().first()
                     if not doc:
                         _reconvert_state["processed"] += 1
                         continue
 
-                    pdf_path = await _resolve_pdf_path(doc, _httpx, db)
+                    # Try to get a PDF file: disk → DB blob → URL download
+                    pdf_path = settings.pdf_dir / f"{doc.id}.pdf"
+                    tmp_path = None
+
+                    if pdf_path.exists():
+                        # Validate it's a real PDF
+                        with open(pdf_path, "rb") as f:
+                            if not f.read(5).startswith(b"%PDF"):
+                                pdf_path.unlink(missing_ok=True)
+                                pdf_path = None
+                    else:
+                        pdf_path = None
+
+                    if not pdf_path:
+                        # Load blob from DB (separate query, only when needed)
+                        blob_result = await db.execute(
+                            select(Document.pdf_content).where(Document.id == doc_id)
+                        )
+                        pdf_bytes = blob_result.scalar()
+
+                        if pdf_bytes and pdf_bytes[:5].startswith(b"%PDF"):
+                            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+                                tmp.write(pdf_bytes)
+                                tmp_path = Path(tmp.name)
+                            del pdf_bytes  # Free memory before OCR
+                            pdf_path = tmp_path
+                        elif not pdf_bytes:
+                            # Try URL download
+                            url = doc.file_url
+                            if url and not url.startswith("upload://"):
+                                try:
+                                    async with _httpx.AsyncClient(timeout=60, follow_redirects=True) as http:
+                                        resp = await http.get(url)
+                                        resp.raise_for_status()
+                                    if resp.content[:5].startswith(b"%PDF"):
+                                        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+                                            tmp.write(resp.content)
+                                            tmp_path = Path(tmp.name)
+                                        pdf_path = tmp_path
+                                        # Store in DB for persistence
+                                        doc.pdf_content = resp.content
+                                        doc.file_size = len(resp.content)
+                                except Exception as exc:
+                                    logger.warning(f"Download failed for reconvert '{doc.title[:50]}': {exc}")
+
                     if not pdf_path:
                         _reconvert_state["skipped"] += 1
                         _reconvert_state["processed"] += 1
                         continue
 
-                    md_text = convert_pdf(pdf_path, str(doc.id), use_ocr=True)
+                    # Run conversion in thread to keep event loop responsive
+                    md_text = await asyncio.to_thread(convert_pdf, pdf_path, str(doc.id), use_ocr=True)
+
+                    # Clean up temp file
+                    if tmp_path:
+                        try:
+                            tmp_path.unlink(missing_ok=True)
+                        except Exception:
+                            pass
+
                     if md_text:
                         doc.markdown_content = md_text
                         doc.conversion_status = "converted"
                         doc.converted_at = now_israel_naive()
-                        if not doc.pdf_content and pdf_path.exists():
-                            doc.pdf_content = pdf_path.read_bytes()
                         _reconvert_state["updated"] += 1
                     else:
                         doc.conversion_status = "no_text"
@@ -862,6 +915,12 @@ async def _reconvert_all_bg():
                 if len(_reconvert_state["errors"]) < 20:
                     _reconvert_state["errors"].append(f"doc {doc_id}: {e}")
                 _reconvert_state["skipped"] += 1
+                # Clean up temp file on error
+                if tmp_path:
+                    try:
+                        tmp_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
 
             _reconvert_state["processed"] += 1
             gc.collect()
