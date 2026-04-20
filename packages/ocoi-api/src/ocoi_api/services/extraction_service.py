@@ -207,26 +207,30 @@ def set_extraction_prompt(system_prompt: str, user_prompt: str) -> None:
 
 # ── Text preprocessing helpers (smart truncation, bundle splitting, title fallback) ──
 
-# Markers that start a new COI arrangement section
-_ARRANGEMENT_START_MARKERS = [
-    "הסדר למניעת ניגוד עניינים",
-    "הצהרה והתחייבות למניעת ניגוד עניינים",
-    "חוות דעת למניעת ניגוד עניינים",
+# Regex patterns for COI arrangement starts — tolerant to OCR noise (extra periods, spaces)
+# Hebrew OCR often inserts stray periods/commas between words, e.g. "הצהרה. והתחייבות"
+import re as _re_markers
+
+_ARRANGEMENT_START_PATTERNS = [
+    # "הסדר למניעת ניגוד עניינים" (with optional OCR punct)
+    _re_markers.compile(r"הסדר\s*[.,]?\s*למניעת\s*ניגוד\s*עניינים"),
+    # "הצהרה והתחייבות למניעת ניגוד עניינים" (with optional OCR punct between words)
+    _re_markers.compile(r"הצהרה\s*[.,]?\s*ו?התחייבות\s*למניעת\s*ניגוד\s*עניינים"),
+    # "חוות דעת למניעת ניגוד עניינים"
+    _re_markers.compile(r"חוות\s*[.,]?\s*דעת\s*למניעת\s*ניגוד\s*עניינים"),
 ]
 
 
 def _find_arrangement_positions(text: str) -> list[int]:
-    """Find all positions where a new COI arrangement section starts."""
-    positions = []
-    for marker in _ARRANGEMENT_START_MARKERS:
-        start = 0
-        while True:
-            idx = text.find(marker, start)
-            if idx == -1:
-                break
-            positions.append(idx)
-            start = idx + len(marker)
-    return sorted(set(positions))
+    """Find all positions where a new COI arrangement section starts.
+
+    Uses regex patterns tolerant to OCR noise (stray punctuation between words).
+    """
+    positions = set()
+    for pat in _ARRANGEMENT_START_PATTERNS:
+        for m in pat.finditer(text):
+            positions.add(m.start())
+    return sorted(positions)
 
 
 def _split_bundle_arrangements(text: str, min_section_chars: int = 400) -> list[str]:
@@ -297,13 +301,19 @@ import re as _re
 _HEBREW_CHAR = r"\u0590-\u05FF"
 # Noise words commonly found in COI filenames (to strip before looking for names)
 _TITLE_NOISE_WORDS = {
+    # COI-related noise
     "הסדר", "הסכם", "הסדרי", "הסכמי", "למניעת", "מניעת", "ניגוד", "עניינים", "עיניינים",
     "הצהרה", "התחייבות", "חוות", "דעת", "פראפרזה", "סיכום",
     "מושחר", "מצונזר", "עיבוד", "OCR", "לאחר",
+    # Titles / roles (not names)
     "יועץ", "יועצת", "שר", "של", "שרה", "סגן", "סגנית", "מנכל", "מנכ\"ל", "מנכייל",
     "עוזר", "עוזרת", "ראש", "מטה", "דובר", "דוברת", "עובד", "עובדת", "עובדי",
     "הכנסת", "ממשלה", "משרד", "משרדי", "ועדה", "וועדה", "מועצה",
     "נציג", "נציגה", "חבר", "חברת", "בקשה", "תרומות", "שדי",
+    # Common descriptive words that appear near names but aren't names
+    "חדש", "חדשה", "במליאה", "במועצה", "בחברה",
+    "מסמך", "לפי", "עבור", "עם", "את", "הוא", "היא",
+    # File extensions
     "pdf", "docx", "doc",
 }
 
