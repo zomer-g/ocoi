@@ -305,6 +305,14 @@ async def _import_single_ckan_doc(session, doc, ds, imported_at: str, stats: dic
     ALWAYS saves the document record and PDF bytes, even if conversion fails.
     User can reconvert later with OCR.
     """
+    # PDF-only gate (defense-in-depth; client-side filter should catch most)
+    fmt = (doc.file_format or "").lower()
+    url_lower = (doc.file_url or "").lower().split("?")[0]
+    if fmt != "pdf" and not url_lower.endswith(".pdf"):
+        logger.info(f"Skipping non-PDF resource [{fmt}]: {doc.title[:60]}")
+        stats["skipped"] += 1
+        return
+
     # Check duplicate by URL
     dup = await check_duplicate(session, file_url=doc.file_url)
     if dup:

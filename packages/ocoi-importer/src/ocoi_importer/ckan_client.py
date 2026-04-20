@@ -53,26 +53,40 @@ class CkanClient:
         return all_datasets
 
     def extract_documents(self, dataset: CkanDataset) -> list[ImportedDocument]:
-        """Extract downloadable document references from a dataset."""
+        """Extract downloadable PDF references from a dataset.
+
+        Only PDFs are imported — other formats (DOCX, DOC, JPEG, PNG) are skipped
+        because we can't convert them to text (and images like email signatures
+        pollute the DB without adding value).
+
+        Matches by:
+        1. Resource's declared format == "PDF", OR
+        2. URL ends with ".pdf" (case-insensitive) as fallback for missing format field
+        """
         docs = []
         for resource in dataset.resources:
             fmt = (resource.get("format") or "").upper()
-            url = resource.get("url", "")
+            url = resource.get("url", "") or ""
             if not url:
                 continue
-            if fmt in ("PDF", "DOCX", "DOC", "JPEG", "JPG", "PNG"):
-                docs.append(ImportedDocument(
-                    source_type="ckan",
-                    source_id=dataset.id,
-                    title=resource.get("name") or dataset.title,
-                    file_url=url,
-                    file_format=fmt.lower(),
-                    file_size=resource.get("size"),
-                    metadata={
-                        "dataset_title": dataset.title,
-                        "dataset_notes": dataset.notes,
-                        "resource_id": resource.get("id"),
-                        "tags": [t.get("name", "") for t in dataset.tags],
-                    },
-                ))
+
+            # PDF-only gate: accept if format says PDF or URL clearly points to a PDF
+            is_pdf = fmt == "PDF" or url.lower().split("?")[0].endswith(".pdf")
+            if not is_pdf:
+                continue
+
+            docs.append(ImportedDocument(
+                source_type="ckan",
+                source_id=dataset.id,
+                title=resource.get("name") or dataset.title,
+                file_url=url,
+                file_format="pdf",
+                file_size=resource.get("size"),
+                metadata={
+                    "dataset_title": dataset.title,
+                    "dataset_notes": dataset.notes,
+                    "resource_id": resource.get("id"),
+                    "tags": [t.get("name", "") for t in dataset.tags],
+                },
+            ))
         return docs
