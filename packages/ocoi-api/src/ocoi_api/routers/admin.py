@@ -1032,6 +1032,45 @@ async def purge_metadata_only_documents(db: AsyncSession = Depends(get_db)):
     return {"status": "ok", "data": {"deleted": count}}
 
 
+@router.delete("/documents/purge/non-pdf")
+async def purge_non_pdf_documents(db: AsyncSession = Depends(get_db)):
+    """Delete all non-PDF documents (DOCX, DOC, JPEG, PNG, etc.) that were imported
+    before the PDF-only filter was added. Only PDFs should be in the corpus.
+
+    A document is considered non-PDF if:
+    - file_format is not 'pdf' (case-insensitive), AND
+    - the URL doesn't end in .pdf (fallback check for missing/wrong format field)
+    """
+    # Select candidates. SQLite-safe: do filtering in Python.
+    result = await db.execute(select(Document))
+    all_docs = result.scalars().all()
+
+    to_delete = []
+    format_breakdown: dict[str, int] = {}
+    for d in all_docs:
+        fmt = (d.file_format or "").lower()
+        url = (d.file_url or "").lower().split("?")[0]
+        is_pdf = fmt == "pdf" or url.endswith(".pdf")
+        if not is_pdf:
+            to_delete.append(d)
+            format_breakdown[fmt or "(empty)"] = format_breakdown.get(fmt or "(empty)", 0) + 1
+
+    count = len(to_delete)
+    for d in to_delete:
+        await db.execute(delete(ExtractionRun).where(ExtractionRun.document_id == d.id))
+        await db.execute(delete(EntityRelationship).where(EntityRelationship.document_id == d.id))
+        await db.execute(delete(Document).where(Document.id == d.id))
+
+    await db.commit()
+    return {
+        "status": "ok",
+        "data": {
+            "deleted": count,
+            "format_breakdown": format_breakdown,
+        },
+    }
+
+
 @router.post("/documents/upload")
 async def upload_document(
     file: UploadFile = File(...),

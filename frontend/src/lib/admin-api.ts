@@ -118,6 +118,9 @@ export function deleteDocument(id: string) {
 export function purgeMetadataOnlyDocuments() {
   return adminFetch<{ status: string; data: { deleted: number } }>("/documents/purge/metadata-only", { method: "DELETE" });
 }
+export function purgeNonPdfDocuments() {
+  return adminFetch<{ status: string; data: { deleted: number; format_breakdown: Record<string, number> } }>("/documents/purge/non-pdf", { method: "DELETE" });
+}
 
 // Upload
 export interface UploadResult {

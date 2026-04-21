@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef } from "react";
-import { deleteDocument, purgeMetadataOnlyDocuments, uploadDocument, backfillPdf, batchReconvert, batchExtract, batchResetStatus, type UploadResult } from "@/lib/admin-api";
+import { deleteDocument, purgeMetadataOnlyDocuments, purgeNonPdfDocuments, uploadDocument, backfillPdf, batchReconvert, batchExtract, batchResetStatus, type UploadResult } from "@/lib/admin-api";
 import Link from "next/link";
 
 interface DocItem {
@@ -74,6 +74,7 @@ export default function DocumentsPage() {
   const [conversionFilter, setConversionFilter] = useState("");
   const [sourceFilter, setSourceFilter] = useState("");
   const [purging, setPurging] = useState(false);
+  const [purgingNonPdf, setPurgingNonPdf] = useState(false);
   const [backfilling, setBackfilling] = useState(false);
   const [search, setSearch] = useState("");
   const [searchInput, setSearchInput] = useState("");
@@ -129,6 +130,24 @@ export default function DocumentsPage() {
       alert("שגיאה במחיקה");
     } finally {
       setPurging(false);
+    }
+  };
+
+  const handlePurgeNonPdf = async () => {
+    if (!confirm("למחוק את כל המסמכים שאינם PDF (תמונות, DOCX, DOC)? פעולה זו בלתי הפיכה.")) return;
+    setPurgingNonPdf(true);
+    try {
+      const result = await purgeNonPdfDocuments();
+      const breakdown = Object.entries(result.data.format_breakdown)
+        .map(([k, v]) => `${k}: ${v}`)
+        .join(", ");
+      alert(`נמחקו ${result.data.deleted} מסמכים לא-PDF\n\nפירוט לפי פורמט:\n${breakdown}`);
+      setPage(1);
+      fetchData();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "שגיאה במחיקה");
+    } finally {
+      setPurgingNonPdf(false);
     }
   };
 
@@ -293,6 +312,14 @@ export default function DocumentsPage() {
               {purging ? "מוחק..." : `מחק מסמכים ללא תוכן (${metadataOnlyCount})`}
             </button>
           )}
+          <button
+            onClick={handlePurgeNonPdf}
+            disabled={purgingNonPdf}
+            className="px-3 py-1.5 text-xs font-medium rounded bg-red-50 text-red-700 border border-red-200 hover:bg-red-100 transition-colors disabled:opacity-50"
+            title="מוחק קבצי JPEG, PNG, DOCX, DOC שאותרו בייבואי CKAN ישנים"
+          >
+            {purgingNonPdf ? "מוחק..." : "מחק לא-PDF"}
+          </button>
         </div>
       </div>
 
