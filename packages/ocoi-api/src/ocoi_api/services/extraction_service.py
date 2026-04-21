@@ -233,6 +233,21 @@ def _find_arrangement_positions(text: str) -> list[int]:
     return sorted(positions)
 
 
+def _sanitize_text(text: str) -> str:
+    """Remove invalid Unicode (unpaired surrogates) and NUL chars from OCR output.
+
+    OCR can produce \\udcXX surrogate chars which break json.loads when they
+    appear in the LLM response. Also strips NUL chars that PostgreSQL rejects.
+    """
+    if not text:
+        return text
+    # Drop unpaired surrogates and NUL chars
+    cleaned = text.encode("utf-8", "replace").decode("utf-8", "replace")
+    # Remove replacement chars introduced above (U+FFFD) and NUL
+    cleaned = cleaned.replace("\ufffd", "").replace("\x00", "")
+    return cleaned
+
+
 def _split_bundle_arrangements(text: str, min_section_chars: int = 400) -> list[str]:
     """Split a bundled document containing multiple COI arrangements into sections.
 
@@ -503,6 +518,9 @@ async def _run_extraction(document_ids: list[str] | None):
                         continue
 
                 # Step 2: Send to DeepSeek (with bundle splitting + smart truncation)
+                # Sanitize text — removes invalid Unicode (OCR artifacts) that can
+                # cause the LLM to produce malformed JSON
+                text = _sanitize_text(text)
                 title_prefix = f"כותרת המסמך: {doc_title}\n\n" if doc_title else ""
 
                 # Detect if this is a bundle (multiple arrangements in one doc)
