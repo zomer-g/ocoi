@@ -518,12 +518,15 @@ async def _run_extraction(document_ids: list[str] | None):
                 merged_relationships: list = []
                 merged_raw_outputs: list = []
 
+                section_failures = 0  # count sections that failed — abort only if ALL fail
                 for section_idx, section_text in enumerate(sections):
                     # Smart-truncate each section to 15000 chars
                     truncated_section = _smart_truncate(section_text, max_chars=15000)
                     section_input = title_prefix + truncated_section
                     user_prompt = prompt_config["user_prompt"].format(document_text=section_input)
 
+                    # API call with retry — catches transient network/API errors
+                    response = None
                     for attempt in range(3):
                         try:
                             response = await client.chat.completions.create(
@@ -533,7 +536,7 @@ async def _run_extraction(document_ids: list[str] | None):
                                     {"role": "user", "content": user_prompt},
                                 ],
                                 temperature=0.1,
-                                max_tokens=4000,
+                                max_tokens=8000,  # doubled — prevents JSON truncation on rich docs
                                 response_format={"type": "json_object"},
                             )
                             break
@@ -543,11 +546,33 @@ async def _run_extraction(document_ids: list[str] | None):
                                 logger.warning(f"DeepSeek API error (attempt {attempt+1}/3), retrying in {wait}s: {api_err}")
                                 await asyncio.sleep(wait)
                             else:
-                                raise
+                                logger.error(f"Doc {doc_file_id} section {section_idx+1}: API failed after 3 attempts: {api_err}")
+                                section_failures += 1
+                                response = None
 
-                    section_content = response.choices[0].message.content
-                    section_data = json.loads(section_content)
-                    section_extraction = _parse_llm_response(section_data)
+                    if response is None:
+                        continue  # skip this section, try next
+
+                    # Parse response — JSON errors happen when DeepSeek returns truncated/malformed output
+                    section_content = response.choices[0].message.content or ""
+                    finish_reason = response.choices[0].finish_reason if response.choices else None
+                    try:
+                        section_data = json.loads(section_content)
+                        section_extraction = _parse_llm_response(section_data)
+                    except json.JSONDecodeError as je:
+                        logger.error(
+                            f"Doc {doc_file_id} section {section_idx+1}: JSON parse failed "
+                            f"(finish_reason={finish_reason}, len={len(section_content)}, "
+                            f"last 100 chars={section_content[-100:]!r}): {je}"
+                        )
+                        section_failures += 1
+                        continue  # skip this section, try next
+                    except Exception as pe:
+                        logger.error(
+                            f"Doc {doc_file_id} section {section_idx+1}: parse_llm_response failed: {pe}"
+                        )
+                        section_failures += 1
+                        continue
 
                     merged_persons.extend(section_extraction.persons)
                     merged_companies.extend(section_extraction.companies)
@@ -555,6 +580,13 @@ async def _run_extraction(document_ids: list[str] | None):
                     merged_domains.extend(section_extraction.domains)
                     merged_relationships.extend(section_extraction.relationships)
                     merged_raw_outputs.append(section_data)
+
+                # If ALL sections failed, raise to mark doc as failed
+                if section_failures == len(sections) and not merged_persons and not merged_raw_outputs:
+                    raise RuntimeError(
+                        f"All {len(sections)} section(s) failed to parse "
+                        f"(likely JSON truncation or API errors)"
+                    )
 
                 # Deduplicate by Hebrew name (keep first occurrence)
                 def _dedupe_by_name(items):
