@@ -418,18 +418,23 @@ async def run_bulk_ckan_import(query: str) -> dict:
         imported_at = now_israel().isoformat()
 
         while offset < total_datasets:
+            if not _import_state["running"]:
+                logger.info("Bulk import stopped externally")
+                break
             try:
                 datasets = await client.search_datasets(query=query, rows=page_size, start=offset)
                 if not datasets:
                     break
 
-                async with bg_session_factory() as session:
-                    for ds in datasets:
-                        docs = client.extract_documents(ds)
-                        _import_state["total"] += len(docs)
+                # Commit per-document (not per-page) so crashes mid-page
+                # don't lose already-imported docs. Each doc gets its own session.
+                for ds in datasets:
+                    docs = client.extract_documents(ds)
+                    _import_state["total"] += len(docs)
 
-                        for doc in docs:
-                            try:
+                    for doc in docs:
+                        try:
+                            async with bg_session_factory() as session:
                                 # Check if already imported
                                 existing = await session.execute(
                                     select(Document).where(Document.file_url == doc.file_url)
@@ -457,12 +462,13 @@ async def run_bulk_ckan_import(query: str) -> dict:
                                     if len(_import_state["error_messages"]) < 50:
                                         _import_state["error_messages"].append(msg)
 
-                            except Exception as e:
-                                _import_state["errors"] += 1
-                                if len(_import_state["error_messages"]) < 50:
-                                    _import_state["error_messages"].append(f"{doc.title[:40]}: {e}")
+                                # Commit this doc — if server crashes here, only this doc is lost
+                                await session.commit()
 
-                    await session.commit()
+                        except Exception as e:
+                            _import_state["errors"] += 1
+                            if len(_import_state["error_messages"]) < 50:
+                                _import_state["error_messages"].append(f"{doc.title[:40]}: {e}")
 
             except Exception as e:
                 _import_state["errors"] += 1
