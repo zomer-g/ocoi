@@ -299,10 +299,12 @@ async def import_ckan_resources(resource_urls: list[dict]) -> dict:
     return stats
 
 
-async def _import_single_ckan_doc(session, doc, ds, imported_at: str, stats: dict):
+async def _import_single_ckan_doc(session, doc, ds, imported_at: str, stats: dict, *, skip_conversion: bool = False):
     """Import a single CKAN document: download PDF, convert to markdown, save to DB.
 
     ALWAYS saves the document record and PDF bytes, even if conversion fails.
+    If skip_conversion=True, marks as pending and defers conversion to reconvert-all
+    (used by bulk import to reduce memory pressure on 512MB Render).
     User can reconvert later with OCR.
     """
     # PDF-only gate (defense-in-depth; client-side filter should catch most)
@@ -332,9 +334,9 @@ async def _import_single_ckan_doc(session, doc, ds, imported_at: str, stats: dic
             stats["skipped"] += 1
             return
 
-    # Try to convert (without OCR during import — too slow for bulk)
+    # Convert to markdown (skipped in bulk mode to save memory on 512MB Render)
     md_text = None
-    if pdf_bytes:
+    if pdf_bytes and not skip_conversion:
         from ocoi_api.services.pdf_converter import convert_pdf_bytes
         md_text = convert_pdf_bytes(pdf_bytes, doc.title[:50])
 
@@ -374,7 +376,9 @@ async def _import_single_ckan_doc(session, doc, ds, imported_at: str, stats: dic
         db_doc.conversion_status = "converted"
         db_doc.converted_at = now_israel_naive()
     elif pdf_bytes:
-        db_doc.conversion_status = "no_text"  # PDF stored, needs OCR
+        # PDF stored but not yet converted — either skip_conversion=True
+        # (bulk mode), or conversion produced no text (needs OCR)
+        db_doc.conversion_status = "pending" if skip_conversion else "no_text"
     else:
         db_doc.conversion_status = "failed"  # Download failed
 
@@ -454,7 +458,10 @@ async def run_bulk_ckan_import(query: str) -> dict:
 
                                 _import_state["new_to_import"] += 1
                                 stats_tmp = {"imported": 0, "skipped": 0, "errors": 0, "error_messages": []}
-                                await _import_single_ckan_doc(session, doc, ds, imported_at, stats_tmp)
+                                # skip_conversion=True: bulk imports thousands; running pdftotext
+                                # per doc adds memory + CPU pressure. User triggers reconvert-all
+                                # (which processes one at a time with asyncio.to_thread) afterward.
+                                await _import_single_ckan_doc(session, doc, ds, imported_at, stats_tmp, skip_conversion=True)
                                 _import_state["imported"] += stats_tmp["imported"]
                                 _import_state["skipped"] += stats_tmp["skipped"]
                                 _import_state["errors"] += stats_tmp["errors"]
