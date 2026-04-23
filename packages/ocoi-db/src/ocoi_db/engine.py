@@ -18,12 +18,16 @@ connect_args = {}
 if _is_sqlite(settings.database_url):
     connect_args = {"check_same_thread": False}
 elif _is_postgres(settings.database_url):
-    # Set session timezone to Israel so func.now() returns Israel time.
-    # command_timeout ensures stuck queries don't block connections forever.
-    connect_args = {
-        "server_settings": {"timezone": "Asia/Jerusalem"},
-        "command_timeout": 30,  # per-query max 30s — fail fast on stuck queries
-    }
+    # Set session timezone to Israel so func.now() returns Israel time
+    connect_args = {"server_settings": {"timezone": "Asia/Jerusalem"}}
+
+# Common pool-hygiene args for both engines:
+# pool_pre_ping=True: validate connection before use (detects broken pools)
+# pool_recycle=1800: refresh connections every 30min (prevents stale conns)
+_POOL_KWARGS = {
+    "pool_pre_ping": True,
+    "pool_recycle": 1800,
+}
 
 # Foreground engine — small pool dedicated to API requests.
 # Separated from background work so bulk import/extraction can't starve API.
@@ -33,9 +37,8 @@ async_engine = create_async_engine(
     connect_args=connect_args,
     pool_size=5,
     max_overflow=5,
-    pool_pre_ping=True,  # validate connection before use (recovers from broken pool)
-    pool_recycle=1800,  # recycle connections every 30 min (prevents stale conns)
     pool_timeout=10,  # fail fast if pool exhausted (don't hang API requests)
+    **_POOL_KWARGS,
 )
 async_session_factory = async_sessionmaker(
     async_engine, class_=AsyncSession, expire_on_commit=False
@@ -49,9 +52,8 @@ async_engine_bg = create_async_engine(
     connect_args=connect_args,
     pool_size=3,
     max_overflow=5,
-    pool_pre_ping=True,
-    pool_recycle=1800,
     pool_timeout=60,  # background tasks can wait longer
+    **_POOL_KWARGS,
 )
 # Background task session factory — expires objects on commit to free memory
 bg_session_factory = async_sessionmaker(
