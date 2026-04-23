@@ -1399,6 +1399,7 @@ async def ckan_import(body: dict):
 async def ckan_bulk_import(body: dict, background_tasks: BackgroundTasks):
     """Import ALL CKAN resources matching a query. Runs as background task."""
     from ocoi_api.services.import_service import run_bulk_ckan_import, get_import_status
+    from ocoi_api.services.extraction_service import get_extraction_status
 
     query = body.get("query", "")
     if not query:
@@ -1407,6 +1408,11 @@ async def ckan_bulk_import(body: dict, background_tasks: BackgroundTasks):
     status = get_import_status()
     if status["running"]:
         raise HTTPException(409, "ייבוא כבר רץ — נסה שוב אחרי שיסתיים")
+
+    # Prevent running alongside extraction — both together push past 512MB on Render
+    ext_status = get_extraction_status()
+    if ext_status.get("running"):
+        raise HTTPException(409, "חילוץ ישויות רץ כרגע — חכה שיסתיים לפני התחלת ייבוא חדש")
 
     background_tasks.add_task(run_bulk_ckan_import, query)
     return {"status": "ok", "message": f"ייבוא מתחיל עבור חיפוש: {query}"}
@@ -1624,9 +1630,14 @@ async def update_prompt(body: dict):
 async def trigger_extraction(body: dict = {}):
     import asyncio
     from ocoi_api.services.extraction_service import get_extraction_status, run_extraction
+    from ocoi_api.services.import_service import get_import_status
     status = get_extraction_status()
     if status["running"]:
         raise HTTPException(409, "Extraction already running")
+    # Prevent running alongside bulk import — both together push past 512MB on Render
+    imp_status = get_import_status()
+    if imp_status.get("running"):
+        raise HTTPException(409, "ייבוא רץ כרגע — חכה שיסתיים לפני התחלת חילוץ")
     document_ids = body.get("document_ids")
     asyncio.create_task(run_extraction(document_ids))
     return {"status": "ok", "message": "Extraction started"}

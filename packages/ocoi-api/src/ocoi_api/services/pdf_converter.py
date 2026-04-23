@@ -62,10 +62,11 @@ def _get_page_count(pdf_path: Path) -> int:
     return 0
 
 
-def _ocr_pdf(pdf_path: Path, *, max_pages: int = 8) -> str | None:
+def _ocr_pdf(pdf_path: Path, *, max_pages: int = 4) -> str | None:
     """OCR a scanned PDF using pdftoppm + tesseract (page by page to save memory).
 
-    max_pages limits how many pages to OCR (keeps memory bounded on 512MB Render).
+    max_pages limits how many pages to OCR — kept at 4 to fit inside 512MB Render
+    when extraction may run concurrently with imports.
     """
     if not _has_tool("pdftoppm") or not _has_tool("tesseract"):
         logger.warning("pdftoppm or tesseract not installed — cannot OCR scanned PDFs")
@@ -84,7 +85,7 @@ def _ocr_pdf(pdf_path: Path, *, max_pages: int = 8) -> str | None:
                 ppm_prefix = os.path.join(tmpdir, f"page")
                 result = subprocess.run(
                     ["pdftoppm", "-f", str(page_num), "-l", str(page_num),
-                     "-r", "150", "-gray", str(pdf_path), ppm_prefix],
+                     "-r", "120", "-gray", str(pdf_path), ppm_prefix],
                     capture_output=True, timeout=30,
                 )
                 if result.returncode != 0:
