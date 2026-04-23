@@ -321,16 +321,35 @@ async def _import_single_ckan_doc(session, doc, ds, imported_at: str, stats: dic
         stats["skipped"] += 1
         return
 
+    # Check if this URL is already in the ignore list (prevents re-showing it in search)
+    already_ignored_q = await session.execute(
+        select(IgnoredResource).where(IgnoredResource.file_url == doc.file_url)
+    )
+    if already_ignored_q.scalars().first():
+        stats["skipped"] += 1
+        return
+
     # Download PDF
     pdf_bytes, download_error = await download_pdf(doc.file_url, doc.title[:50])
 
-    # Check duplicate by content hash
+    # Check duplicate by content hash (different URL pointing to same content)
     content_hash = None
     if pdf_bytes:
         content_hash = _compute_content_hash(pdf_bytes)
         dup = await check_duplicate(session, content_hash=content_hash)
         if dup:
             logger.info(f"Duplicate content hash for '{doc.title[:50]}' — matches doc {dup.id}")
+            # Add this duplicate URL to IgnoredResource so future searches hide it.
+            # CKAN often exposes the same PDF under multiple datasets with different URLs;
+            # without this, the user keeps seeing "already imported content" in search results.
+            try:
+                session.add(IgnoredResource(
+                    file_url=doc.file_url,
+                    title=doc.title[:200] if doc.title else None,
+                ))
+                # No need to commit here — caller commits the session
+            except Exception as ignore_err:
+                logger.debug(f"Failed to add hash-dup URL to ignore list: {ignore_err}")
             stats["skipped"] += 1
             return
 
