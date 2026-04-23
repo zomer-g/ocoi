@@ -171,6 +171,28 @@ def create_app() -> FastAPI:
     async def health():
         return {"status": "ok"}
 
+    @app.get("/api/db-health", include_in_schema=False)
+    async def db_health():
+        """Diagnostic: try a trivial DB query, return exact error on failure."""
+        import traceback
+        from ocoi_db.engine import async_session_factory
+        from sqlalchemy import text as sa_text
+        try:
+            async with async_session_factory() as session:
+                result = await session.execute(sa_text("SELECT 1"))
+                val = result.scalar()
+            return {"status": "ok", "db": "reachable", "select_1": val}
+        except Exception as e:
+            return JSONResponse(
+                {
+                    "status": "error",
+                    "error_type": type(e).__name__,
+                    "error_msg": str(e)[:1000],
+                    "traceback": traceback.format_exc()[:3000],
+                },
+                status_code=500,
+            )
+
     # ── Admin-only full OpenAPI schema + Swagger UI ────────────────────
     @app.get("/api/openapi.json", include_in_schema=False)
     async def full_openapi_schema(request: Request):
