@@ -35,10 +35,12 @@ _import_state: dict = {
 }
 
 
-# Render's free-tier Postgres caps at 1 GB. Past ~90% Render emails a warning; past
-# 100% it suspends the database. We refuse to start a bulk import past this threshold
-# so a half-full import doesn't push us over and trigger a suspend.
-_DB_STORAGE_LIMIT_BYTES = 900 * 1024 * 1024  # 900 MB
+# Refuse to start a bulk import once the Postgres data directory is near the plan's
+# storage cap — Render auto-suspends the DB once the cap is exceeded, which is how the
+# original outage happened. Tune via DB_STORAGE_LIMIT_MB (default 4500 MB ≈ 90% of the
+# current 5 GB Basic plan; bump in env when you resize the plan).
+import os as _os
+_DB_STORAGE_LIMIT_BYTES = int(_os.environ.get("DB_STORAGE_LIMIT_MB", "4500")) * 1024 * 1024
 
 
 class DBStoragePressureError(RuntimeError):
