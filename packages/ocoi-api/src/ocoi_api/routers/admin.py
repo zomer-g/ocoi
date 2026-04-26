@@ -760,9 +760,9 @@ async def _resolve_pdf_path(doc: Document, httpx_mod, db: AsyncSession | None = 
         settings.pdf_dir.mkdir(parents=True, exist_ok=True)
         pdf_path.write_bytes(pdf_bytes)
 
-        # Store in DB for persistence
+        # External-source PDF: keep file_size metadata only; the blob is re-fetchable from
+        # file_url, and storing it in Postgres exhausts the Render 1 GB limit.
         if db:
-            doc.pdf_content = pdf_bytes
             doc.file_size = len(pdf_bytes)
 
         return pdf_path
@@ -879,8 +879,8 @@ async def _reconvert_all_bg():
                                             tmp.write(resp.content)
                                             tmp_path = Path(tmp.name)
                                         pdf_path = tmp_path
-                                        # Store in DB for persistence
-                                        doc.pdf_content = resp.content
+                                        # External-source: metadata only, blob is re-fetchable
+                                        # (storing it filled Render's 1 GB Postgres).
                                         doc.file_size = len(resp.content)
                                 except Exception as exc:
                                     logger.warning(f"Download failed for reconvert '{doc.title[:50]}': {exc}")
@@ -932,84 +932,14 @@ async def _reconvert_all_bg():
 
 
 @router.post("/documents/backfill-pdf")
-async def backfill_pdf(background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
-    """Download and store PDFs for documents that are missing pdf_content."""
-    result = await db.execute(
-        select(func.count()).select_from(Document).where(
-            Document.pdf_content.is_(None),
-            Document.file_url.isnot(None),
-            ~Document.file_url.startswith("upload://"),
-        )
+async def backfill_pdf():
+    """Disabled: storing PDF blobs in Postgres exhausted Render's 1 GB DB limit and
+    suspended the database. PDFs are re-fetched on demand from file_url instead."""
+    raise HTTPException(
+        410,
+        "PDF backfill is disabled — pdf_content is no longer stored for external sources. "
+        "PDFs are fetched on demand from file_url.",
     )
-    count = result.scalar() or 0
-    if count == 0:
-        return {"status": "ok", "message": "No documents missing PDF content"}
-
-    background_tasks.add_task(_backfill_pdf_bg)
-    return {"status": "ok", "message": f"Backfilling PDFs for {count} documents"}
-
-
-async def _backfill_pdf_bg():
-    """Download PDFs for documents missing pdf_content, then reconvert."""
-    import gc
-    import hashlib
-    import httpx as _httpx
-
-    from ocoi_api.services.pdf_converter import convert_pdf_bytes
-    import logging
-    _log = logging.getLogger("ocoi.api.backfill")
-
-    # Phase 1: Get IDs only (no BLOBs loaded)
-    async with bg_session_factory() as db:
-        result = await db.execute(
-            select(Document.id).where(
-                Document.pdf_content.is_(None),
-                Document.file_url.isnot(None),
-                ~Document.file_url.startswith("upload://"),
-            )
-        )
-        doc_ids = [r[0] for r in result.all()]
-    _log.info(f"Backfilling PDFs for {len(doc_ids)} documents")
-
-    # Phase 2: Process one at a time in fresh sessions
-    for i, doc_id in enumerate(doc_ids):
-        try:
-            async with bg_session_factory() as db:
-                result = await db.execute(select(Document).where(Document.id == doc_id))
-                doc = result.scalars().first()
-                if not doc:
-                    continue
-
-                async with _httpx.AsyncClient(timeout=60, follow_redirects=True) as http:
-                    resp = await http.get(doc.file_url)
-                    resp.raise_for_status()
-                pdf_bytes = resp.content
-
-                if not pdf_bytes or not pdf_bytes[:5].startswith(b"%PDF"):
-                    _log.warning(f"Not a PDF for '{doc.title[:40]}': {pdf_bytes[:20]!r}")
-                    continue
-
-                doc.pdf_content = pdf_bytes
-                doc.file_size = len(pdf_bytes)
-                doc.content_hash = hashlib.sha256(pdf_bytes).hexdigest()
-
-                # Try conversion
-                md_text = convert_pdf_bytes(pdf_bytes, str(doc.id))
-                if md_text:
-                    doc.markdown_content = md_text
-                    doc.conversion_status = "converted"
-                    doc.converted_at = now_israel_naive()
-                    _log.info(f"Backfilled + converted '{doc.title[:40]}': {len(md_text)} chars")
-                else:
-                    doc.conversion_status = "no_text"
-                    _log.info(f"Backfilled PDF for '{doc.title[:40]}' (no embedded text)")
-
-                await db.commit()
-        except Exception as e:
-            _log.warning(f"Backfill failed for doc {doc_id}: {e}")
-        gc.collect()
-
-    _log.info(f"Backfill complete: processed {len(doc_ids)} documents")
 
 
 @router.delete("/documents/purge/metadata-only")
@@ -1227,7 +1157,14 @@ async def _batch_reconvert_bg(document_ids: list[str]):
                     doc.markdown_content = md_text
                     doc.conversion_status = "converted"
                     doc.converted_at = now_israel_naive()
-                    if not doc.pdf_content and pdf_path.exists():
+                    # Only persist the blob for user uploads (no external file_url to
+                    # re-fetch from). External-source rows leave pdf_content NULL to
+                    # keep Postgres storage flat.
+                    if (
+                        not doc.pdf_content
+                        and pdf_path.exists()
+                        and (doc.file_url or "").startswith("upload://")
+                    ):
                         doc.pdf_content = pdf_path.read_bytes()
                 else:
                     doc.conversion_status = "no_text"
@@ -1321,8 +1258,12 @@ async def reconvert_document(doc_id: uuid.UUID, db: AsyncSession = Depends(get_d
     doc.markdown_content = md_text
     doc.conversion_status = "converted"
     doc.converted_at = now_israel_naive()
-    # Store PDF in DB if not already there
-    if not doc.pdf_content and pdf_path.exists():
+    # Only persist the blob for user uploads — external sources are re-fetchable.
+    if (
+        not doc.pdf_content
+        and pdf_path.exists()
+        and (doc.file_url or "").startswith("upload://")
+    ):
         doc.pdf_content = pdf_path.read_bytes()
     await db.commit()
 

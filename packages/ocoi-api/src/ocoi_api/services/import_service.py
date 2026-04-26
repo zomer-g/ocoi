@@ -35,6 +35,41 @@ _import_state: dict = {
 }
 
 
+# Render's free-tier Postgres caps at 1 GB. Past ~90% Render emails a warning; past
+# 100% it suspends the database. We refuse to start a bulk import past this threshold
+# so a half-full import doesn't push us over and trigger a suspend.
+_DB_STORAGE_LIMIT_BYTES = 900 * 1024 * 1024  # 900 MB
+
+
+class DBStoragePressureError(RuntimeError):
+    """Raised by _check_db_storage_pressure when DB size exceeds the soft limit."""
+
+
+async def _check_db_storage_pressure() -> None:
+    """Abort if Postgres database size exceeds _DB_STORAGE_LIMIT_BYTES.
+
+    No-op for SQLite (the size function doesn't exist there). Any error during the
+    check is logged but not raised — we'd rather let the import attempt than block
+    on a flaky size query.
+    """
+    if "postgresql" not in settings.database_url and "postgres" not in settings.database_url:
+        return
+    from sqlalchemy import text as _sa_text
+    try:
+        async with async_session_factory() as session:
+            result = await session.execute(_sa_text("SELECT pg_database_size(current_database())"))
+            size = int(result.scalar() or 0)
+    except Exception as e:
+        logger.warning(f"DB size pre-check failed, proceeding anyway: {e}")
+        return
+    if size >= _DB_STORAGE_LIMIT_BYTES:
+        mb = size // (1024 * 1024)
+        raise DBStoragePressureError(
+            f"DB size {mb} MB exceeds {_DB_STORAGE_LIMIT_BYTES // (1024*1024)} MB soft limit; "
+            "free space before importing more (see plan)."
+        )
+
+
 def get_import_status() -> dict:
     """Return a snapshot of the current import state."""
     return dict(_import_state)
@@ -214,6 +249,11 @@ async def import_ckan_datasets(dataset_ids: list[str]) -> dict:
     """Import ALL resources from specific CKAN datasets by their IDs."""
     from ocoi_importer.ckan_client import CkanClient
 
+    try:
+        await _check_db_storage_pressure()
+    except DBStoragePressureError as e:
+        return {"imported": 0, "skipped": 0, "errors": 1, "error_messages": [str(e)]}
+
     client = CkanClient()
     imported_at = now_israel().isoformat()
     stats = {"imported": 0, "skipped": 0, "errors": 0, "error_messages": []}
@@ -249,6 +289,11 @@ async def import_ckan_resources(resource_urls: list[dict]) -> dict:
     Each item in resource_urls should have: dataset_id, url, title, format, size.
     """
     from ocoi_importer.ckan_client import CkanClient
+
+    try:
+        await _check_db_storage_pressure()
+    except DBStoragePressureError as e:
+        return {"imported": 0, "skipped": 0, "errors": 1, "error_messages": [str(e)]}
 
     client = CkanClient()
     imported_at = now_israel().isoformat()
@@ -383,9 +428,9 @@ async def _import_single_ckan_doc(session, doc, ds, imported_at: str, stats: dic
         file_size=doc.file_size,
     )
 
-    # Store PDF bytes in DB for persistence on Render
+    # External-source imports: keep metadata only; PDF is re-fetchable from file_url.
+    # Storing the blob inline blew past Render's 1 GB Postgres limit.
     if pdf_bytes:
-        db_doc.pdf_content = pdf_bytes
         db_doc.content_hash = content_hash
         db_doc.file_size = len(pdf_bytes)
 
@@ -415,6 +460,11 @@ async def run_bulk_ckan_import(query: str) -> dict:
     global _import_state
     if _import_state["running"]:
         return {"status": "error", "message": "Import already running"}
+
+    try:
+        await _check_db_storage_pressure()
+    except DBStoragePressureError as e:
+        return {"status": "error", "message": str(e)}
 
     _import_state.update({
         "running": True,
@@ -524,6 +574,11 @@ async def run_govil_import(limit: int = 0, url: str = "") -> dict:
     if _import_state["running"]:
         return {"status": "error", "message": "Import already running"}
 
+    try:
+        await _check_db_storage_pressure()
+    except DBStoragePressureError as e:
+        return {"status": "error", "message": str(e)}
+
     _import_state.update({
         "running": True,
         "source": "govil",
@@ -557,6 +612,11 @@ async def run_govil_with_records(raw_items: list[dict]) -> dict:
 
     if _import_state["running"]:
         return {"status": "error", "message": "Import already running"}
+
+    try:
+        await _check_db_storage_pressure()
+    except DBStoragePressureError as e:
+        return {"status": "error", "message": str(e)}
 
     _import_state.update({
         "running": True,
@@ -717,7 +777,7 @@ async def _process_new_records(client, new_records: list) -> None:
                 )
 
                 if pdf_bytes:
-                    db_doc.pdf_content = pdf_bytes
+                    # Metadata only — PDF is re-fetchable from file_url; see import_ckan_resources.
                     db_doc.content_hash = content_hash
                     db_doc.file_size = len(pdf_bytes)
 
