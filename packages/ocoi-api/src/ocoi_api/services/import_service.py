@@ -12,7 +12,7 @@ from ocoi_common.config import settings
 from ocoi_common.models import ImportedDocument, OdataRecord
 from ocoi_db.engine import async_session_factory, bg_session_factory
 from ocoi_db.crud import get_or_create_source, create_document
-from ocoi_db.models import Document, IgnoredResource
+from ocoi_db.models import Document, IgnoredResource, Source
 
 logger = logging.getLogger("ocoi.api.import")
 
@@ -650,12 +650,34 @@ async def _persist_odata_record(
 
     content_hash = _compute_content_hash(pdf_bytes)
 
+    # ── Dedup step 1: byte-level (catches identical PDFs from any source) ──
     async with bg_session_factory() as dup_session:
         dup = await check_duplicate(dup_session, content_hash=content_hash)
     if dup is not None:
         _import_state["skipped"] += 1
         _import_state["already_in_db"] += 1
         return
+
+    # ── Dedup step 2: cross-source metadata dedup ─────────────────────────
+    # The legacy gov.il importer keyed each Source row by
+    # f"govil_{name}_{date or 'unknown'}". The odata snapshot is just a
+    # mirror of those same documents — if the bytes happen to differ
+    # (the snapshot tool may have re-encoded the PDF) the byte-level check
+    # above will miss them, but the (name, date) tuple is identical. Treat
+    # any matching legacy row as a duplicate so we never end up with two
+    # records for the same person+date across the two importers.
+    legacy_source_id = f"govil_{rec.name}_{rec.date or 'unknown'}"
+    async with bg_session_factory() as legacy_session:
+        legacy_q = await legacy_session.execute(
+            select(Source.id).where(
+                Source.source_type == "govil",
+                Source.source_id == legacy_source_id,
+            ).limit(1)
+        )
+        if legacy_q.scalar_one_or_none() is not None:
+            _import_state["skipped"] += 1
+            _import_state["already_in_db"] += 1
+            return
 
     title = rec.pdf_filename.removesuffix(".pdf") if rec.pdf_filename else rec.name
     listing_url = listing_url_fn(rec.url_name) if rec.url_name else dataset_page_url
