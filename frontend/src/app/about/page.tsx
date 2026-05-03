@@ -2,6 +2,109 @@
 
 import { useEffect, useState } from "react";
 
+// Heuristic: if there's no obvious HTML tag but there are markdown markers,
+// treat content as markdown.
+function looksLikeMarkdown(s: string): boolean {
+  const trimmed = s.trim();
+  if (!trimmed) return false;
+  const hasHtmlTag = /<\s*(h[1-6]|p|ul|ol|li|div|span|a|strong|em|br)\b/i.test(trimmed);
+  if (hasHtmlTag) return false;
+  const hasMdMarker =
+    /(^|\n)\s*#{1,6}\s/.test(trimmed) || // headings
+    /(^|\n)\s*-\s/.test(trimmed) || // list items
+    /\*\*[^*]+\*\*/.test(trimmed) || // bold
+    /\[[^\]]+\]\([^)]+\)/.test(trimmed); // links
+  return hasMdMarker;
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+// Apply inline markdown (bold, links) to a single text run. The input is
+// already HTML-escaped.
+function renderInline(s: string): string {
+  // Links: [text](url) — handles nested-bracket case [[text](u1)](u2) by
+  // greedily collapsing to the outermost url.
+  s = s.replace(/\[([^\]]*?(?:\[[^\]]*\]\([^)]+\)[^\]]*)?)\]\(([^)]+)\)/g, (_m, text: string, href: string) => {
+    // If the inner text itself contains a markdown link, strip it down to
+    // its label so we don't render two anchor tags inside one another.
+    const cleanText = text.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
+    const isExternal = /^https?:\/\//i.test(href);
+    const attrs = isExternal ? ' target="_blank" rel="noopener noreferrer"' : "";
+    return `<a href="${href}"${attrs}>${cleanText}</a>`;
+  });
+  // Bold: **text**
+  s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  return s;
+}
+
+function renderMarkdown(src: string): string {
+  const lines = src.replace(/\r\n?/g, "\n").split("\n");
+  const out: string[] = [];
+  let i = 0;
+  let paraBuf: string[] = [];
+  let listBuf: string[] = [];
+
+  const flushPara = () => {
+    if (paraBuf.length) {
+      const text = paraBuf.join(" ").trim();
+      if (text) out.push(`<p>${renderInline(escapeHtml(text))}</p>`);
+      paraBuf = [];
+    }
+  };
+  const flushList = () => {
+    if (listBuf.length) {
+      const items = listBuf
+        .map((it) => `<li>${renderInline(escapeHtml(it))}</li>`)
+        .join("");
+      out.push(`<ul>${items}</ul>`);
+      listBuf = [];
+    }
+  };
+
+  while (i < lines.length) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      flushPara();
+      flushList();
+      i++;
+      continue;
+    }
+
+    const heading = /^(#{1,6})\s+(.*)$/.exec(trimmed);
+    if (heading) {
+      flushPara();
+      flushList();
+      const level = heading[1].length;
+      out.push(`<h${level}>${renderInline(escapeHtml(heading[2]))}</h${level}>`);
+      i++;
+      continue;
+    }
+
+    const listItem = /^[-*]\s+(.*)$/.exec(trimmed);
+    if (listItem) {
+      flushPara();
+      listBuf.push(listItem[1]);
+      i++;
+      continue;
+    }
+
+    flushList();
+    paraBuf.push(trimmed);
+    i++;
+  }
+  flushPara();
+  flushList();
+
+  return out.join("\n");
+}
+
 const DEFAULT_ABOUT_HTML = `
 <h1>אודות הפרויקט "ניגוד עניינים לעם"</h1>
 
@@ -72,7 +175,8 @@ export default function AboutPage() {
       .finally(() => setLoading(false));
   }, []);
 
-  const html = content || DEFAULT_ABOUT_HTML;
+  const raw = content || DEFAULT_ABOUT_HTML;
+  const html = looksLikeMarkdown(raw) ? renderMarkdown(raw) : raw;
 
   return (
     <>
