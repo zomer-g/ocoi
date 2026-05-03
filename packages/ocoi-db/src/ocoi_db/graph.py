@@ -171,29 +171,43 @@ async def find_showcase_pair(session: AsyncSession) -> SubGraph | None:
     """
 
     # ── Pair selection ───────────────────────────────────────────────────
-    # Pick the pair of persons with the most shared hubs. Ordering by
-    # (shared, p1, p2) is deterministic across requests.
-    pair_q = text("""
-        SELECT a.source_entity_id AS p1,
-               b.source_entity_id AS p2,
-               COUNT(*)          AS shared_count
-        FROM entity_relationships a
-        JOIN entity_relationships b
-          ON a.target_entity_type = b.target_entity_type
-         AND a.target_entity_id   = b.target_entity_id
-         AND a.source_entity_id   < b.source_entity_id
-        WHERE a.source_entity_type = 'person'
-          AND b.source_entity_type = 'person'
-          AND a.target_entity_type IN ('company', 'association', 'domain')
-        GROUP BY a.source_entity_id, b.source_entity_id
-        ORDER BY shared_count DESC, p1, p2
+    # Cheap two-step lookup that avoids a self-join over the whole table:
+    #   1. Pick the most-connected hub (most distinct persons attached).
+    #   2. Take any two of those persons. They are guaranteed to share at
+    #      least that hub; they may share more, which the neighbourhood
+    #      union below will surface naturally.
+    hub_pick_q = text("""
+        SELECT target_entity_type AS hub_type,
+               target_entity_id   AS hub_id
+        FROM entity_relationships
+        WHERE source_entity_type = 'person'
+          AND target_entity_type IN ('company', 'association', 'domain')
+        GROUP BY target_entity_type, target_entity_id
+        HAVING COUNT(DISTINCT source_entity_id) >= 2
+        ORDER BY COUNT(DISTINCT source_entity_id) DESC,
+                 target_entity_id
         LIMIT 1
     """)
-    pair_row = (await session.execute(pair_q)).fetchone()
+    hub_pick = (await session.execute(hub_pick_q)).fetchone()
 
-    if pair_row:
-        p1 = str(pair_row[0])
-        p2 = str(pair_row[1])
+    p1: str | None = None
+    p2: str | None = None
+    if hub_pick:
+        ht, hi = hub_pick
+        person_rows = (await session.execute(text("""
+            SELECT DISTINCT source_entity_id
+            FROM entity_relationships
+            WHERE source_entity_type = 'person'
+              AND target_entity_type = :ht
+              AND target_entity_id   = :hi
+            ORDER BY source_entity_id
+            LIMIT 2
+        """), {"ht": ht, "hi": str(hi)})).fetchall()
+        if len(person_rows) >= 2:
+            p1 = str(person_rows[0][0])
+            p2 = str(person_rows[1][0])
+
+    if p1 and p2:
         # Pull every relationship that touches either person (in either
         # direction). Then we'll trim the neighbourhood to keep the picture
         # legible.
