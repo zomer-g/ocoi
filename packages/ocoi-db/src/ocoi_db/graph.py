@@ -186,24 +186,46 @@ async def find_showcase_pair(session: AsyncSession) -> SubGraph | None:
 
     if hub_row:
         hub_type, hub_id, _ = hub_row
-        edges_q = text("""
-            SELECT r.source_entity_type, r.source_entity_id,
-                   r.target_entity_type, r.target_entity_id,
-                   r.relationship_type, r.details,
-                   r.document_id, d.title AS doc_title, d.file_url AS doc_url
-            FROM entity_relationships r
-            LEFT JOIN documents d ON d.id = r.document_id
-            WHERE r.source_entity_type = 'person'
-              AND r.target_entity_type = :hub_type
-              AND r.target_entity_id   = :hub_id
-            ORDER BY r.created_at, r.id
+        # Step 1: pick two distinct person ids attached to the hub.
+        persons_q = text("""
+            SELECT DISTINCT source_entity_id
+            FROM entity_relationships
+            WHERE source_entity_type = 'person'
+              AND target_entity_type = :hub_type
+              AND target_entity_id   = :hub_id
+            ORDER BY source_entity_id
             LIMIT 2
         """)
-        rows = (await session.execute(
-            edges_q, {"hub_type": hub_type, "hub_id": str(hub_id)}
+        person_rows = (await session.execute(
+            persons_q, {"hub_type": hub_type, "hub_id": str(hub_id)}
         )).fetchall()
-        if len(rows) >= 2:
-            return _build_subgraph_from_rows(rows)
+        if len(person_rows) >= 2:
+            person_ids = [str(r[0]) for r in person_rows]
+            # Step 2: pick one representative edge per person.
+            edge_q = text("""
+                SELECT r.source_entity_type, r.source_entity_id,
+                       r.target_entity_type, r.target_entity_id,
+                       r.relationship_type, r.details,
+                       r.document_id, d.title AS doc_title, d.file_url AS doc_url
+                FROM entity_relationships r
+                LEFT JOIN documents d ON d.id = r.document_id
+                WHERE r.source_entity_type = 'person'
+                  AND r.target_entity_type = :hub_type
+                  AND r.target_entity_id   = :hub_id
+                  AND r.source_entity_id   = :pid
+                ORDER BY r.created_at, r.id
+                LIMIT 1
+            """)
+            rows = []
+            for pid in person_ids:
+                res = await session.execute(
+                    edge_q, {"hub_type": hub_type, "hub_id": str(hub_id), "pid": pid}
+                )
+                row = res.fetchone()
+                if row:
+                    rows.append(row)
+            if len(rows) >= 2:
+                return _build_subgraph_from_rows(rows)
 
     # Fallback: any direct person→person edge.
     direct_q = text("""
