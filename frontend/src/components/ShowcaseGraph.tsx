@@ -43,13 +43,39 @@ export function ShowcaseGraph() {
 
   // Build a one-line caption summarising the showcase
   const persons = graph.nodes.filter((n) => n.entity_type === "person");
-  const hub = graph.nodes.find((n) => n.entity_type !== "person");
-  const caption =
-    persons.length >= 2 && hub
-      ? `${persons[0].name} ו־${persons[1].name} הצהירו שניהם על קשר ל${TYPE_LABEL_HE[hub.entity_type] || ""} ${hub.name}`
-      : persons.length >= 2
-      ? `${persons[0].name} ו־${persons[1].name} מקושרים זה לזה במסמך מוצהר`
-      : "דוגמה לקשר שמופיע במאגר";
+  const hubs = graph.nodes.filter((n) => n.entity_type !== "person");
+  // Bowtie: a single bridge person whose id appears as the source of edges
+  // pointing to two different hubs.
+  const sourceCounts = new Map<string, number>();
+  for (const e of graph.edges) {
+    if (e.source_type === "person") {
+      sourceCounts.set(e.source_id, (sourceCounts.get(e.source_id) || 0) + 1);
+    }
+  }
+  const bridgeId = [...sourceCounts.entries()].find(([, c]) => c >= 2)?.[0];
+  const bridge = bridgeId ? persons.find((p) => p.id === bridgeId) : undefined;
+  const otherPersons = bridge ? persons.filter((p) => p.id !== bridge.id) : persons;
+
+  let caption: string;
+  if (bridge && hubs.length >= 2 && otherPersons.length >= 2) {
+    const hubA = hubs[0];
+    const hubB = hubs[1];
+    caption =
+      `${bridge.name} הצהיר/ה על קשר ל${TYPE_LABEL_HE[hubA.entity_type] || ""} ${hubA.name} ` +
+      `ול${TYPE_LABEL_HE[hubB.entity_type] || ""} ${hubB.name} — שאליהם מקושרים גם ` +
+      `${otherPersons[0].name} ו־${otherPersons[1].name}`;
+  } else if (persons.length >= 2 && hubs.length >= 1) {
+    const hub = hubs[0];
+    const names = persons.slice(0, 3).map((p) => p.name).join(", ");
+    caption =
+      persons.length === 2
+        ? `${persons[0].name} ו־${persons[1].name} הצהירו שניהם על קשר ל${TYPE_LABEL_HE[hub.entity_type] || ""} ${hub.name}`
+        : `${names} ועוד הצהירו על קשר ל${TYPE_LABEL_HE[hub.entity_type] || ""} ${hub.name}`;
+  } else if (persons.length >= 2) {
+    caption = `${persons[0].name} ו־${persons[1].name} מקושרים זה לזה במסמך מוצהר`;
+  } else {
+    caption = "דוגמה לקשר שמופיע במאגר";
+  }
 
   return (
     <section className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 pt-8 pb-2">
