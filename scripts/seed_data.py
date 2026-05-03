@@ -37,7 +37,7 @@ async def seed():
         # Create a sample source
         src = await get_or_create_source(
             session,
-            source_type="govil",
+            source_type="odata",
             source_id="demo_source_1",
             title="הסדרי ניגוד עניינים - לדוגמה",
             url="https://www.gov.il/he/departments/dynamiccollectors/ministers_conflict",

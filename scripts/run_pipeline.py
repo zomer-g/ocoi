@@ -27,7 +27,7 @@ logger = setup_logging("ocoi.pipeline")
 @click.command()
 @click.option("--steps", default="all", help="Comma-separated: import,convert,extract,match,all")
 @click.option("--limit", type=int, default=0, help="Max documents per step (0=all)")
-@click.option("--source", default="all", help="Import source: ckan,govil,all")
+@click.option("--source", default="all", help="Import source: ckan,odata,all")
 def run_pipeline(steps: str, limit: int, source: str):
     """Run the full data processing pipeline."""
     settings.ensure_dirs()

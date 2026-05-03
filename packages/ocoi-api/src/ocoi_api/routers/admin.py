@@ -1396,99 +1396,25 @@ async def unignore_resources(body: dict, db: AsyncSession = Depends(get_db)):
     return {"status": "ok"}
 
 
-# ── Gov.il: automated bulk import ────────────────────────────────────────
-
-@router.post("/import/govil/proxy")
-async def govil_proxy(request: Request):
-    """Proxy a single Gov.il API page request via cloudscraper (Cloudflare bypass)."""
-    import asyncio
-    import json as json_mod
-    import cloudscraper
-    body = await request.json()
-    scraper = cloudscraper.create_scraper(
-        browser={"browser": "chrome", "platform": "windows", "desktop": True},
-        delay=10,
-    )
-    scraper.headers.update({
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Origin": "https://www.gov.il",
-        "Referer": "https://www.gov.il/he/departments/dynamiccollectors/ministers_conflict",
-    })
-    last_error = None
-    for attempt in range(3):
-        try:
-            if attempt == 0:
-                # Warm session by visiting the homepage first
-                await asyncio.to_thread(scraper.get, "https://www.gov.il/he")
-            elif attempt > 0:
-                await asyncio.sleep(2 * attempt)
-            resp = await asyncio.to_thread(
-                scraper.post,
-                "https://www.gov.il/he/api/DynamicCollector",
-                json=body,
-            )
-            if resp.status_code == 200:
-                return resp.json()
-            last_error = f"Status {resp.status_code}"
-        except Exception as e:
-            last_error = e
-    raise HTTPException(502, f"Gov.il API unavailable after 3 attempts: {last_error}")
+# ── odata.org.il: snapshot bulk import ───────────────────────────────────
 
 
-@router.get("/import/govil/cached")
-async def govil_cached():
-    """Return pre-fetched Gov.il records from data/govil_records.json if available."""
-    from ocoi_api.services.import_service import _load_cached_govil_records
-    records = _load_cached_govil_records()
-    if records is None:
-        raise HTTPException(404, "No cached Gov.il records found")
-    return {"status": "ok", "data": {"records": records, "count": len(records)}}
+@router.post("/import/odata/trigger")
+async def odata_trigger(background_tasks: BackgroundTasks):
+    """Kick off the odata.org.il snapshot import (3 ZIPs ≈ 346 PDFs).
 
-
-@router.post("/import/govil/trigger")
-async def govil_trigger(
-    request: Request,
-    background_tasks: BackgroundTasks,
-    limit: int = Query(0, ge=0),
-):
-    from ocoi_api.services.import_service import get_import_status, run_govil_import
+    The job runs in the background; clients poll `/import/status` for
+    progress. PDFs are stored inline in Document.pdf_content because the
+    snapshot ZIP is the only upstream source.
+    """
+    from ocoi_api.services.import_service import get_import_status, run_odata_import
 
     status = get_import_status()
     if status["running"]:
         raise HTTPException(409, "Import already running")
 
-    # Accept optional URL from request body
-    url = ""
-    try:
-        body = await request.json()
-        url = body.get("url", "")
-    except Exception:
-        pass
-
-    background_tasks.add_task(run_govil_import, limit=limit, url=url)
-    return {"status": "ok", "message": "Gov.il import started"}
-
-
-@router.post("/import/govil/submit")
-async def govil_submit(
-    request: Request,
-    background_tasks: BackgroundTasks,
-):
-    """Accept pre-fetched Gov.il API items from the browser and process them."""
-    from ocoi_api.services.import_service import get_import_status, run_govil_with_records
-
-    status = get_import_status()
-    if status["running"]:
-        raise HTTPException(409, "Import already running")
-
-    body = await request.json()
-    records = body.get("records", [])
-    if not records:
-        raise HTTPException(400, "No records provided")
-
-    background_tasks.add_task(run_govil_with_records, raw_items=records)
-    return {"status": "ok", "message": f"Processing {len(records)} records from browser"}
+    background_tasks.add_task(run_odata_import)
+    return {"status": "ok", "message": "odata.org.il import started"}
 
 
 @router.get("/import/status")

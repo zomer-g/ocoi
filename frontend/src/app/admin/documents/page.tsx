@@ -28,9 +28,12 @@ interface UploadItem {
 }
 
 const SOURCE_LABELS: Record<string, { label: string; color: string }> = {
-  govil: { label: "Gov.il", color: "bg-blue-50 text-blue-700 border-blue-200" },
+  odata: { label: "odata.org.il", color: "bg-blue-50 text-blue-700 border-blue-200" },
   ckan: { label: "CKAN", color: "bg-purple-50 text-purple-700 border-purple-200" },
   upload: { label: "העלאה", color: "bg-teal-50 text-teal-700 border-teal-200" },
+  // Legacy: documents imported from the old gov.il scraper still exist in the
+  // DB; keep this label so they don't render as a blank chip.
+  govil: { label: "Gov.il (ישן)", color: "bg-gray-50 text-gray-600 border-gray-200" },
 };
 
 const CONVERSION_BADGES: Record<string, { label: string; color: string }> = {
@@ -488,9 +491,10 @@ export default function DocumentsPage() {
           <div className="flex gap-1">
             {[
               { value: "", label: "הכל" },
-              { value: "govil", label: "Gov.il" },
+              { value: "odata", label: "odata.org.il" },
               { value: "ckan", label: "CKAN" },
               { value: "upload", label: "העלאה" },
+              { value: "govil", label: "Gov.il (ישן)" },
             ].map((s) => (
               <button
                 key={s.value}

@@ -83,8 +83,8 @@ class Settings(BaseSettings):
     ckan_base_url: str = "https://www.odata.org.il"
     ckan_search_query: str = "ניגוד עניינים"
 
-    # Gov.il source
-    govil_collector_url: str = "https://www.gov.il/he/api/DynamicCollector"
+    # odata.org.il snapshot dataset (replaces direct gov.il scraping)
+    odata_dataset_page: str = "https://www.odata.org.il/dataset/gov-versions-scraper-ministers_conflict-274fd0fe"
 
     # Push API (local processor → server)
     push_api_key: str = ""

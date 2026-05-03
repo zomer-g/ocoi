@@ -257,92 +257,11 @@ export function unignoreResources(urls: string[]) {
   });
 }
 
-// Import — Gov.il: cached records check
-export function getGovilCachedRecords() {
-  return adminFetch<{ status: string; data: { records: GovilApiItem[]; count: number } }>("/import/govil/cached");
-}
-
-// Import — Gov.il: browser-side fetch + server-side processing
-export function triggerGovilImport(limit: number = 0, url: string = "") {
-  const params = new URLSearchParams({ limit: String(limit) });
-  return adminFetch(`/import/govil/trigger?${params}`, {
+// Import — odata.org.il: snapshot ZIP import (replaces the live gov.il scrape)
+export function triggerOdataImport() {
+  return adminFetch<{ status: string; message: string }>("/import/odata/trigger", {
     method: "POST",
-    body: JSON.stringify({ url }),
   });
-}
-
-// Send pre-fetched Gov.il records from the browser to backend for processing
-export function submitGovilRecords(records: GovilApiItem[]) {
-  return adminFetch<{ status: string; message: string }>("/import/govil/submit", {
-    method: "POST",
-    body: JSON.stringify({ records }),
-  });
-}
-
-export interface GovilApiItem {
-  Data: Record<string, unknown>;
-  UrlName: string;
-  [key: string]: unknown;
-}
-
-const GOVIL_TEMPLATE_ID = "c6e0f53e-02c0-4db1-ae89-76590f0f502e";
-
-/** Fetch a single page from Gov.il via our backend proxy (avoids CORS). */
-async function govilProxyFetch(skip: number, quantity: number = 20) {
-  const res = await fetch(`${ADMIN_BASE}/import/govil/proxy`, {
-    method: "POST",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      DynamicTemplateID: GOVIL_TEMPLATE_ID,
-      QueryFilters: {},
-      From: skip,
-      Quantity: quantity,
-    }),
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`שגיאה בגישה ל-Gov.il (${res.status}): ${body.slice(0, 100)}`);
-  }
-  return res.json();
-}
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-/** Fetch all Gov.il records page by page via backend proxy with retries. */
-export async function fetchGovilFromBrowser(
-  onProgress?: (fetched: number, total: number) => void
-): Promise<GovilApiItem[]> {
-  const pageSize = 20;
-  const firstData = await govilProxyFetch(0, pageSize);
-  const totalResults: number = firstData.TotalResults || 0;
-  const allItems: GovilApiItem[] = [...(firstData.Results || [])];
-  onProgress?.(allItems.length, totalResults);
-
-  let skip = allItems.length;
-  let consecutiveFailures = 0;
-  while (skip < totalResults) {
-    // Small delay between pages to avoid rate-limiting
-    await sleep(500);
-    try {
-      const data = await govilProxyFetch(skip, pageSize);
-      const results: GovilApiItem[] = data.Results || [];
-      if (results.length === 0) break;
-      allItems.push(...results);
-      skip += results.length;
-      consecutiveFailures = 0;
-      onProgress?.(allItems.length, totalResults);
-    } catch {
-      consecutiveFailures++;
-      if (consecutiveFailures >= 3) {
-        // Return what we have so far instead of failing completely
-        if (allItems.length > 0) break;
-        throw new Error("Gov.il לא זמין כרגע. נסה שוב מאוחר יותר.");
-      }
-      await sleep(3000 * consecutiveFailures);
-    }
-  }
-  return allItems;
 }
 
 export interface ImportStatus {

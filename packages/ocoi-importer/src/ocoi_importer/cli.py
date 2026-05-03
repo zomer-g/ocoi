@@ -14,12 +14,12 @@ logger = setup_logging("ocoi.importer")
 
 @click.group()
 def cli():
-    """Import conflict of interest data from CKAN and gov.il."""
+    """Import conflict-of-interest data from CKAN and odata.org.il snapshots."""
     settings.ensure_dirs()
 
 
 @cli.command()
-@click.option("--source", type=click.Choice(["ckan", "govil", "all"]), default="all")
+@click.option("--source", type=click.Choice(["ckan", "odata", "all"]), default="all")
 @click.option("--limit", type=int, default=0, help="Max datasets to import (0=all)")
 @click.option("--download/--no-download", default=True, help="Download PDFs after import")
 def import_data(source: str, limit: int, download: bool):
@@ -30,8 +30,8 @@ def import_data(source: str, limit: int, download: bool):
 async def _import(source: str, limit: int, download: bool):
     if source in ("ckan", "all"):
         await _import_ckan(limit)
-    if source in ("govil", "all"):
-        await _import_govil(limit)
+    if source in ("odata", "all"):
+        await _import_odata(limit)
 
 
 async def _import_ckan(limit: int):
@@ -85,49 +85,65 @@ async def _import_ckan(limit: int):
     logger.info(f"CKAN import complete: {len(all_docs)} documents saved")
 
 
-async def _import_govil(limit: int):
-    from ocoi_importer.govil_client import GovilClient
-    from ocoi_importer.downloader import Downloader
+async def _import_odata(limit: int):
+    """Import all conflict-of-interest declarations from the odata.org.il snapshot ZIPs.
 
-    client = GovilClient()
-    downloader = Downloader()
+    Stores PDF bytes inline in Document.pdf_content (the ZIP is the only
+    upstream source) and converts each PDF to markdown along the way.
+    """
+    import hashlib
+    from ocoi_importer.odata_client import iter_records, gov_il_listing_url, ODATA_DATASET_PAGE
+    from ocoi_db.models import Document
+    from sqlalchemy import select
 
-    records = await client.fetch_all_records()
-    if limit > 0:
-        records = records[:limit]
-    logger.info(f"Gov.il: {len(records)} records fetched")
+    count = 0
+    async for rec in iter_records():
+        if limit and count >= limit:
+            break
 
-    async with async_session_factory() as session:
-        imported = 0
-        for record in records:
-            doc_info = client.record_to_document(record)
-            if not doc_info:
+        async with async_session_factory() as session:
+            # Skip duplicates by content hash
+            content_hash = hashlib.sha256(rec.pdf_bytes).hexdigest()
+            existing = await session.execute(
+                select(Document).where(Document.content_hash == content_hash).limit(1)
+            )
+            if existing.scalars().first():
                 continue
 
+            listing_url = gov_il_listing_url(rec.url_name) if rec.url_name else ODATA_DATASET_PAGE
+            metadata = {
+                "name": rec.name,
+                "position": rec.position,
+                "ministry": rec.ministry,
+                "date": rec.date,
+                "url_name": rec.url_name,
+                "pdf_filename": rec.pdf_filename,
+                **rec.raw_data,
+            }
             src = await get_or_create_source(
                 session,
-                source_type="govil",
-                source_id=doc_info.source_id,
-                title=doc_info.title,
-                url=doc_info.file_url,
-                metadata_json=doc_info.metadata,
+                source_type="odata",
+                source_id=rec.source_id,
+                title=rec.pdf_filename.removesuffix(".pdf") or rec.name,
+                url=listing_url,
+                metadata_json=metadata,
             )
             db_doc = await create_document(
                 session,
                 source_id=src.id,
-                title=doc_info.title,
-                file_url=doc_info.file_url,
+                title=rec.pdf_filename.removesuffix(".pdf") or rec.name,
+                file_url=listing_url,
                 file_format="pdf",
+                file_size=len(rec.pdf_bytes),
             )
+            db_doc.pdf_content = rec.pdf_bytes
+            db_doc.content_hash = content_hash
+            await session.commit()
+        count += 1
+        # Drop bytes to keep peak memory bounded.
+        rec.pdf_bytes = b""
 
-            if doc_info.file_url:
-                local_path = await downloader.download(doc_info.file_url)
-                if local_path:
-                    db_doc.file_path = str(local_path)
-                    imported += 1
-
-        await session.commit()
-    logger.info(f"Gov.il import complete: {imported} documents downloaded")
+    logger.info(f"odata import complete: {count} documents saved")
 
 
 if __name__ == "__main__":

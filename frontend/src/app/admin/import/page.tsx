@@ -7,10 +7,7 @@ import {
   bulkImportCkan,
   ignoreResources,
   unignoreResources,
-  triggerGovilImport,
-  submitGovilRecords,
-  fetchGovilFromBrowser,
-  getGovilCachedRecords,
+  triggerOdataImport,
   getImportStatus,
   resetImportState,
   getExtractionPrompt,
@@ -27,10 +24,10 @@ import {
   type ExtractionStatus,
 } from "@/lib/admin-api";
 
-type Tab = "ckan" | "govil" | "extraction";
+type Tab = "ckan" | "odata" | "extraction";
 
 export default function ImportPage() {
-  const [tab, setTab] = useState<Tab>("ckan");
+  const [tab, setTab] = useState<Tab>("odata");
 
   return (
     <div>
@@ -39,8 +36,8 @@ export default function ImportPage() {
       {/* Tab buttons */}
       <div className="flex gap-2 mb-6">
         {([
-          ["ckan", "CKAN (odata.org.il)"],
-          ["govil", "Gov.il"],
+          ["odata", "odata.org.il (snapshot)"],
+          ["ckan", "CKAN — חיפוש מותאם"],
           ["extraction", "חילוץ ישויות"],
         ] as [Tab, string][]).map(([key, label]) => (
           <button
@@ -55,8 +52,8 @@ export default function ImportPage() {
         ))}
       </div>
 
+      {tab === "odata" && <OdataTab />}
       {tab === "ckan" && <CkanTab />}
-      {tab === "govil" && <GovilTab />}
       {tab === "extraction" && <ExtractionTab />}
     </div>
   );
@@ -577,72 +574,16 @@ function CkanTab() {
   );
 }
 
-// ── Gov.il Tab: URL-based scraper + manual fallback ──────────────────
+// ── Odata Tab: snapshot import from odata.org.il ZIP files ─────────────
 
-const GOVIL_PRESETS = [
-  {
-    label: "הסדרי ניגוד עניינים — שרים וסגני שרים",
-    url: "https://www.gov.il/he/departments/dynamiccollectors/ministers_conflict",
-  },
-];
+const ODATA_DATASET_PAGE_URL =
+  "https://www.odata.org.il/dataset/gov-versions-scraper-ministers_conflict-274fd0fe";
 
-const GOVIL_CONSOLE_SCRIPT = `(async () => {
-  const all = [];
-  let skip = 0;
-  console.log('Starting Gov.il data fetch...');
-  while (true) {
-    const r = await fetch('/he/api/DynamicCollector', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        DynamicTemplateID: 'c6e0f53e-02c0-4db1-ae89-76590f0f502e',
-        QueryFilters: {},
-        From: skip,
-        Quantity: 20
-      })
-    });
-    const d = await r.json();
-    if (!d.Results || !d.Results.length) break;
-    all.push(...d.Results);
-    skip += d.Results.length;
-    console.log('Fetched ' + all.length + ' / ' + (d.TotalResults || '?') + ' records...');
-  }
-  copy(JSON.stringify(all));
-  console.log('Done! ' + all.length + ' records copied to clipboard.');
-  console.log('Go back to the import page and paste (Ctrl+V).');
-})();`;
-
-function tryCountRecords(json: string): string {
-  try {
-    const arr = JSON.parse(json);
-    return Array.isArray(arr) ? String(arr.length) : "?";
-  } catch {
-    return "?";
-  }
-}
-
-function isValidGovilUrl(url: string): boolean {
-  try {
-    const u = new URL(url);
-    return u.hostname === "www.gov.il" || u.hostname === "gov.il";
-  } catch {
-    return false;
-  }
-}
-
-function GovilTab() {
+function OdataTab() {
   const [status, setStatus] = useState<ImportStatus | null>(null);
-  const [phase, setPhase] = useState<"idle" | "fetching" | "manual" | "processing">("idle");
-  const [fetchProgress, setFetchProgress] = useState({ fetched: 0, total: 0 });
+  const [triggering, setTriggering] = useState(false);
   const [error, setError] = useState("");
-  const [pastedData, setPastedData] = useState("");
-  const [scriptCopied, setScriptCopied] = useState(false);
-  const [govilUrl, setGovilUrl] = useState(GOVIL_PRESETS[0].url);
-  const [customUrl, setCustomUrl] = useState("");
-  const [useCustomUrl, setUseCustomUrl] = useState(false);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const activeUrl = useCustomUrl ? customUrl : govilUrl;
 
   const stopPolling = useCallback(() => {
     if (pollingRef.current) {
@@ -655,13 +596,14 @@ function GovilTab() {
     try {
       const res = await getImportStatus();
       setStatus(res.data);
-      if (!res.data.running) { stopPolling(); setPhase("idle"); }
-    } catch { /* ignore */ }
+      if (!res.data.running) stopPolling();
+    } catch {
+      // ignore
+    }
   }, [stopPolling]);
 
   const startPolling = useCallback(() => {
     stopPolling();
-    setPhase("processing");
     pollStatus();
     pollingRef.current = setInterval(pollStatus, 2000);
   }, [stopPolling, pollStatus]);
@@ -671,334 +613,101 @@ function GovilTab() {
     return stopPolling;
   }, [pollStatus, stopPolling]);
 
-  // Server-side scraper (new: uses cloudscraper + Playwright fallback)
-  const handleServerScrape = async () => {
-    if (useCustomUrl && !isValidGovilUrl(customUrl)) {
-      setError("כתובת URL לא תקינה. יש להזין כתובת מאתר gov.il.");
-      return;
-    }
-    setPhase("fetching");
+  const handleTrigger = async () => {
+    setTriggering(true);
     setError("");
     try {
-      await triggerGovilImport(0, activeUrl);
+      await triggerOdataImport();
       startPolling();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "שגיאה בהפעלת הסקריפט");
-      setPhase("idle");
+      setError(e instanceof Error ? e.message : "שגיאה בהפעלת הייבוא");
+    } finally {
+      setTriggering(false);
     }
   };
 
-  // Browser-side fetch via proxy (original flow)
-  const handleBrowserFetch = async () => {
-    setPhase("fetching");
-    setError("");
-    setFetchProgress({ fetched: 0, total: 0 });
-    try {
-      const records = await fetchGovilFromBrowser((fetched, total) => {
-        setFetchProgress({ fetched, total });
-      });
-
-      if (records.length === 0) {
-        setPhase("manual");
-        return;
-      }
-
-      await submitGovilRecords(records);
-      startPolling();
-    } catch {
-      setPhase("manual");
-    }
-  };
-
-  // Use pre-fetched cached records
-  const handleUseCached = async () => {
-    setPhase("fetching");
-    setError("");
-    try {
-      const res = await getGovilCachedRecords();
-      const records = res.data.records;
-      if (!records || records.length === 0) {
-        setError("אין רשומות שמורות בשרת.");
-        setPhase("idle");
-        return;
-      }
-      await submitGovilRecords(records);
-      startPolling();
-    } catch {
-      setError("לא נמצאו רשומות שמורות. נסה ייבוא ידני.");
-      setPhase("idle");
-    }
-  };
-
-  const handleCopyScript = () => {
-    navigator.clipboard.writeText(GOVIL_CONSOLE_SCRIPT);
-    setScriptCopied(true);
-    setTimeout(() => setScriptCopied(false), 2000);
-  };
-
-  const handleManualImport = async () => {
-    if (!pastedData.trim()) return;
-    setError("");
-    try {
-      const records = JSON.parse(pastedData);
-      if (!Array.isArray(records) || records.length === 0) {
-        setError("הנתונים לא בפורמט תקין. ודא שהעתקת את כל הפלט מהסקריפט.");
-        return;
-      }
-      await submitGovilRecords(records);
-      setPastedData("");
-      startPolling();
-    } catch {
-      setError("שגיאה בפענוח הנתונים. ודא שהעתקת את כל הטקסט מהקונסול.");
-    }
-  };
-
-  const isRunning = phase === "processing" || status?.running === true;
-  const isFinished = status?.finished_at && !isRunning && phase === "idle";
+  const isRunning = status?.running === true;
+  const isFinished = !!(status?.finished_at && !isRunning);
   const processed = status ? status.imported + status.skipped + status.errors : 0;
-  const progressPct = status && status.total > 0
-    ? Math.round((processed / status.total) * 100)
-    : 0;
+  const progressPct =
+    status && status.total > 0
+      ? Math.round((processed / status.total) * 100)
+      : 0;
 
   return (
     <div>
-      {/* URL selection */}
       <div className="bg-white rounded-lg border border-gray-200 p-6 mb-4">
-        <h2 className="text-lg font-semibold text-gray-800 mb-2">ייבוא מ-Gov.il</h2>
-        <p className="text-sm text-gray-600 mb-4">
-          בחר עמוד אוסף מאתר Gov.il לייבוא, או הזן כתובת URL מותאמת אישית.
+        <h2 className="text-lg font-semibold text-gray-800 mb-2">
+          ייבוא מ-odata.org.il (snapshot)
+        </h2>
+        <p className="text-sm text-gray-600 mb-4 leading-relaxed">
+          ייבוא של כל הסדרי ניגוד העניינים מתוך ה-snapshot שמתפרסם ב-
+          <a
+            href={ODATA_DATASET_PAGE_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-primary-700 underline mx-1"
+          >
+            odata.org.il
+          </a>
+          (3 קבצי ZIP, ~210MB, ~346 מסמכים). השרת יוריד את הקבצים, יחלץ אותם,
+          ימיר ל-Markdown וישמור את כל הקבצים במסד הנתונים — כך שהם זמינים גם
+          לאחר אתחולי שרת.
         </p>
 
-        {/* Preset URLs */}
-        <div className="space-y-2 mb-4">
-          {GOVIL_PRESETS.map((preset) => (
-            <label
-              key={preset.url}
-              className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
-                !useCustomUrl && govilUrl === preset.url
-                  ? "border-primary-300 bg-primary-50"
-                  : "border-gray-200 hover:bg-gray-50"
-              }`}
-            >
-              <input
-                type="radio"
-                name="govil-url"
-                checked={!useCustomUrl && govilUrl === preset.url}
-                onChange={() => { setGovilUrl(preset.url); setUseCustomUrl(false); }}
-                className="accent-primary-700"
-              />
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-medium text-gray-800">{preset.label}</div>
-                <div className="text-xs text-gray-400 truncate" dir="ltr">{preset.url}</div>
-              </div>
-            </label>
-          ))}
-
-          {/* Custom URL */}
-          <label
-            className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
-              useCustomUrl
-                ? "border-primary-300 bg-primary-50"
-                : "border-gray-200 hover:bg-gray-50"
-            }`}
-          >
-            <input
-              type="radio"
-              name="govil-url"
-              checked={useCustomUrl}
-              onChange={() => setUseCustomUrl(true)}
-              className="accent-primary-700 mt-1"
-            />
-            <div className="flex-1 min-w-0">
-              <div className="text-sm font-medium text-gray-800 mb-1">כתובת URL מותאמת אישית</div>
-              <input
-                type="url"
-                value={customUrl}
-                onChange={(e) => { setCustomUrl(e.target.value); setUseCustomUrl(true); }}
-                placeholder="https://www.gov.il/he/departments/dynamiccollectors/..."
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-primary-500"
-                dir="ltr"
-              />
-            </div>
-          </label>
-        </div>
-
-        {/* Action buttons */}
-        <div className="flex gap-3 flex-wrap">
+        <div className="flex gap-3 flex-wrap items-center">
           <button
-            onClick={handleServerScrape}
-            disabled={phase !== "idle" || isRunning || (useCustomUrl && !customUrl.trim())}
+            onClick={handleTrigger}
+            disabled={triggering || isRunning}
             className="px-6 py-3 bg-primary-700 text-white rounded-lg hover:bg-primary-800 transition-colors text-sm font-medium disabled:opacity-50"
           >
-            {phase === "fetching" || isRunning ? "מעבד..." : "ייבוא אוטומטי (שרת)"}
+            {triggering
+              ? "מפעיל..."
+              : isRunning
+              ? "ייבוא פעיל..."
+              : "התחל ייבוא"}
           </button>
-          <button
-            onClick={handleBrowserFetch}
-            disabled={phase !== "idle" || isRunning}
-            className="px-6 py-3 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors text-sm font-medium disabled:opacity-50"
-          >
-            ייבוא דרך הדפדפן (פרוקסי)
-          </button>
-          <button
-            onClick={handleUseCached}
-            disabled={phase !== "idle" || isRunning}
-            className="px-6 py-3 border border-green-300 text-green-700 rounded-lg hover:bg-green-50 transition-colors text-sm font-medium disabled:opacity-50"
-          >
-            ייבוא מנתונים שמורים
-          </button>
-          <button
-            onClick={() => { setPhase("manual"); setError(""); }}
-            disabled={phase !== "idle" || isRunning}
-            className="px-6 py-3 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors text-sm font-medium disabled:opacity-50"
-          >
-            ייבוא ידני (מעקף Cloudflare)
-          </button>
-        </div>
-        {isRunning && (
-          <button
-            onClick={async () => { await resetImportState(); setPhase("idle"); setStatus(null); }}
-            className="px-4 py-2 border border-red-300 text-red-600 rounded-lg hover:bg-red-50 transition-colors text-sm"
-          >
-            אפס תהליך תקוע
-          </button>
-        )}
-        {error && phase !== "manual" && <div className="mt-3 text-sm text-red-600">{error}</div>}
-      </div>
-
-      {/* Browser fetch progress */}
-      {phase === "fetching" && !status?.running && (
-        <div className="bg-blue-50 rounded-lg border border-blue-100 p-4 mb-4">
-          <div className="flex items-center justify-between mb-2">
-            <div className="flex items-center gap-2">
-              <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
-              <span className="text-sm font-medium text-blue-800">מנסה להתחבר לשרת Gov.il...</span>
-            </div>
+          {isRunning && (
             <button
-              onClick={() => setPhase("manual")}
-              className="text-xs text-blue-600 hover:text-blue-800 underline"
+              onClick={async () => {
+                await resetImportState();
+                setStatus(null);
+              }}
+              className="px-4 py-2 border border-red-300 text-red-600 rounded-lg hover:bg-red-50 transition-colors text-sm"
             >
-              דלג לייבוא ידני
+              אפס תהליך תקוע
             </button>
-          </div>
-          {fetchProgress.total > 0 && (
-            <div className="text-lg font-bold text-blue-700">
-              {fetchProgress.fetched} / {fetchProgress.total} רשומות
-            </div>
           )}
         </div>
-      )}
-
-      {/* Manual import instructions */}
-      {phase === "manual" && (
-        <div className="bg-amber-50 rounded-lg border border-amber-200 p-6 mb-4">
-          <h3 className="font-semibold text-amber-800 mb-2">ייבוא ידני — מעקף Cloudflare</h3>
-          <p className="text-sm text-amber-700 mb-4">
-            Gov.il חוסם גישה אוטומטית מהשרת. ניתן לשלוף את הנתונים ישירות מהדפדפן שלך:
-          </p>
-          <ol className="text-sm text-gray-700 space-y-2 mb-4 list-decimal list-inside" dir="rtl">
-            <li>
-              פתח את{" "}
-              <a
-                href="https://www.gov.il/he/departments/dynamiccollectors/ministers_conflict"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-primary-700 underline font-medium"
-              >
-                עמוד ניגוד עניינים ב-Gov.il
-              </a>
-              {" "}בלשונית חדשה
-            </li>
-            <li>לחץ <kbd className="px-1.5 py-0.5 bg-gray-200 rounded text-xs font-mono">F12</kbd> לפתיחת כלי המפתחים &larr; לשונית <strong>Console</strong></li>
-            <li>לחץ &quot;העתק סקריפט&quot; למטה, הדבק בקונסול ולחץ Enter</li>
-            <li>המתן לסיום (תראה הודעת Done!) — הנתונים יועתקו ללוח</li>
-            <li>חזור לכאן והדבק <kbd className="px-1.5 py-0.5 bg-gray-200 rounded text-xs font-mono">Ctrl+V</kbd> בתיבה למטה</li>
-          </ol>
-
-          {/* Script copy button */}
-          <div className="mb-4">
-            <button
-              onClick={handleCopyScript}
-              className="px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition-colors text-sm font-medium"
-            >
-              {scriptCopied ? "הועתק!" : "העתק סקריפט"}
-            </button>
-          </div>
-
-          {/* Paste area */}
-          <textarea
-            value={pastedData}
-            onChange={(e) => setPastedData(e.target.value)}
-            placeholder={'הדבק כאן את הנתונים שהועתקו מהקונסול (Ctrl+V)...'}
-            className="w-full h-28 px-3 py-2 border border-amber-300 rounded-lg text-xs font-mono focus:outline-none focus:border-primary-500 resize-y mb-3 bg-white"
-            dir="ltr"
-          />
-
-          <div className="flex gap-2 items-center">
-            <button
-              onClick={handleManualImport}
-              disabled={!pastedData.trim()}
-              className="px-6 py-2.5 bg-primary-700 text-white rounded-lg hover:bg-primary-800 transition-colors text-sm font-medium disabled:opacity-50"
-            >
-              {pastedData.trim()
-                ? `ייבא (${tryCountRecords(pastedData)} רשומות)`
-                : "ייבא"}
-            </button>
-            <button
-              onClick={() => { setPhase("idle"); setError(""); setPastedData(""); }}
-              className="px-4 py-2.5 text-gray-600 hover:text-gray-800 text-sm"
-            >
-              חזרה
-            </button>
-          </div>
-          {error && <div className="mt-3 text-sm text-red-600">{error}</div>}
-        </div>
-      )}
-
-      {/* Summary: what's on the website vs DB */}
-      {status && (status.total_on_website > 0 || isRunning) && phase !== "fetching" && phase !== "manual" && (
-        <div className="bg-blue-50 rounded-lg border border-blue-100 p-4 mb-4">
-          <div className="grid grid-cols-3 gap-3 text-center">
-            <div>
-              <div className="text-xl font-bold text-blue-700">{status.total_on_website}</div>
-              <div className="text-xs text-gray-500">באתר Gov.il</div>
-            </div>
-            <div>
-              <div className="text-xl font-bold text-gray-600">{status.already_in_db}</div>
-              <div className="text-xs text-gray-500">כבר במערכת</div>
-            </div>
-            <div>
-              <div className="text-xl font-bold text-primary-700">{status.new_to_import}</div>
-              <div className="text-xs text-gray-500">חדשים לייבוא</div>
-            </div>
-          </div>
-        </div>
-      )}
+        {error && <div className="mt-3 text-sm text-red-600">{error}</div>}
+      </div>
 
       {/* Progress */}
-      {isRunning && status && status.total > 0 && (
+      {isRunning && status && (
         <div className="bg-white rounded-lg border border-gray-200 p-4 mb-4">
           <div className="flex items-center justify-between mb-3">
-            <h3 className="font-semibold text-gray-800">מוריד ומעבד מסמכים...</h3>
+            <h3 className="font-semibold text-gray-800">מוריד, מחלץ ומעבד מסמכים...</h3>
             <div className="flex items-center gap-2">
-              <button
-                onClick={async () => { await resetImportState(); setPhase("idle"); setStatus(null); }}
-                className="text-xs text-red-500 hover:text-red-700 underline"
-              >
-                אפס ייבוא
-              </button>
               <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
               <span className="text-xs text-gray-500">פעיל</span>
             </div>
           </div>
-          <div className="mb-3">
-            <div className="flex justify-between text-xs text-gray-500 mb-1">
-              <span>{status.imported + status.skipped + status.errors} / {status.total}</span>
-              <span>{progressPct}%</span>
+          {status.total > 0 && (
+            <div className="mb-3">
+              <div className="flex justify-between text-xs text-gray-500 mb-1">
+                <span>
+                  {status.imported + status.skipped + status.errors} / {status.total}
+                </span>
+                <span>{progressPct}%</span>
+              </div>
+              <div className="w-full bg-gray-200 rounded-full h-2.5">
+                <div
+                  className="bg-primary-700 h-2.5 rounded-full transition-all duration-500"
+                  style={{ width: `${progressPct}%` }}
+                />
+              </div>
             </div>
-            <div className="w-full bg-gray-200 rounded-full h-2.5">
-              <div className="bg-primary-700 h-2.5 rounded-full transition-all duration-500" style={{ width: `${progressPct}%` }} />
-            </div>
-          </div>
+          )}
           <div className="grid grid-cols-3 gap-3">
             <div className="bg-green-50 rounded-lg p-2 text-center">
               <div className="text-xl font-bold text-green-700">{status.imported}</div>
@@ -1006,7 +715,7 @@ function GovilTab() {
             </div>
             <div className="bg-yellow-50 rounded-lg p-2 text-center">
               <div className="text-xl font-bold text-yellow-700">{status.skipped}</div>
-              <div className="text-xs text-gray-500">דולגו</div>
+              <div className="text-xs text-gray-500">דולגו (כפילות)</div>
             </div>
             <div className="bg-red-50 rounded-lg p-2 text-center">
               <div className="text-xl font-bold text-red-700">{status.errors}</div>
@@ -1019,7 +728,7 @@ function GovilTab() {
       {/* Finished */}
       {isFinished && status && (
         <div className="bg-white rounded-lg border border-gray-200 p-4 mb-4">
-          <h3 className="font-semibold text-gray-800 mb-3">תוצאות ייבוא — Gov.il</h3>
+          <h3 className="font-semibold text-gray-800 mb-3">תוצאות ייבוא — odata.org.il</h3>
           <div className="grid grid-cols-3 gap-3 mb-3">
             <div className="bg-green-50 rounded-lg p-2 text-center">
               <div className="text-xl font-bold text-green-700">{status.imported}</div>
@@ -1035,14 +744,20 @@ function GovilTab() {
             </div>
           </div>
           <div className="text-xs text-gray-400 space-y-0.5">
-            {status.started_at && <div>התחיל: {new Date(status.started_at).toLocaleString("he-IL")}</div>}
-            {status.finished_at && <div>הסתיים: {new Date(status.finished_at).toLocaleString("he-IL")}</div>}
+            {status.started_at && (
+              <div>התחיל: {new Date(status.started_at).toLocaleString("he-IL")}</div>
+            )}
+            {status.finished_at && (
+              <div>הסתיים: {new Date(status.finished_at).toLocaleString("he-IL")}</div>
+            )}
           </div>
           {status.error_messages.length > 0 && (
             <div className="mt-3 p-2 bg-red-50 rounded-lg">
               <div className="text-xs font-medium text-red-700 mb-1">שגיאות:</div>
               <div className="text-xs text-red-600 font-mono space-y-0.5 max-h-32 overflow-y-auto">
-                {status.error_messages.map((m, i) => <div key={i}>{m}</div>)}
+                {status.error_messages.map((m, i) => (
+                  <div key={i}>{m}</div>
+                ))}
               </div>
             </div>
           )}

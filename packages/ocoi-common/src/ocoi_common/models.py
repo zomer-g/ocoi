@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 class SourceType(str, Enum):
     CKAN = "ckan"
-    GOVIL = "govil"
+    ODATA = "odata"
 
 
 class ConversionStatus(str, Enum):
@@ -70,12 +70,16 @@ class CkanDataset(BaseModel):
     tags: list[dict] = []
 
 
-class GovilRecord(BaseModel):
-    name: str
-    position_type: str | None = None
-    ministry: str | None = None
-    date: str | None = None
-    pdf_url: str | None = None
+class OdataRecord(BaseModel):
+    """One conflict-of-interest declaration extracted from an odata.org.il ZIP."""
+    name: str                           # Hebrew person name (from PDF filename / CSV)
+    position: str | None = None         # E.g. "שר", "סגן שר", "מנכ\"ל"
+    ministry: str | None = None         # E.g. "משרד האוצר"
+    date: str | None = None             # ISO date from CSV match (may be None)
+    url_name: str | None = None         # Gov.il slug from CSV (may be None)
+    pdf_filename: str = ""              # Original filename inside the ZIP
+    pdf_bytes: bytes = b""              # Raw PDF content extracted from the ZIP
+    source_id: str = ""                 # Stable id for the source row
     raw_data: dict = {}
 
 

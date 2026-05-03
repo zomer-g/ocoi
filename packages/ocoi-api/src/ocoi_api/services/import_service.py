@@ -1,9 +1,7 @@
-"""Import service — CKAN search + selective import, Gov.il bulk import."""
+"""Import service — CKAN search + selective import, odata.org.il bulk import."""
 
 import hashlib
 import logging
-from datetime import datetime
-from pathlib import Path
 
 import httpx
 
@@ -11,14 +9,14 @@ from ocoi_common.timezone import now_israel, now_israel_naive
 
 from sqlalchemy import select
 from ocoi_common.config import settings
-from ocoi_common.models import ImportedDocument
+from ocoi_common.models import ImportedDocument, OdataRecord
 from ocoi_db.engine import async_session_factory, bg_session_factory
 from ocoi_db.crud import get_or_create_source, create_document
 from ocoi_db.models import Document, IgnoredResource
 
 logger = logging.getLogger("ocoi.api.import")
 
-# Module-level state for Gov.il bulk import progress polling
+# Module-level state for bulk import progress polling
 _import_state: dict = {
     "running": False,
     "source": None,
@@ -94,24 +92,6 @@ def reset_import_state() -> None:
         "started_at": None,
         "finished_at": None,
     })
-
-
-def _load_cached_govil_records() -> list[dict] | None:
-    """Try to load pre-fetched Gov.il records from data/govil_records.json."""
-    import json
-    for path in [
-        Path("/app/data/govil_records.json"),           # Docker
-        settings.data_dir / "govil_records.json",       # Local dev
-        Path(__file__).resolve().parents[5] / "data" / "govil_records.json",
-    ]:
-        if path.exists():
-            try:
-                records = json.loads(path.read_text(encoding="utf-8"))
-                logger.info(f"Loaded {len(records)} cached Gov.il records from {path}")
-                return records
-            except Exception as e:
-                logger.warning(f"Failed to load cached records from {path}: {e}")
-    return None
 
 
 # ── Shared: download PDF + convert ────────────────────────────────────────
@@ -566,11 +546,17 @@ async def run_bulk_ckan_import(query: str) -> dict:
     return get_import_status()
 
 
-# ── Gov.il: Automated bulk import ────────────────────────────────────────
+# ── odata.org.il: snapshot bulk import ───────────────────────────────────
 
 
-async def run_govil_import(limit: int = 0, url: str = "") -> dict:
-    """Bulk import from Gov.il. Updates _import_state for progress polling."""
+async def run_odata_import() -> dict:
+    """Pull all conflict-of-interest declarations from the odata.org.il
+    snapshot dataset (3 ZIPs ≈ 210 MB ≈ 346 PDFs), persist each PDF's bytes
+    inside Document.pdf_content, and convert to markdown along the way.
+
+    Idempotent: re-running skips documents whose SHA-256 content hash is
+    already in the DB.
+    """
     global _import_state
 
     if _import_state["running"]:
@@ -583,7 +569,7 @@ async def run_govil_import(limit: int = 0, url: str = "") -> dict:
 
     _import_state.update({
         "running": True,
-        "source": "govil",
+        "source": "odata",
         "total_on_website": 0,
         "already_in_db": 0,
         "new_to_import": 0,
@@ -597,7 +583,7 @@ async def run_govil_import(limit: int = 0, url: str = "") -> dict:
     })
 
     try:
-        await _import_govil(limit, url=url)
+        await _run_odata_import()
     except Exception as e:
         _import_state["error_messages"].append(f"Fatal: {str(e)}")
         _import_state["errors"] += 1
@@ -608,197 +594,116 @@ async def run_govil_import(limit: int = 0, url: str = "") -> dict:
     return get_import_status()
 
 
-async def run_govil_with_records(raw_items: list[dict]) -> dict:
-    """Process pre-fetched Gov.il API items (sent from user's browser). Updates _import_state."""
-    global _import_state
-
-    if _import_state["running"]:
-        return {"status": "error", "message": "Import already running"}
-
-    try:
-        await _check_db_storage_pressure()
-    except DBStoragePressureError as e:
-        return {"status": "error", "message": str(e)}
-
-    _import_state.update({
-        "running": True,
-        "source": "govil",
-        "total_on_website": len(raw_items),
-        "already_in_db": 0,
-        "new_to_import": 0,
-        "total": 0,
-        "imported": 0,
-        "skipped": 0,
-        "errors": 0,
-        "error_messages": [],
-        "started_at": now_israel().isoformat(),
-        "finished_at": None,
-    })
-
-    try:
-        from ocoi_importer.govil_client import GovilClient
-        client = GovilClient()
-
-        # Parse raw API items into GovilRecord objects
-        records = [r for item in raw_items if (r := client._parse_item(item))]
-        _import_state["total_on_website"] = len(records)
-
-        # Check which are already in DB
-        new_records = []
-        async with async_session_factory() as session:
-            for record in records:
-                doc_info = client.record_to_document(record)
-                if not doc_info:
-                    _import_state["skipped"] += 1
-                    continue
-                existing = await session.execute(
-                    select(Document).where(Document.file_url == doc_info.file_url)
-                )
-                if existing.scalars().first():
-                    _import_state["already_in_db"] += 1
-                else:
-                    new_records.append(record)
-
-        _import_state["new_to_import"] = len(new_records)
-        _import_state["total"] = len(new_records)
-
-        # Import new records
-        await _process_new_records(client, new_records)
-
-    except Exception as e:
-        _import_state["error_messages"].append(f"Fatal: {str(e)}")
-        _import_state["errors"] += 1
-    finally:
-        _import_state["running"] = False
-        _import_state["finished_at"] = now_israel().isoformat()
-
-    return get_import_status()
-
-
-async def _import_govil(limit: int, url: str = ""):
-    """Import documents from Gov.il — fetch metadata, download PDFs, convert to markdown."""
-    from ocoi_importer.govil_client import GovilClient
-
-    client = GovilClient(url=url) if url else GovilClient()
-
-    # Phase 1: Fetch all records from website (with fallback to cached file)
-    try:
-        records = await client.fetch_all_records()
-    except Exception as e:
-        logger.warning(f"Live Gov.il scraping failed: {e}, trying cached records...")
-        cached = _load_cached_govil_records()
-        if cached:
-            records = [r for item in cached if (r := client._parse_item(item))]
-            logger.info(f"Loaded {len(records)} records from cached file")
-        else:
-            raise
-    _import_state["total_on_website"] = len(records)
-
-    if limit > 0:
-        records = records[:limit]
-
-    # Phase 2: Check which records are already in DB
-    new_records = []
-    async with async_session_factory() as session:
-        for record in records:
-            doc_info = client.record_to_document(record)
-            if not doc_info:
-                _import_state["skipped"] += 1
-                continue
-            existing = await session.execute(
-                select(Document).where(Document.file_url == doc_info.file_url)
-            )
-            if existing.scalars().first():
-                _import_state["already_in_db"] += 1
-            else:
-                new_records.append(record)
-
-    _import_state["new_to_import"] = len(new_records)
-    _import_state["total"] = len(new_records)
-
-    # Phase 3: Import new records
-    await _process_new_records(client, new_records)
-
-
-async def _process_new_records(client, new_records: list) -> None:
-    """Download PDFs, convert to markdown, save to DB.
-
-    ALWAYS saves documents even if conversion fails — user can reconvert later.
-    Uses per-document sessions with bg_session_factory to prevent memory accumulation.
-    """
+async def _run_odata_import() -> None:
+    """Stream records from the odata ZIPs and persist each one. Frees the
+    PDF bytes immediately after the DB row is committed so peak memory
+    stays bounded."""
     import gc
+    from ocoi_importer.odata_client import iter_records, gov_il_listing_url, ODATA_DATASET_PAGE
+
     imported_at = now_israel().isoformat()
 
-    for record in new_records:
+    def _on_progress(stage: str, done: int, total: int) -> None:
+        # Reflect ZIP download / parse progress in the status payload so the
+        # admin UI shows movement before any PDF lands in the DB.
+        if stage.startswith("download:"):
+            _import_state["error_messages"][:] = _import_state["error_messages"][:0]  # no-op, cheap
+        # No need to mutate counters here — the caller updates them per record.
+        return
+
+    async for rec in iter_records(progress=_on_progress):
+        _import_state["total"] += 1
+        _import_state["total_on_website"] = _import_state["total"]
         try:
-            doc_info = client.record_to_document(record)
-            if not doc_info:
-                _import_state["skipped"] += 1
-                continue
-
-            # Download PDF
-            pdf_bytes, download_error = await download_pdf(doc_info.file_url, doc_info.title[:50])
-
-            # Check duplicate by content hash
-            content_hash = None
-            if pdf_bytes:
-                content_hash = _compute_content_hash(pdf_bytes)
-                async with bg_session_factory() as dup_session:
-                    dup = await check_duplicate(dup_session, content_hash=content_hash)
-                if dup:
-                    _import_state["skipped"] += 1
-                    continue
-
-            # Try conversion (no OCR during bulk import)
-            md_text = None
-            if pdf_bytes:
-                from ocoi_api.services.pdf_converter import convert_pdf_bytes
-                md_text = convert_pdf_bytes(pdf_bytes, doc_info.title[:50])
-
-            # ALWAYS save to DB — each doc in its own session
-            async with bg_session_factory() as session:
-                metadata = dict(doc_info.metadata)
-                metadata["imported_at"] = imported_at
-                metadata.update(record.raw_data)
-
-                src = await get_or_create_source(
-                    session,
-                    source_type="govil",
-                    source_id=doc_info.source_id,
-                    title=doc_info.title,
-                    url=doc_info.file_url,
-                    metadata_json=metadata,
-                )
-                db_doc = await create_document(
-                    session,
-                    source_id=src.id,
-                    title=doc_info.title,
-                    file_url=doc_info.file_url,
-                    file_format="pdf",
-                    file_size=doc_info.file_size,
-                )
-
-                if pdf_bytes:
-                    # Metadata only — PDF is re-fetchable from file_url; see import_ckan_resources.
-                    db_doc.content_hash = content_hash
-                    db_doc.file_size = len(pdf_bytes)
-
-                if md_text:
-                    db_doc.markdown_content = md_text
-                    db_doc.conversion_status = "converted"
-                    db_doc.converted_at = now_israel_naive()
-                elif pdf_bytes:
-                    db_doc.conversion_status = "no_text"
-                else:
-                    db_doc.conversion_status = "failed"
-
-                _import_state["imported"] += 1
-                await session.commit()
-
+            await _persist_odata_record(rec, imported_at, ODATA_DATASET_PAGE, gov_il_listing_url)
         except Exception as e:
             _import_state["errors"] += 1
             if len(_import_state["error_messages"]) < 20:
                 _import_state["error_messages"].append(
-                    f"Gov.il '{record.name[:50]}': {e}"
+                    f"odata '{rec.name[:50]}': {e}"
                 )
+        finally:
+            # Always drop the bytes from the in-memory record once we're done.
+            rec.pdf_bytes = b""
         gc.collect()
+
+
+async def _persist_odata_record(
+    rec: OdataRecord,
+    imported_at: str,
+    dataset_page_url: str,
+    listing_url_fn,
+) -> None:
+    """Insert one OdataRecord into the DB. Skips on content-hash duplicates.
+
+    Stores the PDF bytes inline in `Document.pdf_content` so the file is
+    available across container restarts (the snapshot ZIP is the only
+    upstream source — we don't want to re-download it just to render a
+    document detail page later).
+    """
+    from ocoi_api.services.pdf_converter import convert_pdf_bytes
+
+    pdf_bytes = rec.pdf_bytes
+    if not pdf_bytes:
+        _import_state["skipped"] += 1
+        return
+
+    content_hash = _compute_content_hash(pdf_bytes)
+
+    async with bg_session_factory() as dup_session:
+        dup = await check_duplicate(dup_session, content_hash=content_hash)
+    if dup is not None:
+        _import_state["skipped"] += 1
+        _import_state["already_in_db"] += 1
+        return
+
+    title = rec.pdf_filename.removesuffix(".pdf") if rec.pdf_filename else rec.name
+    listing_url = listing_url_fn(rec.url_name) if rec.url_name else dataset_page_url
+
+    md_text = convert_pdf_bytes(pdf_bytes, title[:50])
+
+    async with bg_session_factory() as session:
+        metadata = {
+            "name": rec.name,
+            "position": rec.position,
+            "ministry": rec.ministry,
+            "date": rec.date,
+            "url_name": rec.url_name,
+            "pdf_filename": rec.pdf_filename,
+            "imported_at": imported_at,
+            **rec.raw_data,
+        }
+        src = await get_or_create_source(
+            session,
+            source_type="odata",
+            source_id=rec.source_id,
+            title=title,
+            url=listing_url,
+            metadata_json=metadata,
+        )
+        db_doc = await create_document(
+            session,
+            source_id=src.id,
+            title=title,
+            file_url=listing_url,
+            file_format="pdf",
+            file_size=len(pdf_bytes),
+        )
+
+        # Store the actual PDF bytes — required because the upstream ZIP is
+        # the only place these PDFs live, and we don't want to re-download
+        # 70 MB to view a single document.
+        db_doc.pdf_content = pdf_bytes
+        db_doc.content_hash = content_hash
+        db_doc.file_size = len(pdf_bytes)
+
+        if md_text:
+            db_doc.markdown_content = md_text
+            db_doc.conversion_status = "converted"
+            db_doc.converted_at = now_israel_naive()
+        else:
+            db_doc.conversion_status = "no_text"
+
+        _import_state["imported"] += 1
+        _import_state["new_to_import"] = _import_state["imported"]
+        await session.commit()
