@@ -159,137 +159,58 @@ async def find_path(
     return _build_subgraph_from_rows(rows)
 
 
-async def _fetch_edge(session: AsyncSession, source_id: str, hub_type: str, hub_id: str):
-    q = text("""
-        SELECT r.source_entity_type, r.source_entity_id,
-               r.target_entity_type, r.target_entity_id,
-               r.relationship_type, r.details,
-               r.document_id, d.title AS doc_title, d.file_url AS doc_url
-        FROM entity_relationships r
-        LEFT JOIN documents d ON d.id = r.document_id
-        WHERE r.source_entity_type = 'person'
-          AND r.source_entity_id   = :pid
-          AND r.target_entity_type = :hub_type
-          AND r.target_entity_id   = :hub_id
-        ORDER BY r.created_at, r.id
-        LIMIT 1
-    """)
-    res = await session.execute(q, {"pid": source_id, "hub_type": hub_type, "hub_id": hub_id})
-    return res.fetchone()
-
-
 async def find_showcase_pair(session: AsyncSession) -> SubGraph | None:
-    """Find a richer "showcase" subgraph for the home page.
+    """Find a "two suns" showcase: pick two persons who share several
+    declared hubs (companies / associations / domains), and return the
+    full union of their direct neighborhoods. Visually this lays out as
+    two dense stars whose overlap sits between them — exactly the kind of
+    picture that explains what the project surfaces.
 
-    Preferred shape — a "bowtie": one bridge person who declared restrictions
-    on TWO different hubs (companies / associations), with each hub also
-    sharing a restriction with another distinct person. That gives a graph
-    of 3 persons + 2 hubs + 4 edges, which tells a real story:
-    "Person X is restricted from Hub A *and* Hub B; Hub A also touches Y;
-    Hub B also touches Z."
-
-    Fallbacks (in order):
-      • star: one hub with ≥ 2 distinct persons (3 nodes / 2 edges).
-      • a direct person → person edge (2 nodes / 1 edge).
-    Returns None if no usable pattern exists.
+    Falls back to a single star (one hub with ≥ 2 persons) and finally to
+    a direct person → person edge if no overlapping pair exists.
     """
-    # ── Try bowtie ───────────────────────────────────────────────────────
-    # 1. Bridge person: connected to ≥ 2 distinct company/association hubs,
-    #    where at least one of those hubs is shared with another person.
-    bridge_q = text("""
-        WITH person_hubs AS (
-            SELECT source_entity_id AS person_id,
-                   target_entity_type, target_entity_id
-            FROM entity_relationships
-            WHERE source_entity_type = 'person'
-              AND target_entity_type IN ('company', 'association')
-            GROUP BY source_entity_id, target_entity_type, target_entity_id
-        ),
-        hub_other_persons AS (
-            SELECT target_entity_type, target_entity_id,
-                   COUNT(DISTINCT source_entity_id) AS person_count
-            FROM entity_relationships
-            WHERE source_entity_type = 'person'
-              AND target_entity_type IN ('company', 'association')
-            GROUP BY target_entity_type, target_entity_id
-        )
-        SELECT ph.person_id,
-               COUNT(*) AS hub_count,
-               SUM(hop.person_count) AS reach
-        FROM person_hubs ph
-        JOIN hub_other_persons hop
-          ON hop.target_entity_type = ph.target_entity_type
-         AND hop.target_entity_id   = ph.target_entity_id
-        WHERE hop.person_count >= 2
-        GROUP BY ph.person_id
-        HAVING COUNT(*) >= 2
-        ORDER BY hub_count DESC, reach DESC, ph.person_id
+
+    # ── Pair selection ───────────────────────────────────────────────────
+    # Pick the pair of persons with the most shared hubs. Ordering by
+    # (shared, p1, p2) is deterministic across requests.
+    pair_q = text("""
+        SELECT a.source_entity_id AS p1,
+               b.source_entity_id AS p2,
+               COUNT(*)          AS shared_count
+        FROM entity_relationships a
+        JOIN entity_relationships b
+          ON a.target_entity_type = b.target_entity_type
+         AND a.target_entity_id   = b.target_entity_id
+         AND a.source_entity_id   < b.source_entity_id
+        WHERE a.source_entity_type = 'person'
+          AND b.source_entity_type = 'person'
+          AND a.target_entity_type IN ('company', 'association', 'domain')
+        GROUP BY a.source_entity_id, b.source_entity_id
+        ORDER BY shared_count DESC, p1, p2
         LIMIT 1
     """)
-    bridge_row = (await session.execute(bridge_q)).fetchone()
+    pair_row = (await session.execute(pair_q)).fetchone()
 
-    if bridge_row:
-        bridge_id = str(bridge_row[0])
-        # 2. Pick two of the bridge person's shared hubs.
-        hubs_q = text("""
-            SELECT er.target_entity_type, er.target_entity_id
-            FROM entity_relationships er
-            JOIN (
-                SELECT target_entity_type, target_entity_id
-                FROM entity_relationships
-                WHERE source_entity_type = 'person'
-                  AND target_entity_type IN ('company', 'association')
-                GROUP BY target_entity_type, target_entity_id
-                HAVING COUNT(DISTINCT source_entity_id) >= 2
-            ) shared
-              ON shared.target_entity_type = er.target_entity_type
-             AND shared.target_entity_id   = er.target_entity_id
-            WHERE er.source_entity_type = 'person'
-              AND er.source_entity_id   = :bridge
-              AND er.target_entity_type IN ('company', 'association')
-            GROUP BY er.target_entity_type, er.target_entity_id
-            ORDER BY er.target_entity_id
-            LIMIT 2
+    if pair_row:
+        p1 = str(pair_row[0])
+        p2 = str(pair_row[1])
+        # Pull every relationship that touches either person (in either
+        # direction). Then we'll trim the neighbourhood to keep the picture
+        # legible.
+        nbr_q = text("""
+            SELECT r.source_entity_type, r.source_entity_id,
+                   r.target_entity_type, r.target_entity_id,
+                   r.relationship_type, r.details,
+                   r.document_id, d.title AS doc_title, d.file_url AS doc_url
+            FROM entity_relationships r
+            LEFT JOIN documents d ON d.id = r.document_id
+            WHERE (r.source_entity_type = 'person' AND r.source_entity_id IN (:p1, :p2))
+               OR (r.target_entity_type = 'person' AND r.target_entity_id IN (:p1, :p2))
         """)
-        hub_rows = (await session.execute(hubs_q, {"bridge": bridge_id})).fetchall()
+        rows = (await session.execute(nbr_q, {"p1": p1, "p2": p2})).fetchall()
 
-        if len(hub_rows) >= 2:
-            rows = []
-            seen_persons = {bridge_id}
-            for hub_type, hub_id in hub_rows:
-                hub_id_s = str(hub_id)
-                # Bridge person → hub edge
-                bridge_edge = await _fetch_edge(session, bridge_id, hub_type, hub_id_s)
-                if bridge_edge is None:
-                    continue
-                rows.append(bridge_edge)
-                # Pick another distinct person on this hub
-                other_q = text("""
-                    SELECT DISTINCT source_entity_id
-                    FROM entity_relationships
-                    WHERE source_entity_type = 'person'
-                      AND target_entity_type = :hub_type
-                      AND target_entity_id   = :hub_id
-                      AND source_entity_id  <> :bridge
-                    ORDER BY source_entity_id
-                    LIMIT 5
-                """)
-                others = (await session.execute(
-                    other_q,
-                    {"hub_type": hub_type, "hub_id": hub_id_s, "bridge": bridge_id},
-                )).fetchall()
-                for (other_pid,) in others:
-                    pid = str(other_pid)
-                    if pid in seen_persons:
-                        continue
-                    other_edge = await _fetch_edge(session, pid, hub_type, hub_id_s)
-                    if other_edge:
-                        rows.append(other_edge)
-                        seen_persons.add(pid)
-                        break
-            # Need 4 edges = 3 persons + 2 hubs
-            if len(rows) >= 4 and len(seen_persons) >= 3:
-                return _build_subgraph_from_rows(rows)
+        if rows:
+            return _trim_two_suns(rows, p1, p2)
 
     # ── Fallback: star (1 hub, ≥ 2 persons) ──────────────────────────────
     hub_q = text("""
@@ -307,26 +228,24 @@ async def find_showcase_pair(session: AsyncSession) -> SubGraph | None:
     hub_row = (await session.execute(hub_q)).fetchone()
     if hub_row:
         hub_type, hub_id, _ = hub_row
-        persons_q = text("""
-            SELECT DISTINCT source_entity_id
-            FROM entity_relationships
-            WHERE source_entity_type = 'person'
-              AND target_entity_type = :hub_type
-              AND target_entity_id   = :hub_id
-            ORDER BY source_entity_id
-            LIMIT 4
+        edges_q = text("""
+            SELECT r.source_entity_type, r.source_entity_id,
+                   r.target_entity_type, r.target_entity_id,
+                   r.relationship_type, r.details,
+                   r.document_id, d.title AS doc_title, d.file_url AS doc_url
+            FROM entity_relationships r
+            LEFT JOIN documents d ON d.id = r.document_id
+            WHERE r.source_entity_type = 'person'
+              AND r.target_entity_type = :hub_type
+              AND r.target_entity_id   = :hub_id
+            ORDER BY r.created_at, r.id
+            LIMIT 6
         """)
-        person_rows = (await session.execute(
-            persons_q, {"hub_type": hub_type, "hub_id": str(hub_id)}
+        rows = (await session.execute(
+            edges_q, {"hub_type": hub_type, "hub_id": str(hub_id)}
         )).fetchall()
-        if len(person_rows) >= 2:
-            rows = []
-            for (pid,) in person_rows:
-                edge = await _fetch_edge(session, str(pid), hub_type, str(hub_id))
-                if edge:
-                    rows.append(edge)
-            if len(rows) >= 2:
-                return _build_subgraph_from_rows(rows)
+        if len(rows) >= 2:
+            return _build_subgraph_from_rows(rows)
 
     # ── Fallback: any direct person → person edge ────────────────────────
     direct_q = text("""
@@ -346,6 +265,60 @@ async def find_showcase_pair(session: AsyncSession) -> SubGraph | None:
         return _build_subgraph_from_rows(rows)
 
     return None
+
+
+def _trim_two_suns(rows, p1: str, p2: str, per_person_cap: int = 8) -> SubGraph:
+    """Pick rows so the resulting graph has both persons in the centre, all
+    of their *shared* neighbours, and up to `per_person_cap` extra unique
+    neighbours per person."""
+    # Group rows by (which person it touches, neighbour key)
+    p1_groups: dict[str, list] = {}
+    p2_groups: dict[str, list] = {}
+
+    for row in rows:
+        src_type, src_id, tgt_type, tgt_id = row[:4]
+        s = str(src_id)
+        t = str(tgt_id)
+        # Each row has at least one endpoint that is p1 or p2 (by construction).
+        if s == p1:
+            p1_groups.setdefault(f"{tgt_type}:{t}", []).append(row)
+        elif t == p1:
+            p1_groups.setdefault(f"{src_type}:{s}", []).append(row)
+        if s == p2:
+            p2_groups.setdefault(f"{tgt_type}:{t}", []).append(row)
+        elif t == p2:
+            p2_groups.setdefault(f"{src_type}:{s}", []).append(row)
+
+    shared = set(p1_groups) & set(p2_groups)
+    p1_only = sorted(set(p1_groups) - shared)[:per_person_cap]
+    p2_only = sorted(set(p2_groups) - shared)[:per_person_cap]
+
+    selected: list = []
+    seen_row_ids: set[int] = set()
+
+    def _add(row):
+        rid = id(row)
+        if rid in seen_row_ids:
+            return
+        seen_row_ids.add(rid)
+        selected.append(row)
+
+    # Shared connectors: include both edges so the connector visibly
+    # touches both persons.
+    for k in sorted(shared):
+        for r in p1_groups.get(k, []):
+            _add(r)
+        for r in p2_groups.get(k, []):
+            _add(r)
+
+    for k in p1_only:
+        for r in p1_groups[k]:
+            _add(r)
+    for k in p2_only:
+        for r in p2_groups[k]:
+            _add(r)
+
+    return _build_subgraph_from_rows(selected)
 
 
 def _build_subgraph_from_rows(rows) -> SubGraph:

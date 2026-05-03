@@ -1,7 +1,9 @@
 """Graph / connection endpoints."""
 
+import time
 import uuid
 from enum import Enum
+from typing import Any
 from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -107,15 +109,32 @@ async def graph_path(
     }
 
 
+# Module-level cache for the showcase result. The query is heavy (self-join
+# on entity_relationships) and the underlying data only changes on batch
+# imports, so an in-process TTL cache is plenty.
+_SHOWCASE_TTL_SECONDS = 1800  # 30 minutes
+_showcase_cache: tuple[float, dict[str, Any] | None] | None = None
+
+
 @router.get("/graph/showcase")
 async def graph_showcase(db: AsyncSession = Depends(get_db)):
-    """Return a small subgraph illustrating two persons connected via a
-    shared neighbor. Used by the home page to demonstrate the data."""
+    """Return a "two suns" subgraph illustrating two persons whose declared
+    networks overlap. Used by the home page to demonstrate the data shape.
+    Result is cached in-process for half an hour."""
+    global _showcase_cache
+    now = time.time()
+    if _showcase_cache and (now - _showcase_cache[0]) < _SHOWCASE_TTL_SECONDS:
+        return {"status": "ok", "data": _showcase_cache[1], "cached": True}
+
     subgraph = await find_showcase_pair(db)
     if subgraph is None:
+        _showcase_cache = (now, None)
         return {"status": "ok", "data": None}
+
     await _enrich_subgraph(db, subgraph)
-    return {"status": "ok", "data": subgraph.model_dump()}
+    payload = subgraph.model_dump()
+    _showcase_cache = (now, payload)
+    return {"status": "ok", "data": payload}
 
 
 @router.get("/graph/subgraph")
