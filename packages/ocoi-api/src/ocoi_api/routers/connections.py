@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ocoi_api.dependencies import get_db
-from ocoi_db.graph import get_neighbors, find_path
+from ocoi_db.graph import get_neighbors, find_path, find_showcase_pair
 from ocoi_db.models import Person, Company, Association, Domain
 
 router = APIRouter(tags=["connections"])
@@ -105,6 +105,17 @@ async def graph_path(
         "status": "ok",
         "data": subgraph.model_dump(),
     }
+
+
+@router.get("/graph/showcase")
+async def graph_showcase(db: AsyncSession = Depends(get_db)):
+    """Return a small subgraph illustrating two persons connected via a
+    shared neighbor. Used by the home page to demonstrate the data."""
+    subgraph = await find_showcase_pair(db)
+    if subgraph is None:
+        return {"status": "ok", "data": None}
+    await _enrich_subgraph(db, subgraph)
+    return {"status": "ok", "data": subgraph.model_dump()}
 
 
 @router.get("/graph/subgraph")

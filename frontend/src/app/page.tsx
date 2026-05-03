@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { SearchBar } from "@/components/search/SearchBar";
 import { SearchResults } from "@/components/search/SearchResults";
 import { EntityDiscovery } from "@/components/EntityDiscovery";
+import { ShowcaseGraph } from "@/components/ShowcaseGraph";
 import type { EntitySummary } from "@/lib/api-client";
 import { getStats } from "@/lib/api-client";
 
@@ -90,6 +91,9 @@ export default function HomePage() {
           <SearchResults results={results} />
         </div>
       )}
+
+      {/* Showcase: a real connection from the data, shown when not searching */}
+      {!loading && !query && <ShowcaseGraph />}
 
       {/* Entity Discovery - shown when not searching */}
       {!loading && !query && <EntityDiscovery />}

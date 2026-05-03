@@ -159,6 +159,72 @@ async def find_path(
     return _build_subgraph_from_rows(rows)
 
 
+async def find_showcase_pair(session: AsyncSession) -> SubGraph | None:
+    """Find a "showcase" subgraph: two persons sharing a common neighbor
+    (company / association), so the home page can illustrate the data shape.
+
+    Strategy:
+      1. Pick the company/association with the most distinct persons attached
+         to it (must have ≥ 2). Return [hub, person_a, person_b] with both
+         person→hub edges.
+      2. Fallback: any direct person→person relationship (e.g. family).
+    Returns None if neither exists.
+    """
+    hub_q = text("""
+        SELECT target_entity_type AS hub_type,
+               target_entity_id   AS hub_id,
+               COUNT(DISTINCT source_entity_id) AS person_count
+        FROM entity_relationships
+        WHERE source_entity_type = 'person'
+          AND target_entity_type IN ('company', 'association')
+        GROUP BY target_entity_type, target_entity_id
+        HAVING COUNT(DISTINCT source_entity_id) >= 2
+        ORDER BY person_count DESC, hub_id
+        LIMIT 1
+    """)
+    hub_row = (await session.execute(hub_q)).fetchone()
+
+    if hub_row:
+        hub_type, hub_id, _ = hub_row
+        edges_q = text("""
+            SELECT r.source_entity_type, r.source_entity_id,
+                   r.target_entity_type, r.target_entity_id,
+                   r.relationship_type, r.details,
+                   r.document_id, d.title AS doc_title, d.file_url AS doc_url
+            FROM entity_relationships r
+            LEFT JOIN documents d ON d.id = r.document_id
+            WHERE r.source_entity_type = 'person'
+              AND r.target_entity_type = :hub_type
+              AND r.target_entity_id   = :hub_id
+            ORDER BY r.created_at, r.id
+            LIMIT 2
+        """)
+        rows = (await session.execute(
+            edges_q, {"hub_type": hub_type, "hub_id": str(hub_id)}
+        )).fetchall()
+        if len(rows) >= 2:
+            return _build_subgraph_from_rows(rows)
+
+    # Fallback: any direct person→person edge.
+    direct_q = text("""
+        SELECT r.source_entity_type, r.source_entity_id,
+               r.target_entity_type, r.target_entity_id,
+               r.relationship_type, r.details,
+               r.document_id, d.title AS doc_title, d.file_url AS doc_url
+        FROM entity_relationships r
+        LEFT JOIN documents d ON d.id = r.document_id
+        WHERE r.source_entity_type = 'person'
+          AND r.target_entity_type = 'person'
+          AND r.source_entity_id <> r.target_entity_id
+        LIMIT 1
+    """)
+    rows = (await session.execute(direct_q)).fetchall()
+    if rows:
+        return _build_subgraph_from_rows(rows)
+
+    return None
+
+
 def _build_subgraph_from_rows(rows) -> SubGraph:
     nodes_map: dict[str, EntitySummary] = {}
     edges: list[ConnectionEdge] = []
