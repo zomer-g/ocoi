@@ -1,6 +1,5 @@
 """Graph / connection endpoints."""
 
-import time
 import uuid
 from enum import Enum
 from typing import Any
@@ -9,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ocoi_api.dependencies import get_db
+from ocoi_common import now_israel
 from ocoi_db.graph import get_neighbors, find_path, find_showcase_pair
 from ocoi_db.models import Person, Company, Association, Domain
 
@@ -109,31 +109,41 @@ async def graph_path(
     }
 
 
-# Module-level cache for the showcase result. The query is heavy (self-join
-# on entity_relationships) and the underlying data only changes on batch
-# imports, so an in-process TTL cache is plenty.
-_SHOWCASE_TTL_SECONDS = 1800  # 30 minutes
-_showcase_cache: tuple[float, dict[str, Any] | None] | None = None
+# Module-level cache for the showcase result. The pair rotates by date in
+# Israel time, so the cache key is just today's date string. A new day →
+# new query → new pair. Same day → instant.
+_showcase_cache: tuple[str, dict[str, Any] | None] | None = None
+
+
+def _today_key() -> str:
+    """Cache key — today's date in Israel time. Stable for an entire day."""
+    return now_israel().date().isoformat()
+
+
+def _today_seed() -> int:
+    """Daily rotation seed — proleptic Gregorian ordinal in Israel time."""
+    return now_israel().date().toordinal()
 
 
 @router.get("/graph/showcase")
 async def graph_showcase(db: AsyncSession = Depends(get_db)):
     """Return a "two suns" subgraph illustrating two persons whose declared
     networks overlap. Used by the home page to demonstrate the data shape.
-    Result is cached in-process for half an hour."""
+    The chosen pair rotates daily; the result is cached in-process for the
+    rest of the calendar day (Israel time)."""
     global _showcase_cache
-    now = time.time()
-    if _showcase_cache and (now - _showcase_cache[0]) < _SHOWCASE_TTL_SECONDS:
+    today = _today_key()
+    if _showcase_cache and _showcase_cache[0] == today:
         return {"status": "ok", "data": _showcase_cache[1], "cached": True}
 
-    subgraph = await find_showcase_pair(db)
+    subgraph = await find_showcase_pair(db, rotation_seed=_today_seed())
     if subgraph is None:
-        _showcase_cache = (now, None)
+        _showcase_cache = (today, None)
         return {"status": "ok", "data": None}
 
     await _enrich_subgraph(db, subgraph)
     payload = subgraph.model_dump()
-    _showcase_cache = (now, payload)
+    _showcase_cache = (today, payload)
     return {"status": "ok", "data": payload}
 
 

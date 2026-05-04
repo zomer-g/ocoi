@@ -159,12 +159,19 @@ async def find_path(
     return _build_subgraph_from_rows(rows)
 
 
-async def find_showcase_pair(session: AsyncSession) -> SubGraph | None:
+async def find_showcase_pair(
+    session: AsyncSession,
+    rotation_seed: int = 0,
+) -> SubGraph | None:
     """Find a "two suns" showcase: pick two persons who share several
     declared hubs (companies / associations / domains), and return the
     full union of their direct neighborhoods. Visually this lays out as
     two dense stars whose overlap sits between them — exactly the kind of
     picture that explains what the project surfaces.
+
+    `rotation_seed` rotates the choice across a list of top candidate hubs:
+    callers can pass e.g. today's ordinal to give each day a different
+    showcase pair. Same seed → same result, so daily caching is trivial.
 
     Falls back to a single star (one hub with ≥ 2 persons) and finally to
     a direct person → person edge if no overlapping pair exists.
@@ -172,28 +179,33 @@ async def find_showcase_pair(session: AsyncSession) -> SubGraph | None:
 
     # ── Pair selection ───────────────────────────────────────────────────
     # Cheap two-step lookup that avoids a self-join over the whole table:
-    #   1. Pick the most-connected hub (most distinct persons attached).
-    #   2. Take any two of those persons. They are guaranteed to share at
-    #      least that hub; they may share more, which the neighbourhood
-    #      union below will surface naturally.
-    hub_pick_q = text("""
+    #   1. Pull the top-N most-connected hubs (most distinct persons).
+    #   2. Pick one by `rotation_seed % len(hubs)` — gives daily rotation
+    #      while keeping the per-day result deterministic.
+    #   3. Take two of that hub's persons, also rotated.
+    HUB_CANDIDATES = 20
+    hub_pick_q = text(f"""
         SELECT target_entity_type AS hub_type,
-               target_entity_id   AS hub_id
+               target_entity_id   AS hub_id,
+               COUNT(DISTINCT source_entity_id) AS person_count
         FROM entity_relationships
         WHERE source_entity_type = 'person'
           AND target_entity_type IN ('company', 'association', 'domain')
         GROUP BY target_entity_type, target_entity_id
         HAVING COUNT(DISTINCT source_entity_id) >= 2
-        ORDER BY COUNT(DISTINCT source_entity_id) DESC,
-                 target_entity_id
-        LIMIT 1
+        ORDER BY person_count DESC, target_entity_id
+        LIMIT {HUB_CANDIDATES}
     """)
-    hub_pick = (await session.execute(hub_pick_q)).fetchone()
+    hub_rows = (await session.execute(hub_pick_q)).fetchall()
 
     p1: str | None = None
     p2: str | None = None
-    if hub_pick:
-        ht, hi = hub_pick
+    if hub_rows:
+        chosen = hub_rows[rotation_seed % len(hub_rows)]
+        ht, hi, person_count = chosen
+        # For the chosen hub, pull all distinct persons and rotate two of
+        # them in based on the seed too — so every day picks a different
+        # *pair* even when the chosen hub is rich.
         person_rows = (await session.execute(text("""
             SELECT DISTINCT source_entity_id
             FROM entity_relationships
@@ -201,11 +213,15 @@ async def find_showcase_pair(session: AsyncSession) -> SubGraph | None:
               AND target_entity_type = :ht
               AND target_entity_id   = :hi
             ORDER BY source_entity_id
-            LIMIT 2
         """), {"ht": ht, "hi": str(hi)})).fetchall()
         if len(person_rows) >= 2:
-            p1 = str(person_rows[0][0])
-            p2 = str(person_rows[1][0])
+            n = len(person_rows)
+            i1 = rotation_seed % n
+            i2 = (rotation_seed + 1 + (rotation_seed // n)) % n
+            if i2 == i1:
+                i2 = (i1 + 1) % n
+            p1 = str(person_rows[i1][0])
+            p2 = str(person_rows[i2][0])
 
     if p1 and p2:
         # Pull every relationship that touches either person (in either
