@@ -158,7 +158,7 @@ const DEFAULT_ABOUT_HTML = `
 <p>אתר זה נבנה בהתאם להנחיות נגישות WCAG 2.1 ברמה AA. אם נתקלתם בבעיית נגישות, אנא פנו אלינו כדי שנוכל לתקן ולשפר.</p>
 
 <h2>יצירת קשר</h2>
-<p>לדליפות מידע, בעיות נגישות, הארות, הערות, ושלל צרות — <a href="mailto:zomer@octopus.org.il">zomer@octopus.org.il</a>.</p>
+<p>לדליפות מידע, בעיות נגישות, הארות, הערות, ושלל צרות — <a href="mailto:guy@z-g.co.il">guy@z-g.co.il</a>.</p>
 `;
 
 export default function AboutPage() {

@@ -147,4 +147,4 @@ This project is currently published without a formal license. All rights reserve
 
 ## Contact
 
-zomer@octopus.org.il
+guy@z-g.co.il
