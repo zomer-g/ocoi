@@ -33,9 +33,12 @@ function renderInline(s: string): string {
     // If the inner text itself contains a markdown link, strip it down to
     // its label so we don't render two anchor tags inside one another.
     const cleanText = text.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
-    const isExternal = /^https?:\/\//i.test(href);
+    // Strip any whitespace (CMS pasters often type "mailto: foo@bar"
+    // with a stray space after the colon, which breaks the link).
+    const cleanHref = href.replace(/\s+/g, "");
+    const isExternal = /^https?:\/\//i.test(cleanHref);
     const attrs = isExternal ? ' target="_blank" rel="noopener noreferrer"' : "";
-    return `<a href="${href}"${attrs}>${cleanText}</a>`;
+    return `<a href="${cleanHref}"${attrs}>${cleanText}</a>`;
   });
   // Bold: **text**
   s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
