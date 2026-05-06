@@ -25,7 +25,7 @@ from ocoi_db.crud import _add_alias, _get_aliases
 from ocoi_db.models import (
     Person, Company, Association, Domain,
     EntityRelationship, Document, Source, ExtractionRun, IgnoredResource,
-    SiteContent,
+    SiteContent, Suggestion,
 )
 
 router = APIRouter(
@@ -1662,5 +1662,108 @@ async def update_site_content(key: str, body: dict, db: AsyncSession = Depends(g
         row.value = value
     else:
         db.add(SiteContent(key=key, value=value))
+    await db.commit()
+    return {"status": "ok"}
+
+
+# ── User-submitted Suggestions (review queue) ─────────────────────────────
+
+_SUGGESTION_STATUSES = {"pending", "approved", "rejected"}
+
+
+@router.get("/suggestions")
+async def list_suggestions(
+    status: str | None = None,
+    target_kind: str | None = None,
+    page: int = 1,
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+):
+    """List submitted suggestions with optional filters. Newest first."""
+    page = max(1, page)
+    limit = max(1, min(200, limit))
+    offset = (page - 1) * limit
+
+    q = select(Suggestion)
+    cq = select(func.count()).select_from(Suggestion)
+    if status and status in _SUGGESTION_STATUSES:
+        q = q.where(Suggestion.status == status)
+        cq = cq.where(Suggestion.status == status)
+    if target_kind:
+        q = q.where(Suggestion.target_kind == target_kind)
+        cq = cq.where(Suggestion.target_kind == target_kind)
+
+    total = (await db.execute(cq)).scalar() or 0
+    rows = (await db.execute(
+        q.order_by(Suggestion.created_at.desc()).limit(limit).offset(offset)
+    )).scalars().all()
+
+    return {
+        "status": "ok",
+        "data": [
+            {
+                "id": r.id,
+                "target_kind": r.target_kind,
+                "target_id": r.target_id,
+                "field_name": r.field_name,
+                "current_value": r.current_value,
+                "proposed_value": r.proposed_value,
+                "comment": r.comment,
+                "submitter_email": r.submitter_email,
+                "document_id": r.document_id,
+                "status": r.status,
+                "admin_notes": r.admin_notes,
+                "resolved_at": r.resolved_at.isoformat() if r.resolved_at else None,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ],
+        "meta": {
+            "total": total,
+            "page": page,
+            "limit": limit,
+            "pages": (total + limit - 1) // limit if total else 0,
+        },
+    }
+
+
+@router.patch("/suggestions/{suggestion_id}")
+async def update_suggestion(
+    suggestion_id: str,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    """Update status / admin_notes for a suggestion."""
+    from datetime import datetime
+    row = await db.get(Suggestion, suggestion_id)
+    if row is None:
+        raise HTTPException(404, "Suggestion not found")
+
+    new_status = body.get("status")
+    if new_status is not None:
+        if new_status not in _SUGGESTION_STATUSES:
+            raise HTTPException(400, f"status must be one of {sorted(_SUGGESTION_STATUSES)}")
+        row.status = new_status
+        if new_status in ("approved", "rejected"):
+            row.resolved_at = datetime.utcnow()
+        else:
+            row.resolved_at = None
+
+    if "admin_notes" in body:
+        row.admin_notes = (body.get("admin_notes") or None)
+
+    await db.commit()
+    return {"status": "ok"}
+
+
+@router.delete("/suggestions/{suggestion_id}")
+async def delete_suggestion(
+    suggestion_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    row = await db.get(Suggestion, suggestion_id)
+    if row is None:
+        raise HTTPException(404, "Suggestion not found")
+    await db.delete(row)
     await db.commit()
     return {"status": "ok"}

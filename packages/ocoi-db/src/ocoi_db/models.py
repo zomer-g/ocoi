@@ -247,3 +247,45 @@ class SiteContent(Base):
     key: Mapped[str] = mapped_column(String(50), primary_key=True)
     value: Mapped[str] = mapped_column(Text, nullable=False, default="")
     updated_at: Mapped[datetime | None] = mapped_column(DateTime, default=func.now(), onupdate=func.now())
+
+
+class Suggestion(Base):
+    """User-submitted correction or note for a specific field of a document
+    or extracted entity / relationship. Reviewed by admins.
+    """
+    __tablename__ = "suggestions"
+
+    id: Mapped[str] = mapped_column(DBUUID(), primary_key=True, default=new_uuid)
+
+    # What is being commented on
+    target_kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    # one of: 'document', 'person', 'company', 'association', 'domain', 'relationship'
+    target_id: Mapped[str] = mapped_column(DBUUID(), nullable=False)
+    field_name: Mapped[str] = mapped_column(String(60), nullable=False)
+    # e.g. 'title', 'name_hebrew', 'position', 'ministry', 'details', 'relationship_type'
+
+    # Optional document context (where the user was when submitting)
+    document_id: Mapped[str | None] = mapped_column(
+        DBUUID(), ForeignKey("documents.id", ondelete="SET NULL"), nullable=True,
+    )
+
+    # The note itself
+    current_value: Mapped[str | None] = mapped_column(Text)
+    proposed_value: Mapped[str | None] = mapped_column(Text)
+    comment: Mapped[str | None] = mapped_column(Text)
+    submitter_email: Mapped[str | None] = mapped_column(String(200))
+
+    # Workflow
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    # one of: 'pending', 'approved', 'rejected'
+    admin_notes: Mapped[str | None] = mapped_column(Text)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    created_at: Mapped[datetime | None] = mapped_column(DateTime, default=func.now())
+
+    __table_args__ = (
+        Index("ix_suggestions_status", "status"),
+        Index("ix_suggestions_target", "target_kind", "target_id"),
+        Index("ix_suggestions_document", "document_id"),
+        Index("ix_suggestions_created_at", "created_at"),
+    )

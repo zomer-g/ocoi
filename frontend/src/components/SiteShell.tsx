@@ -10,6 +10,7 @@ interface NavLink {
 const DEFAULT_NAV: NavLink[] = [
   { href: "/", label: "חיפוש" },
   { href: "/graph", label: "מפת קשרים" },
+  { href: "/documents", label: "מסמכים" },
   { href: "/api-docs", label: "API ציבורי" },
   { href: "/about", label: "אודות" },
 ];
