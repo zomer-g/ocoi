@@ -203,6 +203,21 @@ async def get_document_graph(doc_id: uuid.UUID, db: AsyncSession = Depends(get_d
     return {"status": "ok", "data": {"nodes": nodes, "edges": edges}}
 
 
+def _inline_disposition(filename: str) -> str:
+    """Build a Content-Disposition value that survives non-ASCII filenames.
+
+    HTTP headers must be Latin-1, so a Hebrew title in the `filename=`
+    parameter raises a UnicodeEncodeError when Starlette serialises the
+    response. RFC 5987's `filename*=UTF-8''...%XX...` form is supported
+    by every modern browser and lets us keep the original Hebrew name.
+    """
+    import urllib.parse
+    safe_ascii = filename.encode("ascii", "ignore").decode("ascii") or "document.pdf"
+    safe_ascii = safe_ascii.replace('"', "").replace("\n", " ").strip() or "document.pdf"
+    encoded = urllib.parse.quote(filename, safe="")
+    return f'inline; filename="{safe_ascii}"; filename*=UTF-8\'\'{encoded}'
+
+
 @router.get("/documents/{doc_id}/pdf")
 async def serve_public_pdf(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """Stream the document's PDF for inline viewing in the public UI.
@@ -217,8 +232,9 @@ async def serve_public_pdf(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db)
     if not doc:
         raise HTTPException(404, "Document not found")
 
-    safe_title = (doc.title or doc.id).replace('"', "").replace("\n", " ")
-    filename = f"{safe_title}.pdf"
+    raw_title = (doc.title or doc.id).replace('"', "").replace("\n", " ")
+    filename = raw_title if raw_title.lower().endswith(".pdf") else f"{raw_title}.pdf"
+    disposition = _inline_disposition(filename)
 
     # Disk first (cheap)
     pdf_path: Path | None = None
@@ -232,7 +248,7 @@ async def serve_public_pdf(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db)
         return FileResponse(
             pdf_path,
             media_type="application/pdf",
-            headers={"Content-Disposition": f'inline; filename="{filename}"'},
+            headers={"Content-Disposition": disposition},
         )
 
     # Otherwise pull bytes from DB
@@ -244,7 +260,7 @@ async def serve_public_pdf(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db)
         return Response(
             content=doc.pdf_content,
             media_type="application/pdf",
-            headers={"Content-Disposition": f'inline; filename="{filename}"'},
+            headers={"Content-Disposition": disposition},
         )
 
     raise HTTPException(404, "PDF file not found")
