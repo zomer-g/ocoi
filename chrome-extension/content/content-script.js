@@ -66,7 +66,12 @@
 
   const SCAN_CONCURRENCY = 2;
   const MAX_CANDIDATES_PER_SCAN = 400;
-  const DEBUG = true; // toggle to silence the [OCOI] console output
+  // Verbose console + warning emission. Off in production. Flip to true
+  // by setting localStorage.OCOI_DEBUG = "1" in DevTools → reload page.
+  const DEBUG =
+    (typeof window !== "undefined" &&
+      window.localStorage &&
+      window.localStorage.getItem("OCOI_DEBUG") === "1") || false;
 
   // Cache: candidate string → search result row (or null for "no match").
   const candidateMap = new Map();
@@ -173,24 +178,16 @@
   function collectCandidates() {
     const blocks = [];
     const candidates = new Set();
-    const probeHits = []; // text snippets of leaf blocks that contain "יריב"
     let totalLeafBlocks = 0;
     for (const el of collectLeafBlocks()) {
       totalLeafBlocks++;
       const info = gatherTextNodes(el);
       if (!info.combined || info.combined.length < 5) continue;
       if (!HEBREW_RANGE.test(info.combined)) continue;
-      if (DEBUG && /יריב/.test(info.combined)) {
-        probeHits.push({
-          tag: el.tagName,
-          cls: String(el.className || "").split(" ")[0] || "",
-          text: info.combined.slice(0, 160),
-        });
-      }
       extractCandidates(info.combined, candidates);
       blocks.push({ element: el, ...info });
     }
-    return { blocks, candidates: [...candidates], totalLeafBlocks, probeHits };
+    return { blocks, candidates: [...candidates], totalLeafBlocks };
   }
 
   // ---------------------------------------------------------------------
@@ -533,7 +530,7 @@
       wrap.appendChild(retry);
       body.appendChild(wrap);
       if (DEBUG) {
-        console.warn("[OCOI] neighbors failed for", match, "→", resp);
+        console.log("[OCOI] neighbors failed for", match, "→", resp);
       }
       return;
     }
@@ -660,7 +657,7 @@
       return { scanned: 0, matched: 0, highlighted: 0 };
     }
 
-    const { blocks, candidates, totalLeafBlocks, probeHits } = collectCandidates();
+    const { blocks, candidates, totalLeafBlocks } = collectCandidates();
     const limited = candidates.slice(0, MAX_CANDIDATES_PER_SCAN);
 
     if (DEBUG) {
@@ -668,25 +665,8 @@
       console.log("api base:", settings.apiBase);
       console.log("leafBlocks total =", totalLeafBlocks, "  blocks with Hebrew text =", blocks.length);
       console.log("unique candidates =", candidates.length, "  truncated to =", limited.length);
-      console.log("blocks containing 'יריב' =", probeHits.length);
-      if (probeHits.length > 0) {
-        console.log("→ matching block samples:", probeHits);
-      } else {
-        console.warn("→ NO block on this page contained 'יריב' at scan time. " +
-          "The article body may be lazy-loaded after our scan ran.");
-      }
       console.log("first 12 candidates:", limited.slice(0, 12));
-      console.log("'יריב לוין' present in candidates:", limited.includes("יריב לוין"));
       console.groupEnd();
-    }
-
-    // Probe a known entity (יריב לוין) up-front to verify the API is fully
-    // reachable and returns the expected shape — independent of whether
-    // the page's text actually contains that name.
-    if (DEBUG) {
-      const probe = "יריב לוין";
-      const probeResp = await rpc({ type: "ocoi.search", q: probe });
-      console.log("[OCOI] sanity probe '%s' →", probe, probeResp);
     }
 
     rpc({ type: "ocoi.badge", text: "…", color: "#e91e63" });
@@ -749,8 +729,8 @@
       console.group("[OCOI] scan results — total " + elapsed + "s");
       console.log("queries OK =", okCount, "  queries failed =", failed);
       if (failed > 0) {
-        console.warn("error breakdown:", errorCounts);
-        console.warn("first failure samples:", failureSamples);
+        console.log("error breakdown:", errorCounts);
+        console.log("first failure samples:", failureSamples);
       }
       console.log("matches =", matches.size,
         [...matches.entries()].map(([k, v]) => ({ q: k, name: v?.name, type: v?.type }))
