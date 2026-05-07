@@ -46,40 +46,52 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+// One running flag for the whole worker, so when Cloudflare starts
+// throwing interstitials we slow EVERY in-flight request down for a
+// moment instead of each one independently retrying and amplifying the
+// stampede. Reset itself after a short cooldown.
+let cloudflareCooldownUntil = 0;
+
+async function respectCooldown() {
+  const wait = cloudflareCooldownUntil - Date.now();
+  if (wait > 0) await sleep(wait);
+}
+
+function tripCooldown(ms) {
+  cloudflareCooldownUntil = Math.max(cloudflareCooldownUntil, Date.now() + ms);
+}
+
 // Fetch wrapper that recognises Cloudflare's "challenge" (HTML body
-// served at the API URL with an HTTP 200 or 403/503), waits, and retries.
-// Without this, a burst of 100+ scan queries reliably trips the challenge
-// for ~30% of queries on OCOI and we'd report them as "errors" even
-// though a single retry succeeds.
-async function fetchJsonWithRetry(url, attempts = 3) {
+// served at the API URL with HTTP 200 or 403/503), waits, and retries.
+async function fetchJsonWithRetry(url, attempts = 4, perAttemptTimeoutMs = 25000) {
   let lastError = null;
   for (let i = 0; i < attempts; i++) {
+    await respectCooldown();
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), perAttemptTimeoutMs);
     try {
-      const res = await fetch(url, { credentials: "omit" });
+      const res = await fetch(url, { credentials: "omit", signal: ctrl.signal });
+      clearTimeout(timer);
       const ct = (res.headers.get("content-type") || "").toLowerCase();
-      // 429 / 503 → wait longer and retry.
       if (res.status === 429 || res.status === 503) {
         lastError = `HTTP ${res.status}`;
-        await sleep(400 + i * 600);
+        tripCooldown(1200 + i * 800);
         continue;
       }
       if (!res.ok) {
         return { ok: false, error: `HTTP ${res.status}` };
       }
-      // If the server gave us something that isn't JSON, treat it as a
-      // Cloudflare interstitial and retry after a short pause.
       if (!ct.includes("json")) {
         lastError = `non-json response (${ct || "no content-type"})`;
-        await sleep(300 + i * 500);
+        tripCooldown(1500 + i * 700);
         continue;
       }
       const json = await res.json();
       return { ok: true, json };
     } catch (e) {
-      lastError = String(e);
-      // SyntaxError from res.json() means the body wasn't JSON — same
-      // root cause as the content-type guard above.
-      await sleep(300 + i * 500);
+      clearTimeout(timer);
+      lastError = (e && e.name === "AbortError") ? "fetch timeout" : String(e);
+      await sleep(500 + i * 600);
     }
   }
   return { ok: false, error: lastError || "exhausted retries" };

@@ -97,6 +97,21 @@
   font-size: 13px;
 }
 
+.ocoi-retry {
+  appearance: none;
+  margin-top: 12px;
+  background: #e91e63;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 7px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+}
+.ocoi-retry:hover { background: #d81b60; }
+
 .ocoi-panel-footer {
   padding: 8px 12px;
   border-top: 1px solid #e5e7eb;

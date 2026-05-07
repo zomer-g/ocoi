@@ -64,8 +64,8 @@
     }
   }
 
-  const SCAN_CONCURRENCY = 4;
-  const MAX_CANDIDATES_PER_SCAN = 600;
+  const SCAN_CONCURRENCY = 2;
+  const MAX_CANDIDATES_PER_SCAN = 400;
   const DEBUG = true; // toggle to silence the [OCOI] console output
 
   // Cache: candidate string → search result row (or null for "no match").
@@ -245,18 +245,29 @@
   // ---------------------------------------------------------------------
   // API plumbing — every fetch goes through the service worker.
 
-  function rpc(message) {
+  function rpc(message, timeoutMs = 25000) {
     return new Promise((resolve) => {
+      let settled = false;
+      const finish = (val) => {
+        if (settled) return;
+        settled = true;
+        resolve(val);
+      };
+      const timer = setTimeout(() => {
+        finish({ status: "error", error: "client timeout after " + timeoutMs + "ms" });
+      }, timeoutMs);
       try {
         chrome.runtime.sendMessage(message, (resp) => {
+          clearTimeout(timer);
           if (chrome.runtime.lastError) {
-            resolve({ status: "error", error: chrome.runtime.lastError.message });
+            finish({ status: "error", error: chrome.runtime.lastError.message });
             return;
           }
-          resolve(resp);
+          finish(resp);
         });
       } catch (e) {
-        resolve({ status: "error", error: String(e) });
+        clearTimeout(timer);
+        finish({ status: "error", error: String(e) });
       }
     });
   }
@@ -478,7 +489,11 @@
     const link = panel.querySelector(".ocoi-panel-link");
     link.href = `${ocoiOrigin()}${entityPagePath(match.type, match.id)}`;
     const body = panel.querySelector(".ocoi-panel-body");
-    body.innerHTML = `<div class="ocoi-loading">טוען קשרים…</div>`;
+    body.innerHTML = "";
+    const loading = document.createElement("div");
+    loading.className = "ocoi-loading";
+    loading.textContent = "טוען קשרים…";
+    body.appendChild(loading);
 
     const resp = await rpc({
       type: "ocoi.neighbors",
@@ -488,7 +503,26 @@
     });
 
     if (!resp || resp.status !== "ok" || !resp.data) {
-      body.innerHTML = `<div class="ocoi-empty">אין נתונים זמינים.</div>`;
+      // Build the error/retry UI from DOM nodes (not innerHTML) so we can
+      // safely interpolate the error message without HTML injection.
+      body.innerHTML = "";
+      const wrap = document.createElement("div");
+      wrap.className = "ocoi-empty";
+      const main = document.createElement("div");
+      main.textContent = resp && resp.error
+        ? `שגיאה בטעינה: ${resp.error}`
+        : "אין נתונים זמינים.";
+      const retry = document.createElement("button");
+      retry.className = "ocoi-retry";
+      retry.type = "button";
+      retry.textContent = "נסה שוב";
+      retry.addEventListener("click", () => showPanel(match));
+      wrap.appendChild(main);
+      wrap.appendChild(retry);
+      body.appendChild(wrap);
+      if (DEBUG) {
+        console.warn("[OCOI] neighbors failed for", match, "→", resp);
+      }
       return;
     }
     renderGraph(body, match, resp.data);
