@@ -40,6 +40,11 @@ function DocumentContent() {
   const [loading, setLoading] = useState(true);
   const [showTable, setShowTable] = useState(false);
   const [suggestionTarget, setSuggestionTarget] = useState<SuggestionTarget | null>(null);
+  // Default to split view on wide screens, stacked on narrow
+  const [splitView, setSplitView] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    return window.innerWidth >= 1024;
+  });
 
   useEffect(() => {
     if (!docId) {
@@ -80,14 +85,81 @@ function DocumentContent() {
     return <div className="text-center py-12 text-gray-400">המסמך לא נמצא</div>;
   }
 
-  const pdfUrl = doc.file_url && !doc.file_url.startsWith("upload://") ? doc.file_url : null;
+  // Always serve the PDF through our own endpoint so the iframe is
+  // same-origin and the X-Frame-Options header lets us embed it.
+  const pdfSrc = `/api/v1/documents/${doc.id}/pdf`;
   const persons = (graph?.nodes || []).filter((n) => n.entity_type === "person");
   const otherEntities = (graph?.nodes || []).filter((n) => n.entity_type !== "person");
 
   const openSuggestion = (target: SuggestionTarget) => setSuggestionTarget(target);
 
+  // Reusable cards
+  const graphCard = (
+    <div className="bg-white rounded-xl border border-gray-200 flex flex-col h-full">
+      <div className="flex items-center justify-between p-4 border-b border-gray-200">
+        <h2 className="text-lg font-semibold text-gray-900">
+          מפת הקשרים שחולצה
+          {graph && (
+            <span className="mr-2 text-sm font-normal text-gray-500">
+              ({graph.nodes.length} ישויות, {graph.edges.length} קשרים)
+            </span>
+          )}
+        </h2>
+        {graph && graph.edges.length > 0 && (
+          <button
+            onClick={() => setShowTable((v) => !v)}
+            className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+          >
+            {showTable ? "הסתר טבלה" : "הצג כטבלה"}
+          </button>
+        )}
+      </div>
+      <div className="flex-1 bg-gray-50 min-h-[420px]">
+        {graph && graph.edges.length > 0 ? (
+          <ConnectionMap
+            graph={graph}
+            onNodeClick={(nodeId, nodeType) => {
+              window.location.href = `/entity?id=${nodeId}&type=${nodeType}`;
+            }}
+          />
+        ) : (
+          <div className="flex items-center justify-center h-full min-h-[420px] text-gray-400 text-sm">
+            לא נמצאו קשרים שחולצו מהמסמך הזה
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  const pdfCard = (
+    <div className="bg-white rounded-xl border border-gray-200 flex flex-col h-full">
+      <div className="flex items-center justify-between p-4 border-b border-gray-200">
+        <h2 className="text-lg font-semibold text-gray-900">המסמך המקורי</h2>
+        <a
+          href={pdfSrc}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-sm text-primary-600 hover:underline"
+        >
+          פתח בלשונית חדשה ↗
+        </a>
+      </div>
+      <div className="flex-1 min-h-[420px]" dir="ltr">
+        <iframe
+          src={pdfSrc}
+          className="w-full h-full border-0"
+          title={doc.title || "מסמך"}
+        />
+      </div>
+    </div>
+  );
+
   return (
-    <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <div
+      className={`mx-auto px-4 sm:px-6 lg:px-8 py-8 ${
+        splitView ? "max-w-[1500px]" : "max-w-6xl"
+      }`}
+    >
       <div className="mb-4">
         <Link href="/documents" className="text-sm text-primary-600 hover:underline">
           ← חזרה לרשימת מסמכים
@@ -98,7 +170,7 @@ function DocumentContent() {
       <div className="bg-white rounded-xl border border-gray-200 p-5 mb-6">
         <div className="flex items-start justify-between gap-4">
           <div className="flex-1">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <h1 className="text-2xl font-bold text-gray-900">
                 {doc.title || "ללא כותרת"}
               </h1>
@@ -124,12 +196,35 @@ function DocumentContent() {
               )}
             </div>
           </div>
-          {pdfUrl && (
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={() => setSplitView((v) => !v)}
+              className="hidden md:inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-300 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+              title={splitView ? "תצוגה אנכית" : "תצוגה זו ליד זו"}
+            >
+              {splitView ? (
+                <>
+                  <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="3" y="3" width="18" height="8" rx="2" />
+                    <rect x="3" y="13" width="18" height="8" rx="2" />
+                  </svg>
+                  תצוגה אנכית
+                </>
+              ) : (
+                <>
+                  <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="3" y="3" width="8" height="18" rx="2" />
+                    <rect x="13" y="3" width="8" height="18" rx="2" />
+                  </svg>
+                  תצוגה זו ליד זו
+                </>
+              )}
+            </button>
             <a
-              href={pdfUrl}
+              href={pdfSrc}
               target="_blank"
               rel="noopener noreferrer"
-              className="shrink-0 inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-primary-700 text-white text-sm font-medium hover:bg-primary-800 transition-colors"
+              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-primary-700 text-white text-sm font-medium hover:bg-primary-800 transition-colors"
             >
               <svg
                 xmlns="http://www.w3.org/2000/svg"
@@ -144,49 +239,29 @@ function DocumentContent() {
                 <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
                 <polyline points="14 2 14 8 20 8" />
               </svg>
-              פתח את המסמך המקורי
+              פתח את ה-PDF
             </a>
-          )}
+          </div>
         </div>
       </div>
 
-      {/* Connection map */}
-      <div className="bg-white rounded-xl border border-gray-200 mb-6">
-        <div className="flex items-center justify-between p-4 border-b border-gray-200">
-          <h2 className="text-lg font-semibold text-gray-900">
-            מפת הקשרים שחולצה ממסמך זה
-            {graph && (
-              <span className="mr-2 text-sm font-normal text-gray-500">
-                ({graph.nodes.length} ישויות, {graph.edges.length} קשרים)
-              </span>
-            )}
-          </h2>
-          {graph && graph.edges.length > 0 && (
-            <button
-              onClick={() => setShowTable((v) => !v)}
-              className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
-            >
-              {showTable ? "הסתר טבלה" : "הצג כטבלה"}
-            </button>
-          )}
+      {/* Side-by-side or stacked layout */}
+      {splitView ? (
+        <div
+          className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6"
+          style={{ height: "calc(100vh - 240px)", minHeight: 600 }}
+        >
+          {graphCard}
+          {pdfCard}
         </div>
-        <div style={{ height: 500 }} className="bg-gray-50">
-          {graph && graph.edges.length > 0 ? (
-            <ConnectionMap
-              graph={graph}
-              onNodeClick={(nodeId, nodeType) => {
-                window.location.href = `/entity?id=${nodeId}&type=${nodeType}`;
-              }}
-            />
-          ) : (
-            <div className="flex items-center justify-center h-full text-gray-400 text-sm">
-              לא נמצאו קשרים שחולצו מהמסמך הזה
-            </div>
-          )}
+      ) : (
+        <div className="space-y-4 mb-6">
+          <div style={{ height: 500 }}>{graphCard}</div>
+          <div style={{ height: 700 }}>{pdfCard}</div>
         </div>
-      </div>
+      )}
 
-      {/* Entities & relationships listing — with per-field suggestion buttons */}
+      {/* Entities listing — always full width */}
       {graph && graph.nodes.length > 0 && (
         <div className="bg-white rounded-xl border border-gray-200 p-5 mb-6">
           <h2 className="text-lg font-semibold text-gray-900 mb-4">ישויות במסמך</h2>

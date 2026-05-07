@@ -1,12 +1,15 @@
 """Document access endpoints."""
 
 import uuid
+from pathlib import Path
 from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi.responses import FileResponse, Response
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import undefer
 
 from ocoi_api.dependencies import get_db
+from ocoi_common.config import settings
 from ocoi_db.models import (
     Document, EntityRelationship,
     Person, Company, Association, Domain,
@@ -198,3 +201,50 @@ async def get_document_graph(doc_id: uuid.UUID, db: AsyncSession = Depends(get_d
     ]
 
     return {"status": "ok", "data": {"nodes": nodes, "edges": edges}}
+
+
+@router.get("/documents/{doc_id}/pdf")
+async def serve_public_pdf(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """Stream the document's PDF for inline viewing in the public UI.
+
+    Mirrors the admin endpoint but without auth — the documents themselves
+    are public conflict-of-interest declarations, so exposing the original
+    file is by design. Tries disk first, falls back to bytes stored in
+    `Document.pdf_content`.
+    """
+    result = await db.execute(select(Document).where(Document.id == doc_id))
+    doc = result.scalars().first()
+    if not doc:
+        raise HTTPException(404, "Document not found")
+
+    safe_title = (doc.title or doc.id).replace('"', "").replace("\n", " ")
+    filename = f"{safe_title}.pdf"
+
+    # Disk first (cheap)
+    pdf_path: Path | None = None
+    if doc.file_path and Path(doc.file_path).is_file():
+        pdf_path = Path(doc.file_path)
+    else:
+        candidate = settings.pdf_dir / f"{doc.id}.pdf"
+        if candidate.is_file():
+            pdf_path = candidate
+    if pdf_path:
+        return FileResponse(
+            pdf_path,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'inline; filename="{filename}"'},
+        )
+
+    # Otherwise pull bytes from DB
+    result2 = await db.execute(
+        select(Document).options(undefer(Document.pdf_content)).where(Document.id == doc_id)
+    )
+    doc = result2.scalars().first()
+    if doc and doc.pdf_content:
+        return Response(
+            content=doc.pdf_content,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'inline; filename="{filename}"'},
+        )
+
+    raise HTTPException(404, "PDF file not found")
