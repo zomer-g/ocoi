@@ -22,10 +22,46 @@ const DEFAULTS = {
 };
 
 const SEARCH_TTL_MS = 10 * 60 * 1000;
-const NEIGHBORS_TTL_MS = 10 * 60 * 1000;
+// Neighbor responses are stable for days at a time (declarations get
+// filed, rarely updated), and the worker dies after ~30s of idle which
+// would otherwise wipe the in-memory cache and re-pay the Cloudflare
+// roundtrip on every click. Persist for 24h via chrome.storage.local.
+const NEIGHBORS_TTL_MS = 24 * 60 * 60 * 1000;
 
 const searchCache = new Map();
 const neighborsCache = new Map();
+
+// Persistent neighbor cache. Key: `${apiBase}|${entityType}|${entityId}|${depth}`.
+// Stored as { ts, data }. We keep an in-process mirror to avoid hitting
+// chrome.storage on every read.
+async function diskCacheGet(key) {
+  if (neighborsCache.has(key)) {
+    const entry = neighborsCache.get(key);
+    if (Date.now() - entry.ts < NEIGHBORS_TTL_MS) return entry.data;
+    neighborsCache.delete(key);
+  }
+  try {
+    const stored = await chrome.storage.local.get(key);
+    const entry = stored && stored[key];
+    if (entry && Date.now() - entry.ts < NEIGHBORS_TTL_MS) {
+      neighborsCache.set(key, entry);
+      return entry.data;
+    }
+  } catch {
+    // chrome.storage shouldn't fail in MV3, but if it does we just miss the cache.
+  }
+  return null;
+}
+
+async function diskCacheSet(key, data) {
+  const entry = { ts: Date.now(), data };
+  neighborsCache.set(key, entry);
+  try {
+    await chrome.storage.local.set({ [key]: entry });
+  } catch {
+    // ignore
+  }
+}
 
 async function getSettings() {
   const stored = await chrome.storage.local.get(DEFAULTS);
@@ -117,7 +153,7 @@ async function apiSearch(q) {
 async function apiNeighbors(entityId, entityType, depth = 1) {
   const { apiBase } = await getSettings();
   const key = `${apiBase}|${entityType}|${entityId}|${depth}`;
-  const cached = fromCache(neighborsCache, key, NEIGHBORS_TTL_MS);
+  const cached = await diskCacheGet(key);
   if (cached) return cached;
 
   const url = `${apiBase}/graph/neighbors/${entityId}?type=${encodeURIComponent(entityType)}&depth=${depth}`;
@@ -125,7 +161,7 @@ async function apiNeighbors(entityId, entityType, depth = 1) {
   if (!r.ok) {
     return { status: "error", error: r.error, data: null };
   }
-  neighborsCache.set(key, { ts: Date.now(), data: r.json });
+  await diskCacheSet(key, r.json);
   return r.json;
 }
 
@@ -180,6 +216,26 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       .catch((e) =>
         sendResponse({ status: "error", error: String(e), data: null })
       );
+    return true;
+  }
+
+  // Best-effort: warm the disk cache for entities we've already matched on
+  // the page, so a subsequent click is instant. Runs strictly serially so
+  // it can't interfere with an in-progress scan.
+  if (msg.type === "ocoi.prewarm") {
+    const list = Array.isArray(msg.entities) ? msg.entities.slice(0, 10) : [];
+    (async () => {
+      for (const e of list) {
+        if (!e || !e.id || !e.type) continue;
+        try {
+          await apiNeighbors(e.id, e.type, 1);
+        } catch {
+          // swallow — pre-warm failures are silent.
+        }
+        await sleep(150);
+      }
+    })();
+    sendResponse({ status: "ok", queued: list.length });
     return true;
   }
 

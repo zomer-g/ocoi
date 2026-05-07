@@ -495,12 +495,24 @@
     loading.textContent = "טוען קשרים…";
     body.appendChild(loading);
 
+    // Elapsed-time ticker — appended to the loading text once per second
+    // so the user sees progress instead of suspecting a hang during long
+    // server-side graph queries (depth=1 traversals can take 5-10s).
+    const startedAt = Date.now();
+    const ticker = setInterval(() => {
+      const sec = Math.floor((Date.now() - startedAt) / 1000);
+      if (sec >= 2 && body.firstChild === loading) {
+        loading.textContent = `טוען קשרים… (${sec}s)`;
+      }
+    }, 500);
+
     const resp = await rpc({
       type: "ocoi.neighbors",
       entityId: match.id,
       entityType: match.type,
       depth: 1,
     });
+    clearInterval(ticker);
 
     if (!resp || resp.status !== "ok" || !resp.data) {
       // Build the error/retry UI from DOM nodes (not innerHTML) so we can
@@ -761,6 +773,18 @@
       text: String(matches.size),
       color: matches.size > 0 ? "#10b981" : "#9ca3af",
     });
+
+    // Pre-warm the neighbor cache for the matched entities. Fire-and-forget
+    // — the worker will fetch them serially and stash them in
+    // chrome.storage.local, so when the user clicks an underlined name the
+    // panel opens instantly instead of round-tripping through Cloudflare.
+    if (matches.size > 0) {
+      const entities = [...matches.values()].slice(0, 8).map((m) => ({
+        id: m.id,
+        type: m.type,
+      }));
+      rpc({ type: "ocoi.prewarm", entities }, 5000);
+    }
 
     return {
       scanned: limited.length,
