@@ -29,7 +29,20 @@ export default function SiteShell({ children }: { children: React.ReactNode }) {
         if (val) {
           try {
             const parsed = JSON.parse(val);
-            if (Array.isArray(parsed) && parsed.length > 0) setNavLinks(parsed);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              // Merge: keep admin-curated order/labels, but auto-append any
+              // default link whose href is missing from the CMS list. This
+              // way new pages we ship in code show up without needing the
+              // admin to edit the CMS each time.
+              const cmsHrefs = new Set(
+                parsed.map((l: NavLink) => l.href).filter(Boolean)
+              );
+              const merged: NavLink[] = [
+                ...parsed,
+                ...DEFAULT_NAV.filter((l) => !cmsHrefs.has(l.href)),
+              ];
+              setNavLinks(merged);
+            }
           } catch { /* use default */ }
         }
       })
