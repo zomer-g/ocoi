@@ -30,16 +30,22 @@ export default function SiteShell({ children }: { children: React.ReactNode }) {
           try {
             const parsed = JSON.parse(val);
             if (Array.isArray(parsed) && parsed.length > 0) {
-              // Merge: keep admin-curated order/labels, but auto-append any
-              // default link whose href is missing from the CMS list. This
-              // way new pages we ship in code show up without needing the
-              // admin to edit the CMS each time.
-              const cmsHrefs = new Set(
-                parsed.map((l: NavLink) => l.href).filter(Boolean)
-              );
+              // Merge while preserving the canonical order in DEFAULT_NAV:
+              // walk DEFAULT_NAV first and replace each entry's label with
+              // the CMS label (if any). Then append any CMS-only entries
+              // (admin extras) at the end. This keeps "מסמכים" pinned in
+              // its expected slot between "מפת קשרים" and "API ציבורי"
+              // even when the CMS list still uses the old order.
+              const cmsByHref = new Map<string, NavLink>();
+              for (const l of parsed as NavLink[]) {
+                if (l && l.href) cmsByHref.set(l.href, l);
+              }
+              const defaultHrefs = new Set(DEFAULT_NAV.map((l) => l.href));
               const merged: NavLink[] = [
-                ...parsed,
-                ...DEFAULT_NAV.filter((l) => !cmsHrefs.has(l.href)),
+                ...DEFAULT_NAV.map((l) => cmsByHref.get(l.href) ?? l),
+                ...(parsed as NavLink[]).filter(
+                  (l) => l && l.href && !defaultHrefs.has(l.href),
+                ),
               ];
               setNavLinks(merged);
             }
