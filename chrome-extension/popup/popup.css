@@ -1,0 +1,108 @@
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Noto Sans Hebrew", sans-serif;
+  font-size: 13px;
+  color: #1f2937;
+  background: #fff;
+  width: 320px;
+}
+
+.hdr {
+  background: linear-gradient(135deg, #e91e63 0%, #d81b60 100%);
+  color: #fff;
+  padding: 14px 14px 12px;
+}
+.brand { font-size: 15px; font-weight: 700; }
+.sub { font-size: 12px; opacity: 0.9; margin-top: 2px; }
+
+.row {
+  padding: 10px 14px;
+  border-bottom: 1px solid #f1f5f9;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.row.toggles { gap: 6px; }
+
+.primary {
+  appearance: none;
+  background: #e91e63;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.primary:hover { background: #d81b60; }
+.primary:disabled { background: #f9a8c4; cursor: progress; }
+
+.link {
+  appearance: none;
+  background: transparent;
+  border: none;
+  color: #e91e63;
+  cursor: pointer;
+  padding: 4px 0;
+  text-align: start;
+  font-size: 12px;
+}
+.link:hover { text-decoration: underline; }
+
+.status {
+  font-size: 12px;
+  color: #6b7280;
+  min-height: 16px;
+}
+
+.hint {
+  font-size: 11px;
+  color: #6b7280;
+  line-height: 1.5;
+}
+
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+.toggle input { accent-color: #e91e63; width: 16px; height: 16px; }
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.field span { font-size: 11px; color: #6b7280; }
+.field input {
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 7px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  direction: ltr;
+  text-align: left;
+}
+.field input:focus {
+  outline: none;
+  border-color: #e91e63;
+  box-shadow: 0 0 0 2px rgba(233, 30, 99, 0.18);
+}
+
+.ftr {
+  padding: 10px 14px;
+  text-align: center;
+  background: #fafafa;
+}
+.ftr a {
+  color: #6b7280;
+  text-decoration: none;
+  font-size: 12px;
+}
+.ftr a:hover { color: #e91e63; }

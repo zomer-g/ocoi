@@ -1,0 +1,14 @@
+{
+  "extName": {
+    "message": "ניגוד עניינים לעם — מיפוי קשרים",
+    "description": "Extension name shown in Chrome"
+  },
+  "extDescription": {
+    "message": "מזהה אישי ציבור, חברות ועמותות בכל אתר אינטרנט ומציג את מפת הקשרים שלהם מתוך OCOI.",
+    "description": "Extension description shown in Chrome Web Store"
+  },
+  "ctxLookup": {
+    "message": "חיפוש ב-OCOI",
+    "description": "Right-click context menu label on selected text"
+  }
+}

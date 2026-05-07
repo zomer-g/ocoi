@@ -1,0 +1,14 @@
+{
+  "extName": {
+    "message": "OCOI — Conflict-of-Interest Map",
+    "description": "Extension name shown in Chrome"
+  },
+  "extDescription": {
+    "message": "Detects Israeli public officials, companies, and associations on any web page and shows their relationship map from OCOI.",
+    "description": "Extension description shown in Chrome Web Store"
+  },
+  "ctxLookup": {
+    "message": "Look up on OCOI",
+    "description": "Right-click context menu label on selected text"
+  }
+}

@@ -1,0 +1,163 @@
+/* Highlighted entity matches inside the host page. We use a subtle dotted
+   underline so we don't fight the host page's typography too aggressively,
+   plus a hover treatment that telegraphs interactivity. */
+.ocoi-hit {
+  cursor: pointer;
+  border-bottom: 1.5px dotted #e91e63;
+  transition: background-color 0.15s ease;
+  padding: 0 1px;
+}
+.ocoi-hit:hover {
+  background-color: rgba(233, 30, 99, 0.12);
+  border-bottom-style: solid;
+}
+
+/* Floating relationship panel. Fixed-position, draggable by its header.
+   Scoped class names with high specificity to survive aggressive host-page
+   resets. RTL by default since OCOI content is Hebrew. */
+.ocoi-panel {
+  all: initial;
+  position: fixed;
+  inset: auto 16px 16px auto;
+  width: 400px;
+  max-width: calc(100vw - 32px);
+  max-height: 80vh;
+  background: #ffffff;
+  color: #1f2937;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.18);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, "Noto Sans Hebrew", sans-serif;
+  font-size: 14px;
+  z-index: 2147483646;
+  display: none;
+  flex-direction: column;
+  overflow: hidden;
+  direction: rtl;
+}
+
+.ocoi-panel.ocoi-panel--open {
+  display: flex;
+}
+
+.ocoi-panel * {
+  box-sizing: border-box;
+  font-family: inherit;
+}
+
+.ocoi-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  background: linear-gradient(135deg, #e91e63 0%, #d81b60 100%);
+  color: #fff;
+  cursor: move;
+  user-select: none;
+}
+
+.ocoi-panel-title {
+  font-weight: 600;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+}
+
+.ocoi-panel-close {
+  appearance: none;
+  background: transparent;
+  border: none;
+  color: #fff;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+.ocoi-panel-close:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.ocoi-panel-body {
+  padding: 12px;
+  overflow: auto;
+  flex: 1 1 auto;
+  min-height: 220px;
+  background: #fafafa;
+}
+
+.ocoi-loading,
+.ocoi-empty {
+  text-align: center;
+  color: #6b7280;
+  padding: 40px 12px;
+  font-size: 13px;
+}
+
+.ocoi-panel-footer {
+  padding: 8px 12px;
+  border-top: 1px solid #e5e7eb;
+  background: #fff;
+  text-align: center;
+}
+
+.ocoi-panel-link {
+  color: #e91e63;
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 500;
+}
+.ocoi-panel-link:hover {
+  text-decoration: underline;
+}
+
+.ocoi-svg {
+  display: block;
+  margin: 0 auto;
+}
+
+.ocoi-edge {
+  stroke: #cbd5e1;
+  stroke-width: 1.5;
+}
+
+.ocoi-node circle {
+  stroke: #fff;
+  stroke-width: 2;
+}
+.ocoi-node text {
+  font-size: 10px;
+  fill: #1f2937;
+  pointer-events: none;
+}
+
+.ocoi-node--center circle {
+  fill: #e91e63;
+}
+.ocoi-node--center text {
+  font-weight: 600;
+  font-size: 11px;
+}
+
+.ocoi-node--person circle {
+  fill: #3b82f6;
+}
+.ocoi-node--company circle {
+  fill: #10b981;
+}
+.ocoi-node--association circle {
+  fill: #f59e0b;
+}
+.ocoi-node--domain circle {
+  fill: #8b5cf6;
+}
+
+.ocoi-legend {
+  text-align: center;
+  color: #6b7280;
+  font-size: 12px;
+  margin-top: 4px;
+}

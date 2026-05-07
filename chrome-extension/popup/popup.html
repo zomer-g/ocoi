@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="popup.css" />
+    <title>OCOI</title>
+  </head>
+  <body>
+    <header class="hdr">
+      <div class="brand">ניגוד עניינים לעם</div>
+      <div class="sub">מיפוי קשרים בכל אתר</div>
+    </header>
+
+    <section class="row">
+      <button id="scan" class="primary">סריקת הדף הנוכחי</button>
+      <div id="status" class="status"></div>
+      <div class="hint">
+        סימון שמות של אישי ציבור, חברות ועמותות שמופיעים ב-OCOI. לחיצה על שם
+        מסומן פותחת את מפת הקשרים בחלון צף. אפשר גם לסמן טקסט בדף וללחוץ
+        עליו לחיצה ימנית → "חיפוש ב-OCOI".
+      </div>
+    </section>
+
+    <section class="row">
+      <label class="toggle">
+        <input type="checkbox" id="enabled" />
+        <span>תוסף פעיל</span>
+      </label>
+    </section>
+
+    <section class="row">
+      <label class="field">
+        <span>כתובת API</span>
+        <input type="url" id="apiBase" placeholder="https://www.ocoi.org.il/api/v1" />
+      </label>
+      <button id="save" class="link">שמירה</button>
+    </section>
+
+    <footer class="ftr">
+      <a href="https://www.ocoi.org.il" target="_blank" rel="noopener noreferrer">www.ocoi.org.il ↗</a>
+    </footer>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
