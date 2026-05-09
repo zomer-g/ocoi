@@ -12,7 +12,9 @@ from ocoi_common.config import settings
 from ocoi_common.models import ImportedDocument, OdataRecord
 from ocoi_db.engine import async_session_factory, bg_session_factory
 from ocoi_db.crud import get_or_create_source, create_document
-from ocoi_db.models import Document, IgnoredResource, Source
+from ocoi_db.models import (
+    Company, Document, EntityRelationship, IgnoredResource, Person, Source,
+)
 
 logger = logging.getLogger("ocoi.api.import")
 
@@ -780,11 +782,6 @@ async def run_mk_expenses_import(file_bytes: bytes, filename: str) -> dict:
 
 
 async def _run_mk_expenses_import(file_bytes: bytes, filename: str) -> None:
-    from ocoi_db.crud import (
-        create_relationship,
-        upsert_company,
-        upsert_person,
-    )
     from ocoi_importer.mk_expenses_client import (
         CANONICAL_KNESSET_NAME,
         canonical_supplier_name,
@@ -881,62 +878,132 @@ async def _run_mk_expenses_import(file_bytes: bytes, filename: str) -> None:
     _import_state["total_on_website"] = total_rows
     _import_state["skipped"] = skipped
 
-    # ── Pass 2: upsert entities and create one relationship per pair ─────
-    # Commit in batches so memory and the WAL stay bounded for files with
-    # thousands of unique pairs.
-    BATCH_SIZE = 200
+    # ── Pass 2: bulk upsert entities + bulk insert relationships ─────────
+    # The naive approach (per-pair upsert + dedup query) is O(N) DB
+    # round-trips per pair, which on free-tier Postgres balloons to many
+    # minutes for the 5K+ unique pairs in a single Excel. Instead we
+    # pre-load all matches in a couple of IN-list queries, batch-insert
+    # any missing entities, then batch-insert relationships skipping any
+    # that already exist (idempotent re-runs).
+    all_mk_names = sorted({k[0] for k in aggregated.keys()})
+    all_supplier_names = sorted({k[1] for k in aggregated.keys()})
+    person_cache: dict[str, str] = {}
+    company_cache: dict[str, str] = {}
+
     async with async_session_factory() as session:
-        person_cache: dict[str, str] = {}
-        company_cache: dict[str, str] = {}
-        in_batch = 0
-
-        for (mk_name, supplier_name), bucket in aggregated.items():
-            try:
-                pid = person_cache.get(mk_name)
-                if pid is None:
-                    person = await upsert_person(session, name_hebrew=mk_name)
-                    pid = str(person.id)
-                    person_cache[mk_name] = pid
-
-                cid = company_cache.get(supplier_name)
-                if cid is None:
-                    company = await upsert_company(session, name_hebrew=supplier_name)
-                    cid = str(company.id)
-                    company_cache[supplier_name] = cid
-
-                details = _format_mk_expense_details(bucket)
-                await create_relationship(
-                    session,
-                    source_entity_type="person",
-                    source_entity_id=pid,
-                    target_entity_type="company",
-                    target_entity_id=cid,
-                    relationship_type="mk_expense_payment",
-                    document_id=doc_id,
-                    details=details,
-                    confidence=1.0,
-                    origin_kind="mk_expense",
+        # ── 2a. Persons: pre-load existing, bulk-insert missing ──
+        for chunk in _chunked(all_mk_names, 500):
+            rows = await session.execute(
+                select(Person.id, Person.name_hebrew).where(
+                    Person.name_hebrew.in_(chunk)
                 )
-                _import_state["imported"] += 1
-                _import_state["new_to_import"] = _import_state["imported"]
-                in_batch += 1
-                if in_batch >= BATCH_SIZE:
-                    await session.commit()
-                    in_batch = 0
+            )
+            for pid, name in rows.fetchall():
+                person_cache[name] = str(pid)
+
+        new_persons = [
+            Person(name_hebrew=name)
+            for name in all_mk_names if name not in person_cache
+        ]
+        if new_persons:
+            session.add_all(new_persons)
+            await session.flush()
+            for p in new_persons:
+                person_cache[p.name_hebrew] = str(p.id)
+
+        # ── 2b. Companies: same pattern ──
+        for chunk in _chunked(all_supplier_names, 500):
+            rows = await session.execute(
+                select(Company.id, Company.name_hebrew).where(
+                    Company.name_hebrew.in_(chunk)
+                )
+            )
+            for cid, name in rows.fetchall():
+                company_cache[name] = str(cid)
+
+        new_companies = [
+            Company(name_hebrew=name)
+            for name in all_supplier_names if name not in company_cache
+        ]
+        if new_companies:
+            session.add_all(new_companies)
+            await session.flush()
+            for c in new_companies:
+                company_cache[c.name_hebrew] = str(c.id)
+
+        await session.commit()
+
+        # ── 2c. Relationships: dedup against existing for THIS document ──
+        existing_pair_q = await session.execute(
+            select(
+                EntityRelationship.source_entity_id,
+                EntityRelationship.target_entity_id,
+            ).where(
+                EntityRelationship.document_id == doc_id,
+                EntityRelationship.relationship_type == "mk_expense_payment",
+            )
+        )
+        existing_pairs: set[tuple[str, str]] = {
+            (str(s), str(t)) for s, t in existing_pair_q.fetchall()
+        }
+
+        # Build the EntityRelationship rows in memory, skipping pairs we
+        # already wrote (so re-running is a no-op at relationship level).
+        to_insert: list[EntityRelationship] = []
+        already_skipped = 0
+        for (mk_name, supplier_name), bucket in aggregated.items():
+            pid = person_cache.get(mk_name)
+            cid = company_cache.get(supplier_name)
+            if not pid or not cid:
+                continue
+            if (pid, cid) in existing_pairs:
+                already_skipped += 1
+                continue
+            to_insert.append(EntityRelationship(
+                source_entity_type="person",
+                source_entity_id=pid,
+                target_entity_type="company",
+                target_entity_id=cid,
+                relationship_type="mk_expense_payment",
+                document_id=doc_id,
+                details=_format_mk_expense_details(bucket),
+                confidence=1.0,
+                origin_kind="mk_expense",
+            ))
+
+        # Bulk-insert in chunks; commit per chunk so the polling UI
+        # surfaces progress and the WAL stays bounded.
+        BATCH_SIZE = 500
+        inserted = 0
+        for chunk in _chunked(to_insert, BATCH_SIZE):
+            try:
+                session.add_all(chunk)
+                await session.flush()
+                await session.commit()
+                inserted += len(chunk)
+                _import_state["imported"] = inserted
+                _import_state["new_to_import"] = inserted
             except Exception as e:
-                _import_state["errors"] += 1
+                # Rollback the partial chunk and surface the error; we
+                # keep going so a single bad row doesn't lose the rest.
+                _import_state["errors"] += len(chunk)
                 if len(_import_state["error_messages"]) < 30:
-                    _import_state["error_messages"].append(
-                        f"{mk_name} → {supplier_name}: {e}"
-                    )
-                # Roll back partial state so the next iteration starts clean.
+                    _import_state["error_messages"].append(f"batch insert failed: {e}")
                 try:
                     await session.rollback()
                 except Exception:
                     pass
 
-        if in_batch > 0:
-            await session.commit()
+        _import_state["already_in_db"] += already_skipped
+
+
+def _chunked(seq, size: int):
+    """Yield ``size``-sized chunks from a sequence — used for IN-list and
+    bulk-insert batching above."""
+    if not seq:
+        return
+    for i in range(0, len(seq), size):
+        yield seq[i:i + size]
 
 
 def _format_mk_expense_details(bucket: dict) -> str:
