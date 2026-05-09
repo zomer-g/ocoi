@@ -31,7 +31,7 @@ async def _get_direct_neighbors(
         SELECT
             r.source_entity_type, r.source_entity_id,
             r.target_entity_type, r.target_entity_id,
-            r.relationship_type, r.details,
+            r.relationship_type, r.details, r.origin_kind,
             r.document_id, d.title AS doc_title, d.file_url AS doc_url
         FROM entity_relationships r
         LEFT JOIN documents d ON d.id = r.document_id
@@ -55,7 +55,7 @@ async def _get_recursive_neighbors(
             SELECT
                 r.source_entity_type, r.source_entity_id,
                 r.target_entity_type, r.target_entity_id,
-                r.relationship_type, r.details,
+                r.relationship_type, r.details, r.origin_kind,
                 r.document_id,
                 1 AS depth
             FROM entity_relationships r
@@ -67,7 +67,7 @@ async def _get_recursive_neighbors(
             SELECT
                 r.source_entity_type, r.source_entity_id,
                 r.target_entity_type, r.target_entity_id,
-                r.relationship_type, r.details,
+                r.relationship_type, r.details, r.origin_kind,
                 r.document_id,
                 gw.depth + 1
             FROM entity_relationships r
@@ -83,7 +83,7 @@ async def _get_recursive_neighbors(
         SELECT DISTINCT
             gw.source_entity_type, gw.source_entity_id,
             gw.target_entity_type, gw.target_entity_id,
-            gw.relationship_type, gw.details,
+            gw.relationship_type, gw.details, gw.origin_kind,
             gw.document_id, d.title AS doc_title, d.file_url AS doc_url
         FROM graph_walk gw
         LEFT JOIN documents d ON d.id = gw.document_id
@@ -112,7 +112,7 @@ async def find_path(
             SELECT
                 r.source_entity_type, r.source_entity_id,
                 r.target_entity_type, r.target_entity_id,
-                r.relationship_type, r.details,
+                r.relationship_type, r.details, r.origin_kind,
                 r.document_id,
                 1 AS depth
             FROM entity_relationships r
@@ -124,7 +124,7 @@ async def find_path(
             SELECT
                 r.source_entity_type, r.source_entity_id,
                 r.target_entity_type, r.target_entity_id,
-                r.relationship_type, r.details,
+                r.relationship_type, r.details, r.origin_kind,
                 r.document_id,
                 ps.depth + 1
             FROM entity_relationships r
@@ -140,7 +140,7 @@ async def find_path(
         SELECT DISTINCT
             ps.source_entity_type, ps.source_entity_id,
             ps.target_entity_type, ps.target_entity_id,
-            ps.relationship_type, ps.details,
+            ps.relationship_type, ps.details, ps.origin_kind,
             ps.document_id, d.title AS doc_title, d.file_url AS doc_url
         FROM path_search ps
         LEFT JOIN documents d ON d.id = ps.document_id
@@ -230,7 +230,7 @@ async def find_showcase_pair(
         nbr_q = text("""
             SELECT r.source_entity_type, r.source_entity_id,
                    r.target_entity_type, r.target_entity_id,
-                   r.relationship_type, r.details,
+                   r.relationship_type, r.details, r.origin_kind,
                    r.document_id, d.title AS doc_title, d.file_url AS doc_url
             FROM entity_relationships r
             LEFT JOIN documents d ON d.id = r.document_id
@@ -261,7 +261,7 @@ async def find_showcase_pair(
         edges_q = text("""
             SELECT r.source_entity_type, r.source_entity_id,
                    r.target_entity_type, r.target_entity_id,
-                   r.relationship_type, r.details,
+                   r.relationship_type, r.details, r.origin_kind,
                    r.document_id, d.title AS doc_title, d.file_url AS doc_url
             FROM entity_relationships r
             LEFT JOIN documents d ON d.id = r.document_id
@@ -281,7 +281,7 @@ async def find_showcase_pair(
     direct_q = text("""
         SELECT r.source_entity_type, r.source_entity_id,
                r.target_entity_type, r.target_entity_id,
-               r.relationship_type, r.details,
+               r.relationship_type, r.details, r.origin_kind,
                r.document_id, d.title AS doc_title, d.file_url AS doc_url
         FROM entity_relationships r
         LEFT JOIN documents d ON d.id = r.document_id
@@ -352,15 +352,38 @@ def _trim_two_suns(rows, p1: str, p2: str, per_person_cap: int = 8) -> SubGraph:
 
 
 def _build_subgraph_from_rows(rows) -> SubGraph:
+    """Build a SubGraph from query rows.
+
+    Expected column order:
+        0..5: src_type, src_id, tgt_type, tgt_id, rel_type, details
+        6:    origin_kind
+        7..9: document_id, document_title, document_url   (optional)
+
+    Earlier callers used a 9-column shape without origin_kind; we detect that
+    by sniffing the value at index 6 — if it looks like a UUID it's the
+    document_id and origin_kind defaults to 'coi_declaration'.
+    """
     nodes_map: dict[str, EntitySummary] = {}
     edges: list[ConnectionEdge] = []
 
     for row in rows:
         src_type, src_id, tgt_type, tgt_id, rel_type, details = row[:6]
-        # Optional document fields (present when query joins documents table)
-        doc_id = str(row[6]) if len(row) > 6 and row[6] else None
-        doc_title = row[7] if len(row) > 7 else None
-        doc_url = row[8] if len(row) > 8 else None
+
+        origin_kind = "coi_declaration"
+        # Detect new vs legacy row shape based on the cell at position 6.
+        if len(row) >= 7:
+            cand = row[6]
+            if isinstance(cand, str) and not _looks_like_uuid(cand):
+                origin_kind = cand or "coi_declaration"
+                doc_offset = 7
+            else:
+                doc_offset = 6
+        else:
+            doc_offset = 6
+
+        doc_id = str(row[doc_offset]) if len(row) > doc_offset and row[doc_offset] else None
+        doc_title = row[doc_offset + 1] if len(row) > doc_offset + 1 else None
+        doc_url = row[doc_offset + 2] if len(row) > doc_offset + 2 else None
 
         src_id_str = str(src_id)
         tgt_id_str = str(tgt_id)
@@ -382,6 +405,15 @@ def _build_subgraph_from_rows(rows) -> SubGraph:
             target_id=tgt_id_str, target_type=EntityType(tgt_type), target_name="",
             relationship_type=rel_type, details=details,
             document_id=doc_id, document_title=doc_title, document_url=doc_url,
+            origin_kind=origin_kind,
         ))
 
     return SubGraph(nodes=list(nodes_map.values()), edges=edges)
+
+
+def _looks_like_uuid(s: str) -> bool:
+    """Cheap shape check for a UUID string — used to disambiguate the
+    column at position 6 between origin_kind and a legacy document_id."""
+    if len(s) < 32:
+        return False
+    return s.count("-") >= 3 or all(c in "0123456789abcdefABCDEF" for c in s)

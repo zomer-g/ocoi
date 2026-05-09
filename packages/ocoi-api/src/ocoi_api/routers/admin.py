@@ -291,24 +291,27 @@ async def list_relationships(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     q: str = Query("", description="Search by entity name or relationship type"),
+    origin_kind: str = Query("", description="Filter by origin_kind (e.g. 'coi_declaration', 'mk_expense')"),
     db: AsyncSession = Depends(get_db),
 ):
     offset = (page - 1) * limit
 
     # If search query, filter by relationship_type or resolve entity names
-    base_filter = None
+    filters = []
     if q.strip():
         search = f"%{q.strip()}%"
-        base_filter = EntityRelationship.relationship_type.ilike(search)
+        filters.append(EntityRelationship.relationship_type.ilike(search))
+    if origin_kind.strip():
+        filters.append(EntityRelationship.origin_kind == origin_kind.strip())
 
     count_q = select(func.count()).select_from(EntityRelationship)
-    if base_filter is not None:
-        count_q = count_q.where(base_filter)
+    for f in filters:
+        count_q = count_q.where(f)
     total = (await db.execute(count_q)).scalar()
 
     query = select(EntityRelationship).order_by(EntityRelationship.created_at.desc())
-    if base_filter is not None:
-        query = query.where(base_filter)
+    for f in filters:
+        query = query.where(f)
     result = await db.execute(query.offset(offset).limit(limit))
     rels = result.scalars().all()
 
@@ -345,6 +348,7 @@ async def list_relationships(
             "relationship_type": r.relationship_type,
             "details": r.details,
             "confidence": r.confidence,
+            "origin_kind": r.origin_kind,
             "document_id": str(r.document_id),
             "document_title": doc_title,
             "source_name": source_title,

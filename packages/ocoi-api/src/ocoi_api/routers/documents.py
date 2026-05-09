@@ -117,6 +117,7 @@ async def get_document_entities(doc_id: uuid.UUID, db: AsyncSession = Depends(ge
                 "relationship_type": r.relationship_type,
                 "details": r.details,
                 "confidence": r.confidence,
+                "origin_kind": r.origin_kind,
             }
             for r in rels
         ],
@@ -193,6 +194,7 @@ async def get_document_graph(doc_id: uuid.UUID, db: AsyncSession = Depends(get_d
             "relationship_type": r.relationship_type,
             "details": r.details,
             "confidence": r.confidence,
+            "origin_kind": r.origin_kind,
             "document_id": str(r.document_id),
             "document_title": None,
             "document_url": None,

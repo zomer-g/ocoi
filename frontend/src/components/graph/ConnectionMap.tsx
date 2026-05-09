@@ -2,6 +2,11 @@
 
 import { useEffect, useRef, useCallback, useState } from "react";
 import type { SubGraph } from "@/lib/api-client";
+import { EDGE_LABELS, originLabel } from "./labels";
+
+// Re-export so any caller still importing EDGE_LABELS from this module
+// keeps working.
+export { EDGE_LABELS };
 
 // Cytoscape types
 type CyInstance = import("cytoscape").Core;
@@ -11,17 +16,6 @@ const NODE_COLORS: Record<string, string> = {
   company: "#10B981",    // green
   association: "#8B5CF6", // purple
   domain: "#F59E0B",     // amber
-};
-
-export const EDGE_LABELS: Record<string, string> = {
-  restricted_from: "מוגבל מ-",
-  owns: "בעלות",
-  manages: "מנהל",
-  employed_by: "מועסק ב-",
-  related_to: "קשור ל-",
-  board_member: "חבר דירקטוריון",
-  operates_in: "פועל בתחום",
-  family_member: "בן משפחה",
 };
 
 let fcoseRegistered = false;
@@ -77,7 +71,14 @@ export function ConnectionMap({
     // Merge edges between the same pair of entities into one line.
     // If any relationship in the pair is "restricted_from", use the thick style.
     const nodeIds = new Set(nodes.map((n) => n.data.id));
-    const pairMap = new Map<string, { source: string; target: string; labels: string[]; hasRestriction: boolean; docUrls: string[] }>();
+    const pairMap = new Map<string, {
+      source: string;
+      target: string;
+      labels: string[];
+      hasRestriction: boolean;
+      hasMkExpense: boolean;
+      docUrls: string[];
+    }>();
 
     for (const edge of graph.edges) {
       if (!nodeIds.has(edge.source_id) || !nodeIds.has(edge.target_id)) continue;
@@ -86,11 +87,13 @@ export function ConnectionMap({
       const existing = pairMap.get(key);
       const label = EDGE_LABELS[edge.relationship_type] || edge.relationship_type;
       const isRestricted = edge.relationship_type === "restricted_from";
+      const isMkExpense = edge.origin_kind === "mk_expense";
       const docUrl = edge.document_url && !edge.document_url.startsWith("upload://") ? edge.document_url : "";
 
       if (existing) {
         if (!existing.labels.includes(label)) existing.labels.push(label);
         if (isRestricted) existing.hasRestriction = true;
+        if (isMkExpense) existing.hasMkExpense = true;
         if (docUrl && !existing.docUrls.includes(docUrl)) existing.docUrls.push(docUrl);
       } else {
         pairMap.set(key, {
@@ -98,6 +101,7 @@ export function ConnectionMap({
           target: edge.target_id,
           labels: [label],
           hasRestriction: isRestricted,
+          hasMkExpense: isMkExpense,
           docUrls: docUrl ? [docUrl] : [],
         });
       }
@@ -109,7 +113,13 @@ export function ConnectionMap({
         source: info.source,
         target: info.target,
         label: info.labels.join(" + "),
-        relType: info.hasRestriction ? "restricted_from" : "other",
+        // Restriction wins visually; otherwise mk_expense gets its own
+        // green-solid style; everything else is the default dashed gray.
+        relType: info.hasRestriction
+          ? "restricted_from"
+          : info.hasMkExpense
+            ? "mk_expense"
+            : "other",
         docUrl: info.docUrls[0] || "",
       },
     }));
@@ -164,9 +174,28 @@ export function ConnectionMap({
             "arrow-scale": 1.0,
           },
         },
-        // ── Edges: WITHOUT restriction (thin, dashed, gray) ──
+        // ── Edges: MK expense payment (medium, solid, emerald green) ──
         {
-          selector: "edge[relType != 'restricted_from']",
+          selector: "edge[relType = 'mk_expense']",
+          style: {
+            label: "data(label)",
+            "font-size": 9,
+            "font-family": "Rubik, Heebo, sans-serif",
+            "text-rotation": "autorotate",
+            "text-outline-color": "#fff",
+            "text-outline-width": 1.5,
+            "curve-style": "bezier",
+            width: 2,
+            "line-color": "#059669",
+            "line-style": "solid",
+            "target-arrow-color": "#059669",
+            "target-arrow-shape": "triangle",
+            "arrow-scale": 0.9,
+          },
+        },
+        // ── Edges: everything else (thin, dashed, gray) ──
+        {
+          selector: "edge[relType = 'other']",
           style: {
             label: "data(label)",
             "font-size": 9,
@@ -292,12 +321,18 @@ export function ConnectionMap({
           ))}
         </div>
         {/* Connection types */}
-        <div className="flex gap-4 border-t border-gray-200 pt-2">
+        <div className="flex flex-wrap gap-x-4 gap-y-1 border-t border-gray-200 pt-2">
           <div className="flex items-center gap-1.5">
             <svg width="24" height="8" className="shrink-0">
               <line x1="0" y1="4" x2="24" y2="4" stroke="#9CA3AF" strokeWidth="1.5" strokeDasharray="4 2" />
             </svg>
             <span>ללא מגבלה</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <svg width="24" height="8" className="shrink-0">
+              <line x1="0" y1="4" x2="24" y2="4" stroke="#059669" strokeWidth="2" />
+            </svg>
+            <span>{originLabel("mk_expense")}</span>
           </div>
           <div className="flex items-center gap-1.5">
             <svg width="24" height="8" className="shrink-0">

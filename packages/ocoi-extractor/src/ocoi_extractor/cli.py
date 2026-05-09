@@ -134,6 +134,7 @@ async def _extract_pending(limit: int, use_llm: bool, use_ner: bool):
                             restriction_type=rel.restriction_type.value if rel.restriction_type else None,
                             restriction_end_date=rel.restriction_end_date,
                             confidence=rel.confidence,
+                            origin_kind="coi_declaration",
                         )
                         rels_saved += 1
 

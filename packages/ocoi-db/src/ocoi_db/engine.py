@@ -96,6 +96,13 @@ async def run_migrations():
         ("companies", "aliases", "ALTER TABLE companies ADD COLUMN aliases TEXT"),
         ("associations", "aliases", "ALTER TABLE associations ADD COLUMN aliases TEXT"),
         ("domains", "aliases", "ALTER TABLE domains ADD COLUMN aliases TEXT"),
+        # Classification of where each EntityRelationship row came from.
+        # Defaults to 'coi_declaration' so historical rows back-fill cleanly;
+        # see the idempotent UPDATE below for engines where DEFAULT does
+        # not back-fill existing rows.
+        ("entity_relationships", "origin_kind",
+         "ALTER TABLE entity_relationships ADD COLUMN origin_kind VARCHAR(40) "
+         "NOT NULL DEFAULT 'coi_declaration'"),
     ]
 
     for table, column, sql in column_migrations:
@@ -112,6 +119,16 @@ async def run_migrations():
                     _log.info(f"Column {table}.{column} added successfully")
         except Exception as e:
             _log.warning(f"Migration for {table}.{column} failed: {e}")
+
+    # --- Back-fill origin_kind on legacy rows (idempotent) ---
+    try:
+        async with async_engine.begin() as conn:
+            await conn.execute(sa_text(
+                "UPDATE entity_relationships SET origin_kind = 'coi_declaration' "
+                "WHERE origin_kind IS NULL OR origin_kind = ''"
+            ))
+    except Exception as e:
+        _log.warning(f"origin_kind back-fill skipped: {e}")
 
     # --- Alter TIMESTAMP → TIMESTAMPTZ for columns that receive tz-aware datetimes ---
     tz_alterations = [

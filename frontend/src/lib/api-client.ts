@@ -19,6 +19,9 @@ export interface ConnectionEdge {
   document_id?: string;
   document_title?: string;
   document_url?: string;
+  // Where this row came from. Mirrors the backend column on
+  // entity_relationships. Defaults to "coi_declaration" for legacy rows.
+  origin_kind?: string;
 }
 
 export interface SubGraph {

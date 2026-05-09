@@ -242,6 +242,7 @@ async def create_relationship(
     restriction_type: str | None = None,
     restriction_end_date=None,
     confidence: float = 0.5,
+    origin_kind: str = "coi_declaration",
 ) -> EntityRelationship:
     # Check for existing relationship with same compound key
     existing = await session.execute(
@@ -255,6 +256,10 @@ async def create_relationship(
         ).limit(1)
     )
     if rel := existing.scalars().first():
+        # Re-running an importer with a richer origin_kind should upgrade the
+        # legacy 'coi_declaration' default; otherwise leave the row alone.
+        if rel.origin_kind == "coi_declaration" and origin_kind != "coi_declaration":
+            rel.origin_kind = origin_kind
         return rel
     rel = EntityRelationship(
         source_entity_type=source_entity_type,
@@ -267,6 +272,7 @@ async def create_relationship(
         restriction_type=restriction_type,
         restriction_end_date=restriction_end_date,
         confidence=confidence,
+        origin_kind=origin_kind,
     )
     session.add(rel)
     await session.flush()

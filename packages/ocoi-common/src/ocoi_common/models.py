@@ -39,6 +39,8 @@ class RelationshipType(str, Enum):
     BOARD_MEMBER = "board_member"
     OPERATES_IN = "operates_in"
     FAMILY_MEMBER = "family_member"
+    # MK constituent-outreach expense payments (Person → Company supplier)
+    MK_EXPENSE_PAYMENT = "mk_expense_payment"
 
 
 class RestrictionType(str, Enum):
@@ -151,6 +153,7 @@ class ConnectionEdge(BaseModel):
     document_id: str | None = None
     document_title: str | None = None
     document_url: str | None = None
+    origin_kind: str = "coi_declaration"
 
 
 class SubGraph(BaseModel):
@@ -164,3 +167,23 @@ class PaginatedResponse(BaseModel):
     page: int
     limit: int
     pages: int
+
+
+# --- Importer record types ---
+
+
+class MkExpenseRow(BaseModel):
+    """One row from a Knesset constituent-outreach expense Excel.
+
+    Yielded by `ocoi_importer.mk_expenses_client.iter_rows()`. The importer
+    aggregates many rows per (mk_name, supplier_name) pair before writing a
+    single EntityRelationship.
+    """
+    mk_name: str
+    expense_category: str | None = None
+    raw_supplier_name: str
+    date: str | None = None  # ISO YYYY-MM-DD; None when the cell isn't a date
+    amount: float = 0.0
+    notes: str | None = None
+    row_idx: int = 0
+    sheet_name: str | None = None

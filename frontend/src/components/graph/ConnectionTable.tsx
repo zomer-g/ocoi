@@ -1,17 +1,7 @@
 "use client";
 
 import type { ConnectionEdge, EntitySummary } from "@/lib/api-client";
-
-const EDGE_LABELS: Record<string, string> = {
-  restricted_from: "מוגבל מ-",
-  owns: "בעלות",
-  manages: "מנהל",
-  employed_by: "מועסק ב-",
-  related_to: "קשור ל-",
-  board_member: "חבר דירקטוריון",
-  operates_in: "פועל בתחום",
-  family_member: "בן משפחה",
-};
+import { EDGE_LABELS, originBadgeClass, originLabel } from "./labels";
 
 const TYPE_LABELS: Record<string, string> = {
   person: "אדם",
@@ -53,6 +43,7 @@ export function ConnectionTable({ edges, nodes, caption, className }: Connection
               <th scope="col" className="px-4 py-3 text-start font-semibold">יעד</th>
               <th scope="col" className="px-4 py-3 text-start font-semibold">סוג יעד</th>
               <th scope="col" className="px-4 py-3 text-start font-semibold">סוג קשר</th>
+              <th scope="col" className="px-4 py-3 text-start font-semibold">סוג נתונים</th>
               <th scope="col" className="px-4 py-3 text-start font-semibold">מגבלה</th>
               <th scope="col" className="px-4 py-3 text-start font-semibold">מסמך מקור</th>
             </tr>
@@ -66,6 +57,11 @@ export function ConnectionTable({ edges, nodes, caption, className }: Connection
                 <td className="px-4 py-3">{formatName(edge.target_name, edge.target_id, nodes)}</td>
                 <td className="px-4 py-3 text-gray-500">{TYPE_LABELS[edge.target_type] || edge.target_type}</td>
                 <td className="px-4 py-3">{EDGE_LABELS[edge.relationship_type] || edge.relationship_type}</td>
+                <td className="px-4 py-3">
+                  <span className={`inline-flex items-center px-2 py-0.5 rounded-full border text-[11px] font-medium ${originBadgeClass(edge.origin_kind)}`}>
+                    {originLabel(edge.origin_kind)}
+                  </span>
+                </td>
                 <td className="px-4 py-3">
                   {edge.relationship_type === "restricted_from" ? (
                     <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-primary-100 text-primary-800">

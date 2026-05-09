@@ -216,12 +216,22 @@ class EntityRelationship(Base):
     restriction_end_date: Mapped[date | None] = mapped_column()
     document_id: Mapped[str] = mapped_column(DBUUID(), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
     confidence: Mapped[float] = mapped_column(Float, default=0.5)
+    # Where the row originated: "coi_declaration" (default — current LLM
+    # extractions from conflict-of-interest documents), "mk_expense"
+    # (rows imported from Knesset constituent-outreach expense Excels), …
+    # Kept as a free-form short string so adding new sources doesn't need
+    # an enum migration.
+    origin_kind: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="coi_declaration",
+        server_default="coi_declaration",
+    )
     created_at: Mapped[datetime | None] = mapped_column(DateTime, default=func.now())
 
     __table_args__ = (
         Index("ix_rel_source", "source_entity_type", "source_entity_id"),
         Index("ix_rel_target", "target_entity_type", "target_entity_id"),
         Index("ix_rel_type", "relationship_type"),
+        Index("ix_rel_origin_kind", "origin_kind"),
     )
 
 

@@ -73,6 +73,7 @@ class RelationshipCreate(BaseModel):
     restriction_type: str | None = None
     document_id: str
     confidence: float = 0.5
+    origin_kind: str = "coi_declaration"
 
 
 # --- Push schemas (local processor → server) ---

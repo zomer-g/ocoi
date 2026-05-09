@@ -13,12 +13,18 @@ interface RelItem {
   relationship_type: string;
   details: string | null;
   confidence: number;
+  origin_kind?: string;
   document_id: string;
   document_title: string;
   source_name: string;
   source_date: string | null;
   created_at: string | null;
 }
+
+const ORIGIN_KIND_LABELS: Record<string, string> = {
+  coi_declaration: "הסדר ניגוד עניינים",
+  mk_expense: "הוצאות קשר עם הציבור",
+};
 
 const TYPE_LABELS: Record<string, string> = {
   person: "אדם",
@@ -63,12 +69,14 @@ export default function RelationshipsPage() {
   const [deleting, setDeleting] = useState(false);
   const [search, setSearch] = useState("");
   const [searchInput, setSearchInput] = useState("");
+  const [originFilter, setOriginFilter] = useState<string>("");
 
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
       const params = new URLSearchParams({ page: String(page), limit: "50" });
       if (search) params.set("q", search);
+      if (originFilter) params.set("origin_kind", originFilter);
       const res = await fetch(`/api/v1/admin/relationships?${params}`, { credentials: "include" });
       const data = await res.json();
       setItems(data.data || []);
@@ -78,7 +86,7 @@ export default function RelationshipsPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, search]);
+  }, [page, search, originFilter]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
   useEffect(() => { setSelected(new Set()); }, [items]);
@@ -139,20 +147,30 @@ export default function RelationshipsPage() {
         )}
       </div>
 
-      {/* Search */}
-      <div className="flex gap-2 mb-4">
+      {/* Search + origin filter */}
+      <div className="flex flex-wrap gap-2 mb-4">
         <input
           type="text"
           value={searchInput}
           onChange={(e) => setSearchInput(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && handleSearch()}
           placeholder="חיפוש לפי סוג קשר..."
-          className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-primary-500"
+          className="flex-1 min-w-[240px] px-4 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-primary-500"
           dir="rtl"
         />
+        <select
+          value={originFilter}
+          onChange={(e) => { setOriginFilter(e.target.value); setPage(1); }}
+          className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:border-primary-500"
+        >
+          <option value="">כל סוגי המקור</option>
+          {Object.entries(ORIGIN_KIND_LABELS).map(([key, label]) => (
+            <option key={key} value={key}>{label}</option>
+          ))}
+        </select>
         <button onClick={handleSearch} className="px-4 py-2 bg-primary-700 text-white rounded-lg hover:bg-primary-800 transition-colors text-sm font-medium">חיפוש</button>
-        {search && (
-          <button onClick={() => { setSearch(""); setSearchInput(""); setPage(1); }} className="px-3 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm text-gray-600">נקה</button>
+        {(search || originFilter) && (
+          <button onClick={() => { setSearch(""); setSearchInput(""); setOriginFilter(""); setPage(1); }} className="px-3 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm text-gray-600">נקה</button>
         )}
       </div>
 
@@ -175,6 +193,7 @@ export default function RelationshipsPage() {
                   <th className="text-start px-3 py-3 font-medium text-gray-700">ישות 1</th>
                   <th className="text-start px-3 py-3 font-medium text-gray-700">ישות 2</th>
                   <th className="text-start px-3 py-3 font-medium text-gray-700">סוג קשר</th>
+                  <th className="text-start px-3 py-3 font-medium text-gray-700">סוג נתונים</th>
                   <th className="text-start px-3 py-3 font-medium text-gray-700">מקור</th>
                   <th className="text-start px-3 py-3 font-medium text-gray-700">מסמך</th>
                   <th className="text-start px-3 py-3 font-medium text-gray-700">תאריך מקור</th>
@@ -200,6 +219,15 @@ export default function RelationshipsPage() {
                       <EntityBadge name={item.entity2_name} type={item.entity2_type} />
                     </td>
                     <td className="px-3 py-3 text-gray-700">{item.relationship_type}</td>
+                    <td className="px-3 py-3">
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium border ${
+                        item.origin_kind === "mk_expense"
+                          ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                          : "bg-primary-50 text-primary-700 border-primary-200"
+                      }`}>
+                        {ORIGIN_KIND_LABELS[item.origin_kind || "coi_declaration"] || item.origin_kind}
+                      </span>
+                    </td>
                     <td className="px-3 py-3 text-gray-600 max-w-[160px] truncate" title={item.source_name}>
                       {item.source_name || "—"}
                     </td>
