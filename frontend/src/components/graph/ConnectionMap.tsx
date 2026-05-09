@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useCallback, useState } from "react";
+import { useEffect, useMemo, useRef, useCallback, useState } from "react";
 import type { SubGraph } from "@/lib/api-client";
-import { EDGE_LABELS, originLabel } from "./labels";
+import { EDGE_LABELS, ORIGIN_LABELS_HE, originLabel } from "./labels";
 
 // Re-export so any caller still importing EDGE_LABELS from this module
 // keeps working.
@@ -39,6 +39,49 @@ export function ConnectionMap({
   const cyRef = useRef<CyInstance | null>(null);
   const [tooltip, setTooltip] = useState<{ x: number; y: number; name: string; title?: string; position?: string; ministry?: string } | null>(null);
 
+  // Which origin kinds are currently visible. We only enumerate kinds
+  // that actually appear in the current graph so the toggle UI reflects
+  // what the user is looking at.
+  const allOriginsInGraph = useMemo(() => {
+    const set = new Set<string>();
+    for (const e of graph.edges) {
+      set.add(e.origin_kind || "coi_declaration");
+    }
+    return Array.from(set);
+  }, [graph]);
+
+  const [hiddenOrigins, setHiddenOrigins] = useState<Set<string>>(() => new Set());
+
+  const toggleOrigin = (kind: string) => {
+    setHiddenOrigins((prev) => {
+      const next = new Set(prev);
+      if (next.has(kind)) next.delete(kind);
+      else next.add(kind);
+      return next;
+    });
+  };
+
+  // Filter edges by visible origin kinds. Edges referring to a node not
+  // in the graph are also dropped (matches the legacy behaviour below).
+  const visibleEdges = useMemo(() => {
+    if (hiddenOrigins.size === 0) return graph.edges;
+    return graph.edges.filter(
+      (e) => !hiddenOrigins.has(e.origin_kind || "coi_declaration"),
+    );
+  }, [graph.edges, hiddenOrigins]);
+
+  // Drop nodes that are now disconnected after the filter so the picture
+  // stays focused on the relationships the user asked to see.
+  const visibleNodes = useMemo(() => {
+    if (hiddenOrigins.size === 0) return graph.nodes;
+    const used = new Set<string>();
+    for (const e of visibleEdges) {
+      used.add(e.source_id);
+      used.add(e.target_id);
+    }
+    return graph.nodes.filter((n) => used.has(n.id));
+  }, [graph.nodes, visibleEdges, hiddenOrigins]);
+
   const initGraph = useCallback(async () => {
     if (!containerRef.current) return;
 
@@ -56,7 +99,7 @@ export function ConnectionMap({
     }
 
     // Build elements
-    const nodes = graph.nodes.map((node) => ({
+    const nodes = visibleNodes.map((node) => ({
       data: {
         id: node.id,
         label: node.name || node.id.slice(0, 8),
@@ -80,7 +123,7 @@ export function ConnectionMap({
       docUrls: string[];
     }>();
 
-    for (const edge of graph.edges) {
+    for (const edge of visibleEdges) {
       if (!nodeIds.has(edge.source_id) || !nodeIds.has(edge.target_id)) continue;
       // Canonical key: sorted so A→B and B→A merge together
       const key = [edge.source_id, edge.target_id].sort().join("||");
@@ -269,7 +312,7 @@ export function ConnectionMap({
     cy.on("mouseout", "node", () => setTooltip(null));
 
     cyRef.current = cy;
-  }, [graph, centerId, onNodeClick, onExpandNode]);
+  }, [visibleNodes, visibleEdges, centerId, onNodeClick, onExpandNode]);
 
   useEffect(() => {
     initGraph();
@@ -302,6 +345,47 @@ export function ConnectionMap({
           {tooltip.ministry && (
             <div className="text-gray-600"><span className="text-gray-400">משרד: </span>{tooltip.ministry}</div>
           )}
+        </div>
+      )}
+
+      {/* Origin-kind layer toggle — only renders if at least 2 kinds appear in
+          the data, otherwise it's noise. Sits at the top so users see it
+          before scanning the map. */}
+      {allOriginsInGraph.length >= 2 && (
+        <div className="absolute top-3 start-3 flex flex-col gap-1 text-xs bg-white/90 backdrop-blur-sm rounded-lg px-3 py-2 shadow-sm border border-gray-200">
+          <div className="text-[10px] text-gray-500 font-medium">שכבות נתונים</div>
+          <div className="flex flex-wrap gap-1.5">
+            {allOriginsInGraph.map((kind) => {
+              const visible = !hiddenOrigins.has(kind);
+              const color =
+                kind === "mk_expense"
+                  ? "border-emerald-300"
+                  : "border-primary-300";
+              return (
+                <button
+                  key={kind}
+                  type="button"
+                  onClick={() => toggleOrigin(kind)}
+                  className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full border transition-colors ${
+                    visible
+                      ? `bg-white ${color} text-gray-800`
+                      : "bg-gray-100 border-gray-300 text-gray-400 line-through"
+                  }`}
+                  aria-pressed={visible}
+                  title={visible ? "הסתר שכבה" : "הצג שכבה"}
+                >
+                  <span
+                    className={`w-2 h-2 rounded-full ${
+                      kind === "mk_expense" ? "bg-emerald-600" : "bg-primary-700"
+                    }`}
+                  />
+                  <span>
+                    {ORIGIN_LABELS_HE[kind] || kind}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
 
