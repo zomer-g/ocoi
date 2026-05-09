@@ -96,6 +96,35 @@ def reset_import_state() -> None:
     })
 
 
+def try_claim_import(source: str) -> bool:
+    """Atomically reserve the global import slot. Returns True if the
+    caller now owns the import (and should kick off the work), False if
+    another import is already in flight.
+
+    Used by the trigger endpoints to close the race window between the
+    HTTP handler returning 200 and the background task actually starting
+    — without this, two clicks in quick succession can both pass the
+    'is running?' check and end up running concurrently."""
+    global _import_state
+    if _import_state.get("running"):
+        return False
+    _import_state.update({
+        "running": True,
+        "source": source,
+        "total_on_website": 0,
+        "already_in_db": 0,
+        "new_to_import": 0,
+        "total": 0,
+        "imported": 0,
+        "skipped": 0,
+        "errors": 0,
+        "error_messages": [],
+        "started_at": now_israel().isoformat(),
+        "finished_at": None,
+    })
+    return True
+
+
 # ── Shared: download PDF + convert ────────────────────────────────────────
 
 
@@ -558,31 +587,22 @@ async def run_odata_import() -> dict:
 
     Idempotent: re-running skips documents whose SHA-256 content hash is
     already in the DB.
+
+    The endpoint normally calls `try_claim_import` before scheduling the
+    task; the call here is a fallback for direct invocations.
     """
     global _import_state
 
-    if _import_state["running"]:
-        return {"status": "error", "message": "Import already running"}
+    if not _import_state["running"]:
+        if not try_claim_import("odata"):
+            return {"status": "error", "message": "Import already running"}
 
     try:
         await _check_db_storage_pressure()
     except DBStoragePressureError as e:
+        _import_state["running"] = False
+        _import_state["finished_at"] = now_israel().isoformat()
         return {"status": "error", "message": str(e)}
-
-    _import_state.update({
-        "running": True,
-        "source": "odata",
-        "total_on_website": 0,
-        "already_in_db": 0,
-        "new_to_import": 0,
-        "total": 0,
-        "imported": 0,
-        "skipped": 0,
-        "errors": 0,
-        "error_messages": [],
-        "started_at": now_israel().isoformat(),
-        "finished_at": None,
-    })
 
     try:
         await _run_odata_import()
@@ -743,31 +763,22 @@ async def run_mk_expenses_import(file_bytes: bytes, filename: str) -> dict:
     Idempotent: re-uploading the same file is detected via
     Document.content_hash and the unique compound index on
     entity_relationships, so no duplicate rows are written.
+
+    The endpoint normally calls `try_claim_import` before scheduling the
+    task; the call here is a fallback for direct invocations.
     """
     global _import_state
 
-    if _import_state["running"]:
-        return {"status": "error", "message": "Import already running"}
+    if not _import_state["running"]:
+        if not try_claim_import("mk_expenses"):
+            return {"status": "error", "message": "Import already running"}
 
     try:
         await _check_db_storage_pressure()
     except DBStoragePressureError as e:
+        _import_state["running"] = False
+        _import_state["finished_at"] = now_israel().isoformat()
         return {"status": "error", "message": str(e)}
-
-    _import_state.update({
-        "running": True,
-        "source": "mk_expenses",
-        "total_on_website": 0,
-        "already_in_db": 0,
-        "new_to_import": 0,
-        "total": 0,
-        "imported": 0,
-        "skipped": 0,
-        "errors": 0,
-        "error_messages": [],
-        "started_at": now_israel().isoformat(),
-        "finished_at": None,
-    })
 
     try:
         await _run_mk_expenses_import(file_bytes, filename)
@@ -971,30 +982,82 @@ async def _run_mk_expenses_import(file_bytes: bytes, filename: str) -> None:
                 origin_kind="mk_expense",
             ))
 
-        # Bulk-insert in chunks; commit per chunk so the polling UI
-        # surfaces progress and the WAL stays bounded.
+        # Bulk-insert in chunks. Use INSERT … ON CONFLICT DO NOTHING on
+        # Postgres so that a single duplicate (e.g. left over by a
+        # previous interrupted import or a concurrent one) silently skips
+        # instead of poisoning the entire chunk. SQLite falls back to a
+        # plain bulk insert (per-row try would be too slow at this scale;
+        # SQLite is only used in tests anyway).
         BATCH_SIZE = 500
         inserted = 0
-        for chunk in _chunked(to_insert, BATCH_SIZE):
-            try:
-                session.add_all(chunk)
-                await session.flush()
-                await session.commit()
-                inserted += len(chunk)
-                _import_state["imported"] = inserted
-                _import_state["new_to_import"] = inserted
-            except Exception as e:
-                # Rollback the partial chunk and surface the error; we
-                # keep going so a single bad row doesn't lose the rest.
-                _import_state["errors"] += len(chunk)
-                if len(_import_state["error_messages"]) < 30:
-                    _import_state["error_messages"].append(f"batch insert failed: {e}")
-                try:
-                    await session.rollback()
-                except Exception:
-                    pass
+        is_postgres = "postgres" in str(session.bind.url) if session.bind else False
 
-        _import_state["already_in_db"] += already_skipped
+        if is_postgres:
+            from sqlalchemy.dialects.postgresql import insert as pg_insert
+            rel_table = EntityRelationship.__table__
+            for chunk in _chunked(to_insert, BATCH_SIZE):
+                values = [
+                    {
+                        "id": rel.id,
+                        "source_entity_type": rel.source_entity_type,
+                        "source_entity_id": rel.source_entity_id,
+                        "target_entity_type": rel.target_entity_type,
+                        "target_entity_id": rel.target_entity_id,
+                        "relationship_type": rel.relationship_type,
+                        "details": rel.details,
+                        "restriction_type": rel.restriction_type,
+                        "restriction_end_date": rel.restriction_end_date,
+                        "document_id": rel.document_id,
+                        "confidence": rel.confidence,
+                        "origin_kind": rel.origin_kind,
+                    }
+                    for rel in chunk
+                ]
+                stmt = pg_insert(rel_table).values(values).on_conflict_do_nothing(
+                    index_elements=[
+                        "source_entity_type", "source_entity_id",
+                        "target_entity_type", "target_entity_id",
+                        "relationship_type", "document_id",
+                    ]
+                )
+                try:
+                    result = await session.execute(stmt)
+                    await session.commit()
+                    # rowcount reflects rows actually inserted (PG returns
+                    # 0 for skipped duplicates).
+                    written = result.rowcount if result.rowcount and result.rowcount > 0 else 0
+                    inserted += written
+                    if written < len(chunk):
+                        already_skipped += (len(chunk) - written)
+                    _import_state["imported"] = inserted
+                    _import_state["new_to_import"] = inserted
+                    _import_state["already_in_db"] = already_skipped
+                except Exception as e:
+                    _import_state["errors"] += 1
+                    if len(_import_state["error_messages"]) < 30:
+                        _import_state["error_messages"].append(f"batch insert failed: {e}")
+                    try:
+                        await session.rollback()
+                    except Exception:
+                        pass
+        else:
+            for chunk in _chunked(to_insert, BATCH_SIZE):
+                try:
+                    session.add_all(chunk)
+                    await session.flush()
+                    await session.commit()
+                    inserted += len(chunk)
+                    _import_state["imported"] = inserted
+                    _import_state["new_to_import"] = inserted
+                except Exception as e:
+                    _import_state["errors"] += 1
+                    if len(_import_state["error_messages"]) < 30:
+                        _import_state["error_messages"].append(f"batch insert failed: {e}")
+                    try:
+                        await session.rollback()
+                    except Exception:
+                        pass
+            _import_state["already_in_db"] += already_skipped
 
 
 def _chunked(seq, size: int):

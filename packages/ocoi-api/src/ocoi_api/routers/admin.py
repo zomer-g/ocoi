@@ -1411,10 +1411,12 @@ async def odata_trigger(background_tasks: BackgroundTasks):
     progress. PDFs are stored inline in Document.pdf_content because the
     snapshot ZIP is the only upstream source.
     """
-    from ocoi_api.services.import_service import get_import_status, run_odata_import
+    from ocoi_api.services.import_service import run_odata_import, try_claim_import
 
-    status = get_import_status()
-    if status["running"]:
+    # Atomic claim — closes the race between the HTTP response and the
+    # background task actually starting. If two clients click submit in
+    # quick succession, only the first wins; the second gets 409.
+    if not try_claim_import("odata"):
         raise HTTPException(409, "Import already running")
 
     background_tasks.add_task(run_odata_import)
@@ -1437,20 +1439,21 @@ async def mk_expenses_upload(
     the existing `/import/status` endpoint.
     """
     from ocoi_api.services.import_service import (
-        get_import_status,
         run_mk_expenses_import,
+        try_claim_import,
     )
 
-    status = get_import_status()
-    if status["running"]:
-        raise HTTPException(409, "Import already running")
-
+    # Validate the upload BEFORE claiming the lock so a bad request
+    # doesn't leave us in a stuck running=True state.
     if not (file.filename or "").lower().endswith(".xlsx"):
         raise HTTPException(400, "Expected an .xlsx file")
-
     contents = await file.read()
     if not contents:
         raise HTTPException(400, "Empty upload")
+
+    # Atomic claim — see odata_trigger above.
+    if not try_claim_import("mk_expenses"):
+        raise HTTPException(409, "Import already running")
 
     background_tasks.add_task(run_mk_expenses_import, contents, file.filename or "mk_expenses.xlsx")
     return {"status": "ok", "message": "MK expenses import started"}
