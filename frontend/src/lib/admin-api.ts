@@ -264,6 +264,22 @@ export function triggerOdataImport() {
   });
 }
 
+// Import — Knesset MK constituent-outreach expenses (Excel upload)
+export async function uploadMkExpenses(file: File) {
+  const fd = new FormData();
+  fd.append("file", file);
+  const res = await fetch(`/api/v1/admin/import/mk-expenses/upload`, {
+    method: "POST",
+    credentials: "include",
+    body: fd,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `שגיאה ${res.status}`);
+  }
+  return res.json() as Promise<{ status: string; message: string }>;
+}
+
 export interface ImportStatus {
   running: boolean;
   source: string | null;

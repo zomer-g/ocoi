@@ -8,6 +8,7 @@ import {
   ignoreResources,
   unignoreResources,
   triggerOdataImport,
+  uploadMkExpenses,
   getImportStatus,
   resetImportState,
   getExtractionPrompt,
@@ -24,7 +25,7 @@ import {
   type ExtractionStatus,
 } from "@/lib/admin-api";
 
-type Tab = "ckan" | "odata" | "extraction";
+type Tab = "ckan" | "odata" | "mk-expenses" | "extraction";
 
 export default function ImportPage() {
   const [tab, setTab] = useState<Tab>("odata");
@@ -34,9 +35,10 @@ export default function ImportPage() {
       <h1 className="text-2xl font-bold text-gray-900 mb-6">ייבוא מסמכים</h1>
 
       {/* Tab buttons */}
-      <div className="flex gap-2 mb-6">
+      <div className="flex gap-2 mb-6 flex-wrap">
         {([
           ["odata", "odata.org.il (snapshot)"],
+          ["mk-expenses", "הוצאות חברי כנסת"],
           ["ckan", "CKAN — חיפוש מותאם"],
           ["extraction", "חילוץ ישויות"],
         ] as [Tab, string][]).map(([key, label]) => (
@@ -53,6 +55,7 @@ export default function ImportPage() {
       </div>
 
       {tab === "odata" && <OdataTab />}
+      {tab === "mk-expenses" && <MkExpensesTab />}
       {tab === "ckan" && <CkanTab />}
       {tab === "extraction" && <ExtractionTab />}
     </div>
@@ -766,6 +769,164 @@ function OdataTab() {
     </div>
   );
 }
+
+// ── MK Expenses Tab: Excel upload ───────────────────────────────────────
+
+function MkExpensesTab() {
+  const [file, setFile] = useState<File | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<ImportStatus | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const refreshStatus = useCallback(async () => {
+    try {
+      const res = await getImportStatus();
+      setStatus(res.data);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  // Poll while running
+  useEffect(() => {
+    refreshStatus();
+    const t = setInterval(refreshStatus, 2000);
+    return () => clearInterval(t);
+  }, [refreshStatus]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!file) {
+      setError("בחרו קובץ Excel");
+      return;
+    }
+    setError(null);
+    setSubmitting(true);
+    try {
+      await uploadMkExpenses(file);
+      // Reset the input so re-uploading the same file works.
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      setFile(null);
+      await refreshStatus();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "שגיאה בהעלאה");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleReset = async () => {
+    if (!confirm("לאפס את מצב הייבוא?")) return;
+    try {
+      await resetImportState();
+      await refreshStatus();
+    } catch {
+      // ignore
+    }
+  };
+
+  const isRunning = status?.running && status.source === "mk_expenses";
+
+  return (
+    <div className="bg-white border border-gray-200 rounded-xl p-6 max-w-3xl">
+      <h2 className="text-lg font-semibold text-gray-900 mb-2">
+        ייבוא הוצאות קשר עם הציבור (חברי כנסת)
+      </h2>
+      <p className="text-sm text-gray-600 mb-4">
+        העלאת קובץ Excel רשמי של דו"ח ההוצאות מאתר הכנסת. כל שורה הופכת לקשר בין חבר/ת הכנסת
+        לבין הספק. רכישות חוזרות מאותו ספק נצברות לקשר בודד עם סיכום סכומים, תקופה וקטגוריות.
+        ניתן להעלות את אותו קובץ שוב — קיים זיהוי קובץ זהה ולא ייווצרו כפילויות.
+      </p>
+
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">קובץ Excel (.xlsx)</label>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".xlsx"
+            onChange={(e) => setFile(e.target.files?.[0] || null)}
+            className="block w-full text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-primary-50 file:text-primary-700 hover:file:bg-primary-100"
+          />
+          {file && (
+            <p className="text-xs text-gray-500 mt-1">
+              נבחר: <span className="font-medium">{file.name}</span> ({(file.size / 1024).toFixed(0)} KB)
+            </p>
+          )}
+        </div>
+
+        {error && (
+          <div className="p-3 rounded-lg bg-red-50 text-red-700 text-sm">{error}</div>
+        )}
+
+        <div className="flex gap-2">
+          <button
+            type="submit"
+            disabled={!file || submitting || isRunning}
+            className="px-5 py-2.5 rounded-lg bg-primary-700 text-white text-sm font-medium hover:bg-primary-800 transition-colors disabled:opacity-50"
+          >
+            {submitting ? "מעלה..." : "התחל ייבוא"}
+          </button>
+          {status?.running === false && status?.source === "mk_expenses" && (
+            <button
+              type="button"
+              onClick={handleReset}
+              className="px-3 py-2.5 rounded-lg border border-gray-300 text-sm text-gray-700 hover:bg-gray-50"
+            >
+              אפס מצב
+            </button>
+          )}
+        </div>
+      </form>
+
+      {/* Status block */}
+      {status && (status.source === "mk_expenses" || status.running) && (
+        <div className="mt-6 border-t border-gray-200 pt-4">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-sm font-semibold text-gray-700">מצב ייבוא</h3>
+            <span className={`text-xs px-2 py-0.5 rounded-full ${
+              status.running ? "bg-amber-100 text-amber-800" : "bg-gray-100 text-gray-600"
+            }`}>
+              {status.running ? "פועל" : "הושלם"}
+            </span>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+            <div>
+              <div className="text-xs text-gray-500">שורות בקובץ</div>
+              <div className="font-semibold text-gray-900">{status.total.toLocaleString()}</div>
+            </div>
+            <div>
+              <div className="text-xs text-gray-500">קשרים שנוצרו</div>
+              <div className="font-semibold text-emerald-700">{status.imported.toLocaleString()}</div>
+            </div>
+            <div>
+              <div className="text-xs text-gray-500">דולגו</div>
+              <div className="font-semibold text-gray-700">{status.skipped.toLocaleString()}</div>
+            </div>
+            <div>
+              <div className="text-xs text-gray-500">שגיאות</div>
+              <div className={`font-semibold ${status.errors > 0 ? "text-red-700" : "text-gray-700"}`}>
+                {status.errors.toLocaleString()}
+              </div>
+            </div>
+          </div>
+          {status.error_messages && status.error_messages.length > 0 && (
+            <details className="mt-3">
+              <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-700">
+                פירוט שגיאות ({status.error_messages.length})
+              </summary>
+              <ul className="mt-2 space-y-1 text-xs text-red-700 max-h-40 overflow-y-auto">
+                {status.error_messages.map((m, i) => <li key={i}>• {m}</li>)}
+              </ul>
+            </details>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 // ── Extraction Tab: DeepSeek Entity Extraction ──────────────────────────
 

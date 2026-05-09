@@ -1421,6 +1421,41 @@ async def odata_trigger(background_tasks: BackgroundTasks):
     return {"status": "ok", "message": "odata.org.il import started"}
 
 
+# ── MK constituent-outreach expenses (Excel upload) ──────────────────────
+
+
+@router.post("/import/mk-expenses/upload")
+async def mk_expenses_upload(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+):
+    """Accept a Knesset MK-expenses .xlsx and start a background import.
+
+    The file's bytes are streamed into Document.pdf_content (the column is
+    used as generic binary), and aggregated EntityRelationship rows are
+    created with `origin_kind='mk_expense'`. Progress is exposed through
+    the existing `/import/status` endpoint.
+    """
+    from ocoi_api.services.import_service import (
+        get_import_status,
+        run_mk_expenses_import,
+    )
+
+    status = get_import_status()
+    if status["running"]:
+        raise HTTPException(409, "Import already running")
+
+    if not (file.filename or "").lower().endswith(".xlsx"):
+        raise HTTPException(400, "Expected an .xlsx file")
+
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(400, "Empty upload")
+
+    background_tasks.add_task(run_mk_expenses_import, contents, file.filename or "mk_expenses.xlsx")
+    return {"status": "ok", "message": "MK expenses import started"}
+
+
 @router.get("/import/status")
 async def import_status():
     from ocoi_api.services.import_service import get_import_status

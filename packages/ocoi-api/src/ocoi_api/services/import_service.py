@@ -729,3 +729,205 @@ async def _persist_odata_record(
         _import_state["imported"] += 1
         _import_state["new_to_import"] = _import_state["imported"]
         await session.commit()
+
+
+# ── MK constituent-outreach expenses (Excel upload) ─────────────────────
+
+
+async def run_mk_expenses_import(file_bytes: bytes, filename: str) -> dict:
+    """Parse a Knesset MK-expenses Excel and create EntityRelationships
+    aggregated per (MK, supplier) pair.
+
+    Idempotent: re-uploading the same file is detected via
+    Document.content_hash and the unique compound index on
+    entity_relationships, so no duplicate rows are written.
+    """
+    global _import_state
+
+    if _import_state["running"]:
+        return {"status": "error", "message": "Import already running"}
+
+    try:
+        await _check_db_storage_pressure()
+    except DBStoragePressureError as e:
+        return {"status": "error", "message": str(e)}
+
+    _import_state.update({
+        "running": True,
+        "source": "mk_expenses",
+        "total_on_website": 0,
+        "already_in_db": 0,
+        "new_to_import": 0,
+        "total": 0,
+        "imported": 0,
+        "skipped": 0,
+        "errors": 0,
+        "error_messages": [],
+        "started_at": now_israel().isoformat(),
+        "finished_at": None,
+    })
+
+    try:
+        await _run_mk_expenses_import(file_bytes, filename)
+    except Exception as e:
+        _import_state["error_messages"].append(f"Fatal: {str(e)}")
+        _import_state["errors"] += 1
+    finally:
+        _import_state["running"] = False
+        _import_state["finished_at"] = now_israel().isoformat()
+
+    return get_import_status()
+
+
+async def _run_mk_expenses_import(file_bytes: bytes, filename: str) -> None:
+    from ocoi_db.crud import (
+        create_relationship,
+        upsert_company,
+        upsert_person,
+    )
+    from ocoi_importer.mk_expenses_client import (
+        CANONICAL_KNESSET_NAME,
+        canonical_supplier_name,
+        iter_rows,
+    )
+
+    file_hash = hashlib.sha256(file_bytes).hexdigest()
+
+    # ── Persist the Excel as a Document so the audit trail / CMS works ──
+    async with bg_session_factory() as session:
+        # Was the same file already ingested?
+        existing_doc_q = await session.execute(
+            select(Document).where(Document.content_hash == file_hash).limit(1)
+        )
+        existing_doc = existing_doc_q.scalars().first()
+
+        if existing_doc is None:
+            src = await get_or_create_source(
+                session,
+                source_type="mk_expenses",
+                source_id=f"mk_expenses_{file_hash[:16]}",
+                title=filename,
+                url=f"upload://{filename}",
+                metadata_json={
+                    "filename": filename,
+                    "imported_at": now_israel().isoformat(),
+                    "kind": "mk_expenses",
+                },
+            )
+            doc = await create_document(
+                session,
+                source_id=src.id,
+                title=filename,
+                file_url=f"upload://{filename}",
+                file_format="xlsx",
+                file_size=len(file_bytes),
+            )
+            doc.pdf_content = file_bytes  # the column is generic binary
+            doc.content_hash = file_hash
+            doc.conversion_status = "stored"
+            await session.commit()
+            doc_id = doc.id
+        else:
+            _import_state["error_messages"].append(
+                f"קובץ {filename} כבר יובא בעבר; מתחיל ייבוא קשרים מחדש (idempotent)."
+            )
+            doc_id = existing_doc.id
+
+    # ── Pass 1: stream rows, aggregate per (mk, supplier) ─────────────────
+    aggregated: dict[tuple[str, str], dict] = {}
+    skipped = 0
+    total_rows = 0
+
+    for row in iter_rows(file_bytes):
+        total_rows += 1
+        supplier = canonical_supplier_name(row.raw_supplier_name)
+        if not supplier or not row.mk_name:
+            skipped += 1
+            continue
+        key = (row.mk_name, supplier)
+        bucket = aggregated.get(key)
+        if bucket is None:
+            bucket = {
+                "count": 0,
+                "total_amount": 0.0,
+                "min_date": None,
+                "max_date": None,
+                "categories": set(),
+                "is_internal": supplier == CANONICAL_KNESSET_NAME,
+            }
+            aggregated[key] = bucket
+        bucket["count"] += 1
+        bucket["total_amount"] += row.amount
+        if row.date:
+            if bucket["min_date"] is None or row.date < bucket["min_date"]:
+                bucket["min_date"] = row.date
+            if bucket["max_date"] is None or row.date > bucket["max_date"]:
+                bucket["max_date"] = row.date
+        if row.expense_category:
+            bucket["categories"].add(row.expense_category)
+
+    _import_state["total"] = total_rows
+    _import_state["total_on_website"] = total_rows
+    _import_state["skipped"] = skipped
+
+    # ── Pass 2: upsert entities and create one relationship per pair ─────
+    async with bg_session_factory() as session:
+        # Cache upserts so we don't re-query the same MK or supplier again
+        person_cache: dict[str, str] = {}
+        company_cache: dict[str, str] = {}
+
+        for (mk_name, supplier_name), bucket in aggregated.items():
+            try:
+                pid = person_cache.get(mk_name)
+                if pid is None:
+                    person = await upsert_person(session, name_hebrew=mk_name)
+                    pid = str(person.id)
+                    person_cache[mk_name] = pid
+
+                cid = company_cache.get(supplier_name)
+                if cid is None:
+                    company = await upsert_company(session, name_hebrew=supplier_name)
+                    cid = str(company.id)
+                    company_cache[supplier_name] = cid
+
+                details = _format_mk_expense_details(bucket)
+                await create_relationship(
+                    session,
+                    source_entity_type="person",
+                    source_entity_id=pid,
+                    target_entity_type="company",
+                    target_entity_id=cid,
+                    relationship_type="mk_expense_payment",
+                    document_id=doc_id,
+                    details=details,
+                    confidence=1.0,
+                    origin_kind="mk_expense",
+                )
+                _import_state["imported"] += 1
+                _import_state["new_to_import"] = _import_state["imported"]
+            except Exception as e:
+                _import_state["errors"] += 1
+                if len(_import_state["error_messages"]) < 30:
+                    _import_state["error_messages"].append(
+                        f"{mk_name} → {supplier_name}: {e}"
+                    )
+
+        await session.commit()
+
+
+def _format_mk_expense_details(bucket: dict) -> str:
+    """Build a Hebrew one-liner describing one (MK, supplier) aggregate."""
+    parts: list[str] = []
+    parts.append("תקציב קשר עם הציבור")
+    parts.append(f"{bucket['count']} חיובים")
+    if bucket["min_date"] and bucket["max_date"]:
+        if bucket["min_date"] == bucket["max_date"]:
+            parts.append(bucket["min_date"])
+        else:
+            parts.append(f"{bucket['min_date']} – {bucket['max_date']}")
+    total = bucket["total_amount"]
+    parts.append(f"סה\"כ {total:,.2f} ₪")
+    if bucket["categories"]:
+        cats = sorted(bucket["categories"])
+        parts.append("קטגוריות: " + ", ".join(cats[:4]))
+    return " | ".join(parts)
