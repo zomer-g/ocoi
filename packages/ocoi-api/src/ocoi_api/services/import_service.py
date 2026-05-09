@@ -794,7 +794,9 @@ async def _run_mk_expenses_import(file_bytes: bytes, filename: str) -> None:
     file_hash = hashlib.sha256(file_bytes).hexdigest()
 
     # ── Persist the Excel as a Document so the audit trail / CMS works ──
-    async with bg_session_factory() as session:
+    # Use async_session_factory (expire_on_commit=False) so we can read
+    # ORM attributes after commit without triggering greenlet IO.
+    async with async_session_factory() as session:
         # Was the same file already ingested?
         existing_doc_q = await session.execute(
             select(Document).where(Document.content_hash == file_hash).limit(1)
@@ -825,13 +827,14 @@ async def _run_mk_expenses_import(file_bytes: bytes, filename: str) -> None:
             doc.pdf_content = file_bytes  # the column is generic binary
             doc.content_hash = file_hash
             doc.conversion_status = "stored"
+            # Capture ids BEFORE commit so we don't depend on lazy-load.
+            doc_id = str(doc.id)
             await session.commit()
-            doc_id = doc.id
         else:
             _import_state["error_messages"].append(
                 f"קובץ {filename} כבר יובא בעבר; מתחיל ייבוא קשרים מחדש (idempotent)."
             )
-            doc_id = existing_doc.id
+            doc_id = str(existing_doc.id)
 
     # ── Pass 1: stream rows, aggregate per (mk, supplier) ─────────────────
     aggregated: dict[tuple[str, str], dict] = {}
@@ -871,10 +874,13 @@ async def _run_mk_expenses_import(file_bytes: bytes, filename: str) -> None:
     _import_state["skipped"] = skipped
 
     # ── Pass 2: upsert entities and create one relationship per pair ─────
-    async with bg_session_factory() as session:
-        # Cache upserts so we don't re-query the same MK or supplier again
+    # Commit in batches so memory and the WAL stay bounded for files with
+    # thousands of unique pairs.
+    BATCH_SIZE = 200
+    async with async_session_factory() as session:
         person_cache: dict[str, str] = {}
         company_cache: dict[str, str] = {}
+        in_batch = 0
 
         for (mk_name, supplier_name), bucket in aggregated.items():
             try:
@@ -905,14 +911,24 @@ async def _run_mk_expenses_import(file_bytes: bytes, filename: str) -> None:
                 )
                 _import_state["imported"] += 1
                 _import_state["new_to_import"] = _import_state["imported"]
+                in_batch += 1
+                if in_batch >= BATCH_SIZE:
+                    await session.commit()
+                    in_batch = 0
             except Exception as e:
                 _import_state["errors"] += 1
                 if len(_import_state["error_messages"]) < 30:
                     _import_state["error_messages"].append(
                         f"{mk_name} → {supplier_name}: {e}"
                     )
+                # Roll back partial state so the next iteration starts clean.
+                try:
+                    await session.rollback()
+                except Exception:
+                    pass
 
-        await session.commit()
+        if in_batch > 0:
+            await session.commit()
 
 
 def _format_mk_expense_details(bucket: dict) -> str:
