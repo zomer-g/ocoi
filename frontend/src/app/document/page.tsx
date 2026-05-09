@@ -16,7 +16,26 @@ interface DocSummary {
   file_size: number | null;
   conversion_status: string;
   extraction_status: string;
+  source_type?: string | null;
+  source_title?: string | null;
+  relationships_count?: number;
 }
+
+const SOURCE_LABELS: Record<string, string> = {
+  odata: "הסדר ניגוד עניינים",
+  govil: "הסדר ניגוד עניינים",
+  mk_expenses: "הוצאות קשר עם הציבור",
+  ckan: "CKAN",
+  upload: "העלאה ידנית",
+};
+
+const SOURCE_BADGE: Record<string, string> = {
+  odata: "bg-primary-50 text-primary-700 border-primary-200",
+  govil: "bg-primary-50 text-primary-700 border-primary-200",
+  mk_expenses: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  ckan: "bg-gray-50 text-gray-700 border-gray-200",
+  upload: "bg-amber-50 text-amber-700 border-amber-200",
+};
 
 const TYPE_LABEL: Record<string, string> = {
   person: "אדם",
@@ -131,25 +150,56 @@ function DocumentContent() {
     </div>
   );
 
+  // Excel / non-PDF files don't render in an <iframe>; show a download
+  // card for those. Only PDFs are previewed inline.
+  const isPdf = (doc.file_format || "").toLowerCase() === "pdf";
+
   const pdfCard = (
     <div className="bg-white rounded-xl border border-gray-200 flex flex-col h-full">
       <div className="flex items-center justify-between p-4 border-b border-gray-200">
-        <h2 className="text-lg font-semibold text-gray-900">המסמך המקורי</h2>
+        <h2 className="text-lg font-semibold text-gray-900">
+          {isPdf ? "המסמך המקורי" : "קובץ המקור"}
+        </h2>
         <a
           href={pdfSrc}
           target="_blank"
           rel="noopener noreferrer"
           className="text-sm text-primary-600 hover:underline"
         >
-          פתח בלשונית חדשה ↗
+          {isPdf ? "פתח בלשונית חדשה ↗" : "הורד ↓"}
         </a>
       </div>
       <div className="flex-1 min-h-[420px]" dir="ltr">
-        <iframe
-          src={pdfSrc}
-          className="w-full h-full border-0"
-          title={doc.title || "מסמך"}
-        />
+        {isPdf ? (
+          <iframe
+            src={pdfSrc}
+            className="w-full h-full border-0"
+            title={doc.title || "מסמך"}
+          />
+        ) : (
+          <div className="flex flex-col items-center justify-center h-full min-h-[420px] p-6 text-center" dir="rtl">
+            <div className="w-14 h-14 rounded-xl bg-emerald-50 text-emerald-700 flex items-center justify-center mb-3">
+              <svg xmlns="http://www.w3.org/2000/svg" className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <polyline points="14 2 14 8 20 8" />
+              </svg>
+            </div>
+            <div className="text-sm font-medium text-gray-900">
+              קובץ {(doc.file_format || "").toUpperCase()} — לא ניתן להצגה ישירה בדפדפן
+            </div>
+            <p className="text-xs text-gray-500 mt-1 max-w-md">
+              המסמך הוא דו"ח גולמי שמתוכו חולצו הקשרים המוצגים בצד. לחצו על "הורד" כדי לפתוח את הקובץ ב-Excel או בכלי אחר.
+            </p>
+            <a
+              href={pdfSrc}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-4 inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-primary-700 text-white text-sm font-medium hover:bg-primary-800 transition-colors"
+            >
+              הורדה
+            </a>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -188,7 +238,21 @@ function DocumentContent() {
               />
             </div>
             <div className="mt-2 text-sm text-gray-500 flex flex-wrap items-center gap-2">
+              {doc.source_type && (
+                <span
+                  className={`px-2 py-0.5 rounded-full border text-xs ${
+                    SOURCE_BADGE[doc.source_type] || "bg-gray-50 text-gray-700 border-gray-200"
+                  }`}
+                >
+                  {SOURCE_LABELS[doc.source_type] || doc.source_type}
+                </span>
+              )}
               <span className="uppercase">{doc.file_format || "—"}</span>
+              {(doc.relationships_count ?? 0) > 0 && (
+                <span className="text-gray-500">
+                  {doc.relationships_count!.toLocaleString()} קשרים
+                </span>
+              )}
               {doc.extraction_status === "extracted" && (
                 <span className="px-1.5 py-0.5 rounded-full bg-green-50 text-green-700 border border-green-200 text-xs">
                   חולץ

@@ -12,7 +12,7 @@ from ocoi_api.dependencies import get_db
 from ocoi_common.config import settings
 from ocoi_db.models import (
     Document, EntityRelationship,
-    Person, Company, Association, Domain,
+    Person, Company, Association, Domain, Source,
 )
 
 router = APIRouter(tags=["documents"])
@@ -32,11 +32,22 @@ async def list_documents(
     limit: int = Query(20, ge=1, le=100),
     status: str | None = Query(None, description="Filter by conversion_status"),
     q: str | None = Query(None, description="Substring search on title"),
+    source_type: str | None = Query(
+        None,
+        description="Filter by Source.source_type (e.g. 'odata', 'mk_expenses')",
+    ),
     db: AsyncSession = Depends(get_db),
 ):
     offset = (page - 1) * limit
-    query = select(Document)
-    count_query = select(func.count()).select_from(Document)
+    query = (
+        select(Document, Source.source_type, Source.title.label("source_title"))
+        .join(Source, Document.source_id == Source.id, isouter=True)
+    )
+    count_query = (
+        select(func.count())
+        .select_from(Document)
+        .join(Source, Document.source_id == Source.id, isouter=True)
+    )
 
     if status:
         query = query.where(Document.conversion_status == status)
@@ -45,10 +56,26 @@ async def list_documents(
         like = f"%{q.strip()}%"
         query = query.where(Document.title.like(like))
         count_query = count_query.where(Document.title.like(like))
+    if source_type:
+        query = query.where(Source.source_type == source_type)
+        count_query = count_query.where(Source.source_type == source_type)
 
     total = (await db.execute(count_query)).scalar()
-    result = await db.execute(query.offset(offset).limit(limit).order_by(Document.created_at.desc()))
-    docs = result.scalars().all()
+    result = await db.execute(
+        query.offset(offset).limit(limit).order_by(Document.created_at.desc())
+    )
+    rows = result.all()
+
+    # One round-trip for the relationships count of every doc on the page
+    doc_ids = [str(r[0].id) for r in rows]
+    rel_counts: dict[str, int] = {}
+    if doc_ids:
+        count_rows = await db.execute(
+            select(EntityRelationship.document_id, func.count())
+            .where(EntityRelationship.document_id.in_(doc_ids))
+            .group_by(EntityRelationship.document_id)
+        )
+        rel_counts = {str(did): cnt for did, cnt in count_rows.fetchall()}
 
     return {
         "status": "ok",
@@ -60,19 +87,37 @@ async def list_documents(
                 "file_url": d.file_url,
                 "conversion_status": d.conversion_status,
                 "extraction_status": d.extraction_status,
+                "source_type": s_type,
+                "source_title": s_title,
+                "relationships_count": rel_counts.get(str(d.id), 0),
             }
-            for d in docs
+            for (d, s_type, s_title) in rows
         ],
-        "meta": {"total": total, "page": page, "limit": limit, "pages": (total + limit - 1) // limit},
+        "meta": {
+            "total": total,
+            "page": page,
+            "limit": limit,
+            "pages": (total + limit - 1) // limit if total else 0,
+        },
     }
 
 
 @router.get("/documents/{doc_id}")
 async def get_document(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Document).where(Document.id == doc_id))
-    doc = result.scalars().first()
-    if not doc:
+    result = await db.execute(
+        select(Document, Source.source_type, Source.title.label("source_title"))
+        .join(Source, Document.source_id == Source.id, isouter=True)
+        .where(Document.id == doc_id)
+    )
+    row = result.first()
+    if not row:
         raise HTTPException(404, "Document not found")
+    doc, s_type, s_title = row
+    rel_count = (await db.execute(
+        select(func.count())
+        .select_from(EntityRelationship)
+        .where(EntityRelationship.document_id == doc.id)
+    )).scalar() or 0
     return {
         "status": "ok",
         "data": {
@@ -83,6 +128,9 @@ async def get_document(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
             "file_size": doc.file_size,
             "conversion_status": doc.conversion_status,
             "extraction_status": doc.extraction_status,
+            "source_type": s_type,
+            "source_title": s_title,
+            "relationships_count": rel_count,
         },
     }
 
@@ -220,22 +268,36 @@ def _inline_disposition(filename: str) -> str:
     return f'inline; filename="{safe_ascii}"; filename*=UTF-8\'\'{encoded}'
 
 
+_MEDIA_TYPES: dict[str, str] = {
+    "pdf": "application/pdf",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "xls": "application/vnd.ms-excel",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "doc": "application/msword",
+    "csv": "text/csv",
+}
+
+
 @router.get("/documents/{doc_id}/pdf")
 async def serve_public_pdf(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """Stream the document's PDF for inline viewing in the public UI.
+    """Stream the document's binary contents (PDF or Excel) for inline
+    viewing / download from the public UI.
 
-    Mirrors the admin endpoint but without auth — the documents themselves
-    are public conflict-of-interest declarations, so exposing the original
-    file is by design. Tries disk first, falls back to bytes stored in
-    `Document.pdf_content`.
+    The route is named `/pdf` for backwards compatibility — it actually
+    serves whatever bytes live in `Document.pdf_content`, with the right
+    Content-Type derived from `file_format`. Tries disk first, falls back
+    to the DB column.
     """
     result = await db.execute(select(Document).where(Document.id == doc_id))
     doc = result.scalars().first()
     if not doc:
         raise HTTPException(404, "Document not found")
 
+    fmt = (doc.file_format or "pdf").lower()
+    media_type = _MEDIA_TYPES.get(fmt, "application/octet-stream")
+    extension = f".{fmt}" if fmt else ""
     raw_title = (doc.title or doc.id).replace('"', "").replace("\n", " ")
-    filename = raw_title if raw_title.lower().endswith(".pdf") else f"{raw_title}.pdf"
+    filename = raw_title if raw_title.lower().endswith(extension) else f"{raw_title}{extension}"
     disposition = _inline_disposition(filename)
 
     # Disk first (cheap)
@@ -249,7 +311,7 @@ async def serve_public_pdf(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db)
     if pdf_path:
         return FileResponse(
             pdf_path,
-            media_type="application/pdf",
+            media_type=media_type,
             headers={"Content-Disposition": disposition},
         )
 
@@ -261,8 +323,8 @@ async def serve_public_pdf(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db)
     if doc and doc.pdf_content:
         return Response(
             content=doc.pdf_content,
-            media_type="application/pdf",
+            media_type=media_type,
             headers={"Content-Disposition": disposition},
         )
 
-    raise HTTPException(404, "PDF file not found")
+    raise HTTPException(404, "File not found")
