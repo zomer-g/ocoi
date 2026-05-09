@@ -869,6 +869,14 @@ async def _run_mk_expenses_import(file_bytes: bytes, filename: str) -> None:
         if row.expense_category:
             bucket["categories"].add(row.expense_category)
 
+        # Surface progress to the polling admin UI every 500 rows so the
+        # user can see Pass 1 making progress (Excel parse alone can take
+        # several seconds on a 24K-row workbook).
+        if total_rows % 500 == 0:
+            _import_state["total"] = total_rows
+            _import_state["total_on_website"] = total_rows
+            _import_state["skipped"] = skipped
+
     _import_state["total"] = total_rows
     _import_state["total_on_website"] = total_rows
     _import_state["skipped"] = skipped

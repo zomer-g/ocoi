@@ -826,7 +826,10 @@ function MkExpensesTab() {
     }
   };
 
-  const isRunning = status?.running && status.source === "mk_expenses";
+  const isRunning = !!status?.running;
+  // The button is locked while ANY import is running (not just MK expenses)
+  // to match the backend's 409 — but show the user *which* source is busy.
+  const blockingSource = isRunning ? status?.source : null;
 
   return (
     <div className="bg-white border border-gray-200 rounded-xl p-6 max-w-3xl">
@@ -860,6 +863,13 @@ function MkExpensesTab() {
           <div className="p-3 rounded-lg bg-red-50 text-red-700 text-sm">{error}</div>
         )}
 
+        {isRunning && (
+          <div className="p-3 rounded-lg bg-amber-50 text-amber-900 text-sm">
+            ייבוא {blockingSource === "mk_expenses" ? "הוצאות חברי כנסת" : blockingSource} פועל כרגע.
+            אם זה תקוע — לחצו "אפס מצב" כדי לשחרר.
+          </div>
+        )}
+
         <div className="flex gap-2">
           <button
             type="submit"
@@ -868,15 +878,14 @@ function MkExpensesTab() {
           >
             {submitting ? "מעלה..." : "התחל ייבוא"}
           </button>
-          {status?.running === false && status?.source === "mk_expenses" && (
-            <button
-              type="button"
-              onClick={handleReset}
-              className="px-3 py-2.5 rounded-lg border border-gray-300 text-sm text-gray-700 hover:bg-gray-50"
-            >
-              אפס מצב
-            </button>
-          )}
+          {/* Always available so a stuck running flag never blocks the user. */}
+          <button
+            type="button"
+            onClick={handleReset}
+            className="px-3 py-2.5 rounded-lg border border-gray-300 text-sm text-gray-700 hover:bg-gray-50"
+          >
+            אפס מצב
+          </button>
         </div>
       </form>
 
