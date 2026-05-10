@@ -159,15 +159,28 @@ async def find_path(
     return _build_subgraph_from_rows(rows)
 
 
+async def _hidden_id_set(session: AsyncSession, table: str) -> set[str]:
+    """Return the set of `id` values flagged hidden in the given entity
+    table. Used to skip generic-placeholder rows when picking a showcase
+    pair."""
+    rows = await session.execute(text(f"SELECT id FROM {table} WHERE hidden = TRUE"))
+    return {str(r[0]) for r in rows.fetchall()}
+
+
 async def find_showcase_pair(
     session: AsyncSession,
     rotation_seed: int = 0,
 ) -> SubGraph | None:
-    """Find a "two suns" showcase: pick two persons who share several
-    declared hubs (companies / associations / domains), and return the
-    full union of their direct neighborhoods. Visually this lays out as
-    two dense stars whose overlap sits between them — exactly the kind of
-    picture that explains what the project surfaces.
+    """Find a "two suns" showcase: pick two persons who share at least one
+    visible (non-hidden) hub and return the full union of their direct
+    neighborhoods. Visually this lays out as two dense stars whose overlap
+    sits between them — exactly the kind of picture that explains what
+    the project surfaces.
+
+    Hidden / blocklisted entities (generic placeholders like
+    "עניינים אישיים") are excluded both as candidate hubs *and* as
+    connectors in the resulting graph. If after filtering the chosen pair
+    no longer share a visible neighbour, the next candidate hub is tried.
 
     `rotation_seed` rotates the choice across a list of top candidate hubs:
     callers can pass e.g. today's ordinal to give each day a different
@@ -177,13 +190,27 @@ async def find_showcase_pair(
     a direct person → person edge if no overlapping pair exists.
     """
 
+    # Pre-load hidden id sets per type once. Cheap (single index scan).
+    hidden_persons = await _hidden_id_set(session, "persons")
+    hidden_companies = await _hidden_id_set(session, "companies")
+    hidden_associations = await _hidden_id_set(session, "associations")
+    hidden_domains = await _hidden_id_set(session, "domains")
+    hidden_by_type: dict[str, set[str]] = {
+        "person": hidden_persons,
+        "company": hidden_companies,
+        "association": hidden_associations,
+        "domain": hidden_domains,
+    }
+
+    def _is_hidden(etype: str, eid: str) -> bool:
+        return eid in hidden_by_type.get(etype, set())
+
     # ── Pair selection ───────────────────────────────────────────────────
-    # Cheap two-step lookup that avoids a self-join over the whole table:
-    #   1. Pull the top-N most-connected hubs (most distinct persons).
-    #   2. Pick one by `rotation_seed % len(hubs)` — gives daily rotation
-    #      while keeping the per-day result deterministic.
-    #   3. Take two of that hub's persons, also rotated.
+    # Over-fetch top-N hubs, drop hidden ones, then iterate from the
+    # rotation seed until we find a hub whose two chosen persons still
+    # share at least one VISIBLE neighbour after pruning.
     HUB_CANDIDATES = 20
+    HUB_OVER_FETCH = 80
     hub_pick_q = text(f"""
         SELECT target_entity_type AS hub_type,
                target_entity_id   AS hub_id,
@@ -194,56 +221,91 @@ async def find_showcase_pair(
         GROUP BY target_entity_type, target_entity_id
         HAVING COUNT(DISTINCT source_entity_id) >= 2
         ORDER BY person_count DESC, target_entity_id
-        LIMIT {HUB_CANDIDATES}
+        LIMIT {HUB_OVER_FETCH}
     """)
-    hub_rows = (await session.execute(hub_pick_q)).fetchall()
+    raw_hub_rows = (await session.execute(hub_pick_q)).fetchall()
 
-    p1: str | None = None
-    p2: str | None = None
-    if hub_rows:
-        chosen = hub_rows[rotation_seed % len(hub_rows)]
-        ht, hi, person_count = chosen
-        # For the chosen hub, pull all distinct persons and rotate two of
-        # them in based on the seed too — so every day picks a different
-        # *pair* even when the chosen hub is rich.
-        person_rows = (await session.execute(text("""
-            SELECT DISTINCT source_entity_id
-            FROM entity_relationships
-            WHERE source_entity_type = 'person'
-              AND target_entity_type = :ht
-              AND target_entity_id   = :hi
-            ORDER BY source_entity_id
-        """), {"ht": ht, "hi": str(hi)})).fetchall()
-        if len(person_rows) >= 2:
-            n = len(person_rows)
+    visible_hubs: list[tuple[str, str]] = []
+    for ht, hi, _pc in raw_hub_rows:
+        hi_str = str(hi)
+        if _is_hidden(ht, hi_str):
+            continue
+        visible_hubs.append((ht, hi_str))
+    visible_hubs = visible_hubs[:HUB_CANDIDATES]
+
+    nbr_q = text("""
+        SELECT r.source_entity_type, r.source_entity_id,
+               r.target_entity_type, r.target_entity_id,
+               r.relationship_type, r.details, r.origin_kind,
+               r.document_id, d.title AS doc_title, d.file_url AS doc_url
+        FROM entity_relationships r
+        LEFT JOIN documents d ON d.id = r.document_id
+        WHERE (r.source_entity_type = 'person' AND r.source_entity_id IN (:p1, :p2))
+           OR (r.target_entity_type = 'person' AND r.target_entity_id IN (:p1, :p2))
+    """)
+
+    if visible_hubs:
+        n_hubs = len(visible_hubs)
+        # Walk hubs starting from rotation_seed; first one whose pair has a
+        # visible shared neighbour wins.
+        for hub_offset in range(n_hubs):
+            ht, hi = visible_hubs[(rotation_seed + hub_offset) % n_hubs]
+
+            person_rows = (await session.execute(text("""
+                SELECT DISTINCT source_entity_id
+                FROM entity_relationships
+                WHERE source_entity_type = 'person'
+                  AND target_entity_type = :ht
+                  AND target_entity_id   = :hi
+                ORDER BY source_entity_id
+            """), {"ht": ht, "hi": hi})).fetchall()
+
+            visible_persons = [
+                str(r[0]) for r in person_rows
+                if str(r[0]) not in hidden_persons
+            ]
+            if len(visible_persons) < 2:
+                continue
+
+            n = len(visible_persons)
             i1 = rotation_seed % n
             i2 = (rotation_seed + 1 + (rotation_seed // n)) % n
             if i2 == i1:
                 i2 = (i1 + 1) % n
-            p1 = str(person_rows[i1][0])
-            p2 = str(person_rows[i2][0])
+            p1 = visible_persons[i1]
+            p2 = visible_persons[i2]
 
-    if p1 and p2:
-        # Pull every relationship that touches either person (in either
-        # direction). Then we'll trim the neighbourhood to keep the picture
-        # legible.
-        nbr_q = text("""
-            SELECT r.source_entity_type, r.source_entity_id,
-                   r.target_entity_type, r.target_entity_id,
-                   r.relationship_type, r.details, r.origin_kind,
-                   r.document_id, d.title AS doc_title, d.file_url AS doc_url
-            FROM entity_relationships r
-            LEFT JOIN documents d ON d.id = r.document_id
-            WHERE (r.source_entity_type = 'person' AND r.source_entity_id IN (:p1, :p2))
-               OR (r.target_entity_type = 'person' AND r.target_entity_id IN (:p1, :p2))
-        """)
-        rows = (await session.execute(nbr_q, {"p1": p1, "p2": p2})).fetchall()
+            rows = (await session.execute(nbr_q, {"p1": p1, "p2": p2})).fetchall()
+            # Drop edges that touch any hidden entity so the validity check
+            # below sees what the user will actually render.
+            visible_rows = [
+                r for r in rows
+                if not _is_hidden(r[0], str(r[1])) and not _is_hidden(r[2], str(r[3]))
+            ]
+            if not visible_rows:
+                continue
 
-        if rows:
-            return _trim_two_suns(rows, p1, p2)
+            # Validate: do p1 and p2 still share at least one visible
+            # neighbour? Without this check the home page can end up
+            # showing two disconnected stars (the original connector was
+            # hidden) — a confusing picture.
+            p1_neighbours: set[str] = set()
+            p2_neighbours: set[str] = set()
+            for r in visible_rows:
+                src_id = str(r[1])
+                tgt_id = str(r[3])
+                if src_id == p1: p1_neighbours.add(tgt_id)
+                if tgt_id == p1: p1_neighbours.add(src_id)
+                if src_id == p2: p2_neighbours.add(tgt_id)
+                if tgt_id == p2: p2_neighbours.add(src_id)
+            shared = (p1_neighbours & p2_neighbours) - {p1, p2}
+            if not shared:
+                continue
 
-    # ── Fallback: star (1 hub, ≥ 2 persons) ──────────────────────────────
-    hub_q = text("""
+            return _trim_two_suns(visible_rows, p1, p2)
+
+    # ── Fallback: star (1 visible hub, ≥ 2 visible persons) ─────────────
+    star_pick_q = text("""
         SELECT target_entity_type AS hub_type,
                target_entity_id   AS hub_id,
                COUNT(DISTINCT source_entity_id) AS person_count
@@ -252,12 +314,14 @@ async def find_showcase_pair(
           AND target_entity_type IN ('company', 'association')
         GROUP BY target_entity_type, target_entity_id
         HAVING COUNT(DISTINCT source_entity_id) >= 2
-        ORDER BY person_count DESC, hub_id
-        LIMIT 1
+        ORDER BY person_count DESC, target_entity_id
+        LIMIT 20
     """)
-    hub_row = (await session.execute(hub_q)).fetchone()
-    if hub_row:
-        hub_type, hub_id, _ = hub_row
+    star_candidates = (await session.execute(star_pick_q)).fetchall()
+    for ht, hi, _pc in star_candidates:
+        hi_str = str(hi)
+        if _is_hidden(ht, hi_str):
+            continue
         edges_q = text("""
             SELECT r.source_entity_type, r.source_entity_id,
                    r.target_entity_type, r.target_entity_id,
@@ -269,15 +333,20 @@ async def find_showcase_pair(
               AND r.target_entity_type = :hub_type
               AND r.target_entity_id   = :hub_id
             ORDER BY r.created_at, r.id
-            LIMIT 6
+            LIMIT 12
         """)
         rows = (await session.execute(
-            edges_q, {"hub_type": hub_type, "hub_id": str(hub_id)}
+            edges_q, {"hub_type": ht, "hub_id": hi_str}
         )).fetchall()
-        if len(rows) >= 2:
-            return _build_subgraph_from_rows(rows)
+        # Skip rows whose person endpoint is hidden so the star stays clean.
+        visible_rows = [
+            r for r in rows
+            if not _is_hidden(r[0], str(r[1])) and not _is_hidden(r[2], str(r[3]))
+        ]
+        if len(visible_rows) >= 2:
+            return _build_subgraph_from_rows(visible_rows[:6])
 
-    # ── Fallback: any direct person → person edge ────────────────────────
+    # ── Fallback: any direct person → person edge (both visible) ─────────
     direct_q = text("""
         SELECT r.source_entity_type, r.source_entity_id,
                r.target_entity_type, r.target_entity_id,
@@ -288,11 +357,13 @@ async def find_showcase_pair(
         WHERE r.source_entity_type = 'person'
           AND r.target_entity_type = 'person'
           AND r.source_entity_id <> r.target_entity_id
-        LIMIT 1
+        LIMIT 20
     """)
-    rows = (await session.execute(direct_q)).fetchall()
-    if rows:
-        return _build_subgraph_from_rows(rows)
+    direct_rows = (await session.execute(direct_q)).fetchall()
+    for r in direct_rows:
+        if _is_hidden(r[0], str(r[1])) or _is_hidden(r[2], str(r[3])):
+            continue
+        return _build_subgraph_from_rows([r])
 
     return None
 

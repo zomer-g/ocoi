@@ -28,6 +28,13 @@ DOMAIN_BLOCKLIST: frozenset[str] = frozenset({
     "ענייני משפחה",
     "נושאים משפחתיים",
     "ענייני אדם אחר עם זיקה",
+    # CoI declaration template phrasings — these aren't domains, they're
+    # boilerplate descriptions that the extractor mistakenly elevated to
+    # an entity. Add new variants here when more surface in the data.
+    "ענייני אדם אחר שיש לו זיקה אישית, פוליטית, כלכלית או עסקית",
+    "עניינים קונקרטיים שטופלו/מטופלים ע\"י אחיו או משרדו",
+    "נושאים מטופלים על ידי בן הזוג",
+    "נושאים מטופלים על ידי בן/בת הזוג",
     # generic abstractions
     "כללי",
     "מידע תפקידי",
@@ -35,6 +42,11 @@ DOMAIN_BLOCKLIST: frozenset[str] = frozenset({
     "עסקים",
     "עסקים קודמים",
     "עיסוקים קודמים",
+    "עניינים עסקיים",
+    "נושאים ניהוליים",
+    "תיקים פרטניים",
+    "פרישה",
+    "תנאי עבודה",
 })
 
 COMPANY_BLOCKLIST: frozenset[str] = frozenset({
