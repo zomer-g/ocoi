@@ -32,7 +32,9 @@ _MODEL_MAP = {
 
 
 async def _enrich_subgraph(db: AsyncSession, subgraph):
-    """Fill in entity names for nodes and edges by querying via ORM."""
+    """Fill in entity names + drop hidden entities (and any edge that
+    touches them) so the public graph never uses a generic placeholder
+    like "עניינים אישיים" as a connector."""
     entity_ids = set()
     for node in subgraph.nodes:
         entity_ids.add((node.entity_type.value, node.id))
@@ -40,31 +42,45 @@ async def _enrich_subgraph(db: AsyncSession, subgraph):
         entity_ids.add((edge.source_type.value, edge.source_id))
         entity_ids.add((edge.target_type.value, edge.target_id))
 
-    names = {}
-    extras = {}
+    names: dict[str, str] = {}
+    extras: dict[str, dict] = {}
+    hidden: set[str] = set()
     for etype, eid in entity_ids:
         model = _MODEL_MAP.get(etype)
-        if model:
-            if etype == "person":
-                result = await db.execute(
-                    select(model.name_hebrew, model.title, model.position, model.ministry).where(model.id == eid)
-                )
-                row = result.fetchone()
-                if row:
-                    names[eid] = row[0]
-                    extra = {}
-                    if row[1]: extra["title"] = row[1]
-                    if row[2]: extra["position"] = row[2]
-                    if row[3]: extra["ministry"] = row[3]
-                    if extra:
-                        extras[eid] = extra
-            else:
-                result = await db.execute(
-                    select(model.name_hebrew).where(model.id == eid)
-                )
-                row = result.fetchone()
-                if row:
-                    names[eid] = row[0]
+        if not model:
+            continue
+        if etype == "person":
+            result = await db.execute(
+                select(model.name_hebrew, model.title, model.position, model.ministry, model.hidden).where(model.id == eid)
+            )
+            row = result.fetchone()
+            if row:
+                names[eid] = row[0]
+                extra = {}
+                if row[1]: extra["title"] = row[1]
+                if row[2]: extra["position"] = row[2]
+                if row[3]: extra["ministry"] = row[3]
+                if extra:
+                    extras[eid] = extra
+                if row[4]:
+                    hidden.add(eid)
+        else:
+            result = await db.execute(
+                select(model.name_hebrew, model.hidden).where(model.id == eid)
+            )
+            row = result.fetchone()
+            if row:
+                names[eid] = row[0]
+                if row[1]:
+                    hidden.add(eid)
+
+    # Prune hidden nodes and any edge touching one of them.
+    if hidden:
+        subgraph.nodes = [n for n in subgraph.nodes if n.id not in hidden]
+        subgraph.edges = [
+            e for e in subgraph.edges
+            if e.source_id not in hidden and e.target_id not in hidden
+        ]
 
     for node in subgraph.nodes:
         node.name = names.get(node.id, "")

@@ -36,10 +36,15 @@ async def search_entities(
     else:
         targets = _ENTITY_MAP
 
-    # Count total matches using ORM
+    # Count total matches using ORM. Hidden entities (generic placeholders
+    # like "עניינים אישיים") are excluded from public search.
     total = 0
     for key, (model, name_col, _) in targets.items():
-        count_q = select(func.count()).select_from(model).where(name_col.like(like_pattern))
+        count_q = (
+            select(func.count())
+            .select_from(model)
+            .where(name_col.like(like_pattern), model.hidden.is_(False))
+        )
         result = await session.execute(count_q)
         total += result.scalar() or 0
 
@@ -50,7 +55,7 @@ async def search_entities(
             cast(model.id, String).label("id"),
             literal(etype_label).label("entity_type"),
             name_col.label("name"),
-        ).where(name_col.like(like_pattern))
+        ).where(name_col.like(like_pattern), model.hidden.is_(False))
         parts.append(part)
 
     if not parts:

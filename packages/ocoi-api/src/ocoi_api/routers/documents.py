@@ -195,13 +195,14 @@ async def get_document_graph(doc_id: uuid.UUID, db: AsyncSession = Depends(get_d
 
     names: dict[tuple[str, str], str] = {}
     extras: dict[tuple[str, str], dict] = {}
+    hidden_keys: set[tuple[str, str]] = set()
     for etype, ids in by_type.items():
         model = _NAME_MODELS.get(etype)
         if not model:
             continue
         if etype == "person":
             rows = await db.execute(
-                select(model.id, model.name_hebrew, model.title, model.position, model.ministry)
+                select(model.id, model.name_hebrew, model.title, model.position, model.ministry, model.hidden)
                 .where(model.id.in_(ids))
             )
             for row in rows.fetchall():
@@ -213,14 +214,20 @@ async def get_document_graph(doc_id: uuid.UUID, db: AsyncSession = Depends(get_d
                 if row[4]: extra["ministry"] = row[4]
                 if extra:
                     extras[(etype, eid)] = extra
+                if row[5]:
+                    hidden_keys.add((etype, eid))
         else:
             rows = await db.execute(
-                select(model.id, model.name_hebrew).where(model.id.in_(ids))
+                select(model.id, model.name_hebrew, model.hidden).where(model.id.in_(ids))
             )
             for row in rows.fetchall():
                 eid = str(row[0])
                 names[(etype, eid)] = row[1] or ""
+                if row[2]:
+                    hidden_keys.add((etype, eid))
 
+    # Drop hidden entities and any edge that touches them, so the public
+    # graph for this document never uses a generic placeholder as a node.
     nodes = [
         {
             "id": eid,
@@ -229,6 +236,7 @@ async def get_document_graph(doc_id: uuid.UUID, db: AsyncSession = Depends(get_d
             "extra": extras.get((etype, eid)),
         }
         for (etype, eid) in entity_keys
+        if (etype, eid) not in hidden_keys
     ]
 
     edges = [
@@ -248,6 +256,8 @@ async def get_document_graph(doc_id: uuid.UUID, db: AsyncSession = Depends(get_d
             "document_url": None,
         }
         for r in rels
+        if (r.source_entity_type, str(r.source_entity_id)) not in hidden_keys
+        and (r.target_entity_type, str(r.target_entity_id)) not in hidden_keys
     ]
 
     return {"status": "ok", "data": {"nodes": nodes, "edges": edges}}

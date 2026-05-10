@@ -124,6 +124,13 @@ async def update_document_markdown(
 # --- Entities ---
 
 async def upsert_person(session: AsyncSession, name_hebrew: str, **kwargs) -> Person:
+    from ocoi_common.blocklist import is_blocked
+
+    # New persons whose canonical name is on the blocklist are still
+    # created (so existing relationships remain attached) but flagged
+    # hidden=True up front so the public API never surfaces them.
+    blocked = is_blocked("person", name_hebrew)
+
     # 1. Try exact name match
     result = await session.execute(
         select(Person).where(Person.name_hebrew == name_hebrew).limit(1)
@@ -133,6 +140,8 @@ async def upsert_person(session: AsyncSession, name_hebrew: str, **kwargs) -> Pe
         for key, value in kwargs.items():
             if value is not None:
                 setattr(person, key, value)
+        if blocked and not person.hidden:
+            person.hidden = True
         return person
     # 2. Try alias match — find entity where this name is stored as an alias
     result = await session.execute(
@@ -146,13 +155,17 @@ async def upsert_person(session: AsyncSession, name_hebrew: str, **kwargs) -> Pe
                     setattr(p, key, value)
             return p
     # 3. Create new
-    person = Person(name_hebrew=name_hebrew, **kwargs)
+    person = Person(name_hebrew=name_hebrew, hidden=blocked, **kwargs)
     session.add(person)
     await session.flush()
     return person
 
 
 async def upsert_company(session: AsyncSession, name_hebrew: str, **kwargs) -> Company:
+    from ocoi_common.blocklist import is_blocked
+
+    blocked = is_blocked("company", name_hebrew)
+
     # 1. Try exact name match
     result = await session.execute(
         select(Company).where(Company.name_hebrew == name_hebrew).limit(1)
@@ -162,6 +175,8 @@ async def upsert_company(session: AsyncSession, name_hebrew: str, **kwargs) -> C
         for key, value in kwargs.items():
             if value is not None:
                 setattr(company, key, value)
+        if blocked and not company.hidden:
+            company.hidden = True
         return company
     # 2. Try alias match
     result = await session.execute(
@@ -174,13 +189,17 @@ async def upsert_company(session: AsyncSession, name_hebrew: str, **kwargs) -> C
                     setattr(c, key, value)
             return c
     # 3. Create new
-    company = Company(name_hebrew=name_hebrew, **kwargs)
+    company = Company(name_hebrew=name_hebrew, hidden=blocked, **kwargs)
     session.add(company)
     await session.flush()
     return company
 
 
 async def upsert_association(session: AsyncSession, name_hebrew: str, **kwargs) -> Association:
+    from ocoi_common.blocklist import is_blocked
+
+    blocked = is_blocked("association", name_hebrew)
+
     # 1. Try exact name match
     result = await session.execute(
         select(Association).where(Association.name_hebrew == name_hebrew).limit(1)
@@ -190,6 +209,8 @@ async def upsert_association(session: AsyncSession, name_hebrew: str, **kwargs) 
         for key, value in kwargs.items():
             if value is not None:
                 setattr(assoc, key, value)
+        if blocked and not assoc.hidden:
+            assoc.hidden = True
         return assoc
     # 2. Try alias match
     result = await session.execute(
@@ -202,19 +223,25 @@ async def upsert_association(session: AsyncSession, name_hebrew: str, **kwargs) 
                     setattr(a, key, value)
             return a
     # 3. Create new
-    assoc = Association(name_hebrew=name_hebrew, **kwargs)
+    assoc = Association(name_hebrew=name_hebrew, hidden=blocked, **kwargs)
     session.add(assoc)
     await session.flush()
     return assoc
 
 
 async def upsert_domain(session: AsyncSession, name_hebrew: str, **kwargs) -> Domain:
+    from ocoi_common.blocklist import is_blocked
+
+    blocked = is_blocked("domain", name_hebrew)
+
     # 1. Try exact name match
     result = await session.execute(
         select(Domain).where(Domain.name_hebrew == name_hebrew).limit(1)
     )
     domain = result.scalars().first()
     if domain:
+        if blocked and not domain.hidden:
+            domain.hidden = True
         return domain
     # 2. Try alias match
     result = await session.execute(
@@ -224,7 +251,7 @@ async def upsert_domain(session: AsyncSession, name_hebrew: str, **kwargs) -> Do
         if name_hebrew in _get_aliases(d):
             return d
     # 3. Create new
-    domain = Domain(name_hebrew=name_hebrew, **kwargs)
+    domain = Domain(name_hebrew=name_hebrew, hidden=blocked, **kwargs)
     session.add(domain)
     await session.flush()
     return domain

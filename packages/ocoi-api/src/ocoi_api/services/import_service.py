@@ -793,6 +793,7 @@ async def run_mk_expenses_import(file_bytes: bytes, filename: str) -> dict:
 
 
 async def _run_mk_expenses_import(file_bytes: bytes, filename: str) -> None:
+    from ocoi_common.blocklist import is_blocked
     from ocoi_importer.mk_expenses_client import (
         CANONICAL_KNESSET_NAME,
         canonical_supplier_name,
@@ -853,6 +854,13 @@ async def _run_mk_expenses_import(file_bytes: bytes, filename: str) -> None:
         total_rows += 1
         supplier = canonical_supplier_name(row.raw_supplier_name)
         if not supplier or not row.mk_name:
+            skipped += 1
+            continue
+        # Skip rows whose "supplier" is actually a generic category label
+        # ("פרסומים", "אירוח וכיבודים", …) — see ocoi_common.blocklist.
+        # We don't want these to become Company entities or to spawn a
+        # relationship that connects MKs through them.
+        if is_blocked("company", supplier) or is_blocked("person", row.mk_name):
             skipped += 1
             continue
         key = (row.mk_name, supplier)

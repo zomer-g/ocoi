@@ -4,6 +4,7 @@ import uuid
 from datetime import date, datetime
 
 from sqlalchemy import (
+    Boolean,
     DateTime,
     Float,
     ForeignKey,
@@ -102,6 +103,11 @@ class Person(Base):
     position: Mapped[str | None] = mapped_column(Text)
     ministry: Mapped[str | None] = mapped_column(Text)
     aliases: Mapped[str | None] = mapped_column(Text)  # JSON string for SQLite compat
+    # Generic / placeholder names (e.g. "עניינים אישיים") flip this to True
+    # so the public API hides them and any relationship that touches them.
+    hidden: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false",
+    )
     created_at: Mapped[datetime | None] = mapped_column(DateTime, default=func.now())
 
     __table_args__ = (
@@ -121,6 +127,9 @@ class Company(Base):
     match_confidence: Mapped[float | None] = mapped_column(Float)
     registry_record_id: Mapped[str | None] = mapped_column(DBUUID(), ForeignKey("registry_records.id"), nullable=True)
     aliases: Mapped[str | None] = mapped_column(Text)  # JSON string for SQLite compat
+    hidden: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false",
+    )
     created_at: Mapped[datetime | None] = mapped_column(DateTime, default=func.now())
 
     __table_args__ = (
@@ -140,6 +149,9 @@ class Association(Base):
     match_confidence: Mapped[float | None] = mapped_column(Float)
     registry_record_id: Mapped[str | None] = mapped_column(DBUUID(), ForeignKey("registry_records.id"), nullable=True)
     aliases: Mapped[str | None] = mapped_column(Text)  # JSON string for SQLite compat
+    hidden: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false",
+    )
     created_at: Mapped[datetime | None] = mapped_column(DateTime, default=func.now())
 
     __table_args__ = (
@@ -155,6 +167,9 @@ class Domain(Base):
     name_english: Mapped[str | None] = mapped_column(Text)
     description: Mapped[str | None] = mapped_column(Text)
     aliases: Mapped[str | None] = mapped_column(Text)  # JSON string for SQLite compat
+    hidden: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false",
+    )
     created_at: Mapped[datetime | None] = mapped_column(DateTime, default=func.now())
 
 

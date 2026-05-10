@@ -103,6 +103,12 @@ async def run_migrations():
         ("entity_relationships", "origin_kind",
          "ALTER TABLE entity_relationships ADD COLUMN origin_kind VARCHAR(40) "
          "NOT NULL DEFAULT 'coi_declaration'"),
+        # Hidden flag — generic / placeholder entities (e.g. "עניינים אישיים")
+        # are kept in the DB but excluded from public listings + graph.
+        ("persons",      "hidden", "ALTER TABLE persons ADD COLUMN hidden BOOLEAN NOT NULL DEFAULT FALSE"),
+        ("companies",    "hidden", "ALTER TABLE companies ADD COLUMN hidden BOOLEAN NOT NULL DEFAULT FALSE"),
+        ("associations", "hidden", "ALTER TABLE associations ADD COLUMN hidden BOOLEAN NOT NULL DEFAULT FALSE"),
+        ("domains",      "hidden", "ALTER TABLE domains ADD COLUMN hidden BOOLEAN NOT NULL DEFAULT FALSE"),
     ]
 
     for table, column, sql in column_migrations:
@@ -129,6 +135,52 @@ async def run_migrations():
             ))
     except Exception as e:
         _log.warning(f"origin_kind back-fill skipped: {e}")
+
+    # --- Apply the hidden-entity blocklist (idempotent UPDATE per type) ---
+    # Pulls the canonical name lists from ocoi_common.blocklist so the same
+    # source of truth covers DB rows + import-time skips.
+    try:
+        from ocoi_common.blocklist import (
+            ASSOCIATION_BLOCKLIST,
+            COMPANY_BLOCKLIST,
+            DOMAIN_BLOCKLIST,
+            PERSON_BLOCKLIST,
+        )
+        blocklist_by_table = {
+            "persons": PERSON_BLOCKLIST,
+            "companies": COMPANY_BLOCKLIST,
+            "associations": ASSOCIATION_BLOCKLIST,
+            "domains": DOMAIN_BLOCKLIST,
+        }
+        for table, names in blocklist_by_table.items():
+            if not names:
+                continue
+            # Use a single IN-list UPDATE; only flips rows that aren't already hidden
+            # so re-runs are zero-write.
+            try:
+                async with async_engine.begin() as conn:
+                    await conn.execute(
+                        sa_text(
+                            f"UPDATE {table} SET hidden = TRUE "
+                            f"WHERE name_hebrew = ANY(:names) AND hidden = FALSE"
+                        ).bindparams(names=list(names))
+                    )
+            except Exception as inner:
+                # SQLite doesn't support `ANY` — fall back to IN clause via expanding bindparam.
+                try:
+                    from sqlalchemy import bindparam
+                    async with async_engine.begin() as conn:
+                        await conn.execute(
+                            sa_text(
+                                f"UPDATE {table} SET hidden = TRUE "
+                                f"WHERE name_hebrew IN :names AND hidden = FALSE"
+                            ).bindparams(bindparam("names", expanding=True)),
+                            {"names": list(names)},
+                        )
+                except Exception as e:
+                    _log.warning(f"hidden back-fill on {table} skipped: {inner} / {e}")
+    except Exception as e:
+        _log.warning(f"hidden back-fill skipped: {e}")
 
     # --- Alter TIMESTAMP → TIMESTAMPTZ for columns that receive tz-aware datetimes ---
     tz_alterations = [

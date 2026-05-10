@@ -60,7 +60,7 @@ async def list_persons(
 async def get_person(person_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Person).where(Person.id == person_id))
     person = result.scalars().first()
-    if not person:
+    if not person or person.hidden:
         raise HTTPException(404, "Person not found")
     return {
         "status": "ok",
@@ -115,7 +115,7 @@ async def list_companies(
 async def get_company(company_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Company).where(Company.id == company_id))
     company = result.scalars().first()
-    if not company:
+    if not company or company.hidden:
         raise HTTPException(404, "Company not found")
     return {
         "status": "ok",
@@ -172,7 +172,7 @@ async def list_associations(
 async def get_association(assoc_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Association).where(Association.id == assoc_id))
     assoc = result.scalars().first()
-    if not assoc:
+    if not assoc or assoc.hidden:
         raise HTTPException(404, "Association not found")
     return {"status": "ok", "data": _entity_to_dict(assoc, ["name_english", "registration_number", "aliases"])}
 
@@ -213,7 +213,7 @@ async def list_domains(
 async def get_domain(domain_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Domain).where(Domain.id == domain_id))
     domain = result.scalars().first()
-    if not domain:
+    if not domain or domain.hidden:
         raise HTTPException(404, "Domain not found")
     return {"status": "ok", "data": _entity_to_dict(domain, ["description", "aliases"])}
 
@@ -301,7 +301,10 @@ async def top_connected(
         entity = (
             await db.execute(select(model).where(model.id == row.entity_id))
         ).scalars().first()
-        if entity:
+        # Hidden generic placeholders (e.g. "עניינים אישיים") are excluded
+        # from the public top-connected feed even if they technically have
+        # the highest in-degree.
+        if entity and not getattr(entity, "hidden", False):
             item = {
                 "id": str(row.entity_id),
                 "entity_type": row.entity_type,
