@@ -274,6 +274,35 @@ class SiteContent(Base):
     updated_at: Mapped[datetime | None] = mapped_column(DateTime, default=func.now(), onupdate=func.now())
 
 
+class User(Base):
+    """Admin-panel user. Two roles:
+
+    * ``admin``           — implicit access to everything, can manage other users.
+    * ``content_manager`` — has the per-user permission set in ``permissions``.
+
+    Emails listed in the ``ADMIN_EMAILS`` env var are auto-bootstrapped to a
+    ``role='admin'`` row on first login (see ``ocoi_api.auth``).
+    """
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(DBUUID(), primary_key=True, default=new_uuid)
+    email: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
+    name: Mapped[str | None] = mapped_column(String(200))
+    role: Mapped[str] = mapped_column(
+        String(40), nullable=False,
+        default="content_manager", server_default="content_manager",
+    )
+    # JSON-encoded list of permission keys. Admins ignore this field
+    # (they have all permissions implicitly).
+    permissions: Mapped[str | None] = mapped_column(Text)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime, default=func.now())
+
+    __table_args__ = (
+        Index("ix_users_email", "email"),
+    )
+
+
 class Suggestion(Base):
     """User-submitted correction or note for a specific field of a document
     or extracted entity / relationship. Reviewed by admins.

@@ -25,7 +25,7 @@ from ocoi_db.crud import _add_alias, _get_aliases
 from ocoi_db.models import (
     Person, Company, Association, Domain,
     EntityRelationship, Document, Source, ExtractionRun, IgnoredResource,
-    SiteContent, Suggestion,
+    SiteContent, Suggestion, User,
 )
 
 router = APIRouter(
@@ -1809,3 +1809,148 @@ async def delete_suggestion(
     await db.delete(row)
     await db.commit()
     return {"status": "ok"}
+
+
+# ── User management (admin-only via SECTION_PERMISSIONS map) ─────────────
+
+def _user_to_dict(u: User) -> dict:
+    """Serialise a User row for the admin UI. Permissions arrive as a
+    parsed list, never the raw JSON string."""
+    try:
+        perms = json.loads(u.permissions) if u.permissions else []
+    except Exception:
+        perms = []
+    if not isinstance(perms, list):
+        perms = []
+    return {
+        "id": str(u.id),
+        "email": u.email,
+        "name": u.name or "",
+        "role": u.role,
+        "permissions": [p for p in perms if isinstance(p, str)],
+        "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
+        "created_at": u.created_at.isoformat() if u.created_at else None,
+    }
+
+
+@router.get("/users")
+async def list_admin_users(db: AsyncSession = Depends(get_db)):
+    """List every user that can access the admin panel."""
+    rows = (await db.execute(
+        select(User).order_by(User.role.desc(), User.email)
+    )).scalars().all()
+    return {"status": "ok", "data": [_user_to_dict(u) for u in rows]}
+
+
+@router.post("/users")
+async def create_admin_user(body: dict, db: AsyncSession = Depends(get_db)):
+    """Add a new content_manager (or admin) row. Email is the unique key —
+    the new user signs in with Google and must hit the same address."""
+    from ocoi_common.permissions import (
+        ALL_PERMISSIONS,
+        DEFAULT_CONTENT_MANAGER_PERMISSIONS,
+    )
+
+    email = (body.get("email") or "").strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(400, "Invalid email")
+    name = (body.get("name") or email).strip()
+    role = body.get("role") or "content_manager"
+    if role not in ("admin", "content_manager"):
+        raise HTTPException(400, "Invalid role")
+    raw_perms = body.get("permissions")
+    if raw_perms is None:
+        # Sensible default when the caller didn't say.
+        raw_perms = list(DEFAULT_CONTENT_MANAGER_PERMISSIONS)
+    perms = [p for p in raw_perms if isinstance(p, str) and p in ALL_PERMISSIONS]
+
+    existing = (await db.execute(
+        select(User).where(User.email == email)
+    )).scalars().first()
+    if existing is not None:
+        raise HTTPException(409, "User already exists")
+
+    user = User(
+        email=email,
+        name=name,
+        role=role,
+        permissions=json.dumps(perms),
+    )
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    return {"status": "ok", "data": _user_to_dict(user)}
+
+
+@router.patch("/users/{user_id}")
+async def update_admin_user(
+    user_id: uuid.UUID,
+    body: dict,
+    request: Request,
+    current = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update a user's name, role, or permissions list. Self-demotion is
+    blocked so an admin can't accidentally lock the entire org out."""
+    from ocoi_common.permissions import ALL_PERMISSIONS
+
+    user = await db.get(User, user_id)
+    if user is None:
+        raise HTTPException(404, "User not found")
+
+    if "name" in body:
+        user.name = (body.get("name") or "").strip() or user.name
+    if "role" in body:
+        new_role = body.get("role")
+        if new_role not in ("admin", "content_manager"):
+            raise HTTPException(400, "Invalid role")
+        # Don't let the current admin demote themselves.
+        if str(user.id) == str(current.id) and new_role != "admin":
+            raise HTTPException(400, "אי אפשר לשנות תפקיד של עצמך")
+        user.role = new_role
+    if "permissions" in body:
+        raw = body.get("permissions") or []
+        perms = [p for p in raw if isinstance(p, str) and p in ALL_PERMISSIONS]
+        user.permissions = json.dumps(perms)
+
+    await db.commit()
+    await db.refresh(user)
+    return {"status": "ok", "data": _user_to_dict(user)}
+
+
+@router.delete("/users/{user_id}")
+async def delete_admin_user(
+    user_id: uuid.UUID,
+    current = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    user = await db.get(User, user_id)
+    if user is None:
+        raise HTTPException(404, "User not found")
+    if str(user.id) == str(current.id):
+        raise HTTPException(400, "אי אפשר למחוק את עצמך")
+    await db.delete(user)
+    await db.commit()
+    return {"status": "ok"}
+
+
+# ── Permissions catalogue (read-only, admin-only via section map) ───────
+
+
+@router.get("/permissions/catalog")
+async def admin_permissions_catalog():
+    """Return the canonical list of permission keys + Hebrew labels so the
+    admin UI can render the same checkbox set the backend enforces."""
+    from ocoi_common.permissions import (
+        DEFAULT_CONTENT_MANAGER_PERMISSIONS,
+        PERMISSION_LABELS_HE,
+    )
+    return {
+        "status": "ok",
+        "data": {
+            "permissions": [
+                {"key": k, "label": v} for k, v in PERMISSION_LABELS_HE.items()
+            ],
+            "default_content_manager": list(DEFAULT_CONTENT_MANAGER_PERMISSIONS),
+        },
+    }

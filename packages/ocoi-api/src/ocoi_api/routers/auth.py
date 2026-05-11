@@ -6,7 +6,12 @@ import httpx
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import RedirectResponse
 
-from ocoi_api.auth import create_access_token, get_current_admin
+from ocoi_api.auth import (
+    create_access_token,
+    get_current_admin,
+    get_or_bootstrap_user,
+    user_permissions,
+)
 from ocoi_common.config import settings
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -67,8 +72,11 @@ async def callback(code: str = ""):
     email = userinfo.get("email", "").lower()
     name = userinfo.get("name", email)
 
-    # Check admin whitelist
-    if email not in settings.admin_email_set:
+    # Resolve / bootstrap a User row. Admins listed in ADMIN_EMAILS get a
+    # row created automatically; content_managers must already have one
+    # (added through the admin user-management UI).
+    user = await get_or_bootstrap_user(email, name)
+    if user is None:
         return RedirectResponse("/admin/login?error=unauthorized")
 
     # Create JWT and set cookie
@@ -87,9 +95,16 @@ async def callback(code: str = ""):
 
 
 @router.get("/me")
-async def me(admin: dict = Depends(get_current_admin)):
-    """Return current admin user info."""
-    return {"email": admin.get("sub"), "name": admin.get("name")}
+async def me(user = Depends(get_current_admin)):
+    """Return the current user's identity, role, and resolved permissions
+    so the frontend can hide nav items the user can't reach anyway."""
+    return {
+        "id": str(user.id),
+        "email": user.email,
+        "name": user.name or user.email,
+        "role": user.role,
+        "permissions": sorted(user_permissions(user)),
+    }
 
 
 @router.post("/logout")

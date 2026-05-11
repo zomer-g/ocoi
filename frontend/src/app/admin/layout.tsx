@@ -1,20 +1,42 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getMe, logout, type AdminUser } from "@/lib/auth";
+import { getMe, hasPermission, isAdmin, logout, type AdminUser } from "@/lib/auth";
 
-const NAV_ITEMS = [
-  { href: "/admin", label: "לוח בקרה" },
-  { href: "/admin/entities", label: "ישויות" },
-  { href: "/admin/relationships", label: "קשרים" },
-  { href: "/admin/documents", label: "מסמכים" },
-  { href: "/admin/import", label: "ייבוא" },
-  { href: "/admin/registry", label: "מרשמים" },
-  { href: "/admin/suggestions", label: "הצעות תיקון" },
-  { href: "/admin/site-content", label: "תוכן האתר" },
-  { href: "/api/admin-docs", label: "API", external: true },
-  { href: "/admin/settings", label: "הגדרות" },
-] as const;
+// Each nav item lists the permission key (or `adminOnly: true`) that the
+// backend section requires. Matches `SECTION_PERMISSIONS` in
+// `packages/ocoi-common/src/ocoi_common/permissions.py` so the UI never
+// offers a link that the API would reject.
+type NavItem = {
+  href: string;
+  label: string;
+  perm?: string;
+  adminOnly?: boolean;
+  external?: boolean;
+};
+
+const NAV_ITEMS: NavItem[] = [
+  { href: "/admin", label: "לוח בקרה", perm: "view_dashboard" },
+  { href: "/admin/entities", label: "ישויות", perm: "manage_entities" },
+  { href: "/admin/relationships", label: "קשרים", perm: "manage_relationships" },
+  { href: "/admin/documents", label: "מסמכים", perm: "manage_documents" },
+  { href: "/admin/import", label: "ייבוא", perm: "manage_import" },
+  { href: "/admin/registry", label: "מרשמים", perm: "manage_registry" },
+  { href: "/admin/suggestions", label: "הצעות תיקון", perm: "manage_suggestions" },
+  { href: "/admin/site-content", label: "תוכן האתר", perm: "manage_site_content" },
+  { href: "/api/admin-docs", label: "API", external: true, adminOnly: true },
+  { href: "/admin/users", label: "משתמשים", adminOnly: true },
+  { href: "/admin/settings", label: "הגדרות", adminOnly: true },
+];
+
+function visibleNavFor(user: AdminUser | null): NavItem[] {
+  if (!user) return [];
+  return NAV_ITEMS.filter((item) => {
+    if (item.adminOnly) return isAdmin(user);
+    if (item.perm) return hasPermission(user, item.perm);
+    return true;
+  });
+}
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AdminUser | null>(null);
@@ -55,20 +77,25 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           <div className="text-sm font-bold">פאנל ניהול</div>
         </div>
         <nav className="flex-1 p-2 space-y-1">
-          {NAV_ITEMS.map((item) => (
+          {visibleNavFor(user).map((item) => (
             <a
               key={item.href}
               href={item.href}
-              {...("external" in item && item.external ? { target: "_blank", rel: "noopener" } : {})}
+              {...(item.external ? { target: "_blank", rel: "noopener" } : {})}
               className="block px-3 py-2 rounded-lg text-sm text-primary-100 hover:bg-primary-800 transition-colors"
             >
               {item.label}
-              {"external" in item && item.external && <span className="text-xs mr-1">↗</span>}
+              {item.external && <span className="text-xs mr-1">↗</span>}
             </a>
           ))}
         </nav>
         <div className="p-3 border-t border-primary-800">
-          <div className="text-xs text-primary-200 truncate mb-2">{user?.email}</div>
+          <div className="text-xs text-primary-200 truncate">{user?.email}</div>
+          {user?.role && (
+            <div className="text-[10px] text-primary-300 mb-2">
+              {user.role === "admin" ? "מנהל מערכת" : "מנהל/ת תוכן"}
+            </div>
+          )}
           <button
             onClick={logout}
             className="w-full text-xs text-primary-200 hover:text-white px-2 py-1 rounded hover:bg-primary-800 transition-colors text-start"
