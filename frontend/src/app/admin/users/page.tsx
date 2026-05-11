@@ -74,11 +74,14 @@ export default function AdminUsersPage() {
       // fields, but the page should still survive if a future change
       // strips one of them.
       const rows: AdminUserRow[] = Array.isArray(usersData.data) ? usersData.data : [];
-      const safeRows = rows.map((u) => ({
+      const safeRows: AdminUserRow[] = rows.map((u) => ({
         ...u,
         permissions: Array.isArray(u.permissions) ? u.permissions : [],
         name: u.name || u.email || "",
-        role: u.role === "admin" ? "admin" : "content_manager",
+        // Coerce role into the narrow literal union the rest of the
+        // page expects. Anything other than "admin" is treated as a
+        // content manager.
+        role: u.role === "admin" ? ("admin" as const) : ("content_manager" as const),
       }));
       setUsers(safeRows);
       const cat = catData.data?.permissions;
