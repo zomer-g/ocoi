@@ -315,14 +315,15 @@ export default function AdminUsersPage() {
       ) : (
         <div className="space-y-3">
           {users.map((u) => {
-            const isMe = me?.email === u.email;
+            const isMe = !!u.email && me?.email === u.email;
             const isExpanded = editingId === u.id;
+            const displayName = u.name || u.email || `(משתמש ${u.id.slice(0, 8)})`;
             return (
               <div key={u.id} className="bg-white border border-gray-200 rounded-lg p-4">
                 <div className="flex items-start justify-between gap-3 mb-1">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-semibold text-gray-900">{u.name || u.email}</span>
+                      <span className="font-semibold text-gray-900">{displayName}</span>
                       <span className={`text-xs px-2 py-0.5 rounded-full border ${ROLE_BADGE[u.role]}`}>
                         {ROLE_LABEL[u.role] || u.role}
                       </span>
@@ -330,10 +331,25 @@ export default function AdminUsersPage() {
                         <span className="text-xs text-gray-400">(אתה)</span>
                       )}
                     </div>
-                    <div className="text-sm text-gray-500 truncate mt-0.5" dir="ltr">{u.email}</div>
+                    <div className="text-sm text-gray-500 truncate mt-0.5" dir="ltr">
+                      {u.email || "(ללא דוא\"ל)"}
+                    </div>
                     <div className="text-xs text-gray-400 mt-1">
                       התחברות אחרונה: {formatDate(u.last_login_at)} · נוצר: {formatDate(u.created_at)}
                     </div>
+                    {/* Diagnostic: show the raw object so we can see what
+                        actually came back from the API. Toggle via the
+                        "ערוך הרשאות" expander. */}
+                    {isExpanded && (
+                      <details className="mt-2 text-xs text-gray-500">
+                        <summary className="cursor-pointer hover:text-gray-700">
+                          נתוני גלם (debug)
+                        </summary>
+                        <pre className="mt-1 p-2 bg-gray-50 rounded border border-gray-200 overflow-x-auto text-[10px]" dir="ltr">
+                          {JSON.stringify(u, null, 2)}
+                        </pre>
+                      </details>
+                    )}
                   </div>
                   <div className="shrink-0 flex items-center gap-2">
                     <button
