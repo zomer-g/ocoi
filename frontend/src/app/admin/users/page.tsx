@@ -1,7 +1,51 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { Component, type ErrorInfo, type ReactNode, useEffect, useState, useCallback } from "react";
 import { getMe, type AdminUser } from "@/lib/auth";
+
+// Local error boundary so a render crash doesn't blank the whole admin
+// shell — it surfaces the actual error message + stack so we can see
+// exactly what's failing.
+class UsersErrorBoundary extends Component<{ children: ReactNode }, { err: Error | null }> {
+  state = { err: null as Error | null };
+
+  static getDerivedStateFromError(err: Error) {
+    return { err };
+  }
+
+  componentDidCatch(err: Error, info: ErrorInfo) {
+    // eslint-disable-next-line no-console
+    console.error("AdminUsersPage crashed", err, info);
+  }
+
+  render() {
+    if (this.state.err) {
+      return (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-sm" dir="rtl">
+          <div className="font-semibold text-red-800 mb-2">
+            הדף קרס בעת הרינדור
+          </div>
+          <div className="text-red-700 mb-2">{this.state.err.message}</div>
+          {this.state.err.stack && (
+            <details className="text-xs text-red-600">
+              <summary className="cursor-pointer">stack trace</summary>
+              <pre className="mt-2 p-2 bg-white rounded border border-red-100 overflow-x-auto" dir="ltr">
+                {this.state.err.stack}
+              </pre>
+            </details>
+          )}
+          <button
+            onClick={() => this.setState({ err: null })}
+            className="mt-3 px-3 py-1.5 text-xs rounded-lg border border-red-300 text-red-700 hover:bg-red-100"
+          >
+            נסה שוב
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 interface AdminUserRow {
   id: string;
@@ -38,7 +82,7 @@ function formatDate(iso: string | null): string {
   } catch { return iso; }
 }
 
-export default function AdminUsersPage() {
+function AdminUsersPageInner() {
   const [me, setMe] = useState<AdminUser | null>(null);
   const [users, setUsers] = useState<AdminUserRow[]>([]);
   const [permissionCatalog, setPermissionCatalog] = useState<PermissionDef[]>([]);
@@ -444,5 +488,14 @@ export default function AdminUsersPage() {
         </div>
       )}
     </div>
+  );
+}
+
+
+export default function AdminUsersPage() {
+  return (
+    <UsersErrorBoundary>
+      <AdminUsersPageInner />
+    </UsersErrorBoundary>
   );
 }
