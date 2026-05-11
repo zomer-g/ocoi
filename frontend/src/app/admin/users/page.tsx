@@ -63,13 +63,28 @@ export default function AdminUsersPage() {
         fetch("/api/v1/admin/users", { credentials: "include" }),
         fetch("/api/v1/admin/permissions/catalog", { credentials: "include" }),
       ]);
-      if (!usersRes.ok) throw new Error("שגיאה בטעינת המשתמשים");
-      if (!catRes.ok) throw new Error("שגיאה בטעינת קטלוג ההרשאות");
-      const usersData = await usersRes.json();
-      const catData = await catRes.json();
-      setUsers(usersData.data || []);
-      setPermissionCatalog(catData.data?.permissions || []);
-      setDefaultPerms(catData.data?.default_content_manager || []);
+      if (usersRes.status === 401 || usersRes.status === 403) {
+        throw new Error("אין הרשאה לצפות במשתמשים — נדרשת הרשאת מנהל מערכת.");
+      }
+      if (!usersRes.ok) throw new Error(`שגיאה בטעינת המשתמשים (${usersRes.status})`);
+      if (!catRes.ok) throw new Error(`שגיאה בטעינת קטלוג ההרשאות (${catRes.status})`);
+      const usersData = await usersRes.json().catch(() => ({}));
+      const catData = await catRes.json().catch(() => ({}));
+      // Normalise every row defensively — the API guarantees these
+      // fields, but the page should still survive if a future change
+      // strips one of them.
+      const rows: AdminUserRow[] = Array.isArray(usersData.data) ? usersData.data : [];
+      const safeRows = rows.map((u) => ({
+        ...u,
+        permissions: Array.isArray(u.permissions) ? u.permissions : [],
+        name: u.name || u.email || "",
+        role: u.role === "admin" ? "admin" : "content_manager",
+      }));
+      setUsers(safeRows);
+      const cat = catData.data?.permissions;
+      setPermissionCatalog(Array.isArray(cat) ? cat : []);
+      const def = catData.data?.default_content_manager;
+      setDefaultPerms(Array.isArray(def) ? def : []);
     } catch (e) {
       setError(e instanceof Error ? e.message : "שגיאה");
     } finally {
