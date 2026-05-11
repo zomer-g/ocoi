@@ -34,7 +34,11 @@ async def list_documents(
     q: str | None = Query(None, description="Substring search on title"),
     source_type: str | None = Query(
         None,
-        description="Filter by Source.source_type (e.g. 'odata', 'mk_expenses')",
+        description="Filter by Source.source_type (e.g. 'odata', 'ckan', 'mk_expenses')",
+    ),
+    verified: str | None = Query(
+        None,
+        description="Filter by human-verified flag — 'true' or 'false'",
     ),
     db: AsyncSession = Depends(get_db),
 ):
@@ -59,6 +63,14 @@ async def list_documents(
     if source_type:
         query = query.where(Source.source_type == source_type)
         count_query = count_query.where(Source.source_type == source_type)
+    if verified is not None:
+        v = verified.lower().strip()
+        if v in ("true", "1", "yes"):
+            query = query.where(Document.verified.is_(True))
+            count_query = count_query.where(Document.verified.is_(True))
+        elif v in ("false", "0", "no"):
+            query = query.where(Document.verified.is_(False))
+            count_query = count_query.where(Document.verified.is_(False))
 
     total = (await db.execute(count_query)).scalar()
     result = await db.execute(
@@ -90,6 +102,8 @@ async def list_documents(
                 "source_type": s_type,
                 "source_title": s_title,
                 "relationships_count": rel_counts.get(str(d.id), 0),
+                "verified": bool(getattr(d, "verified", False)),
+                "verified_at": d.verified_at.isoformat() if getattr(d, "verified_at", None) else None,
             }
             for (d, s_type, s_title) in rows
         ],
@@ -118,6 +132,14 @@ async def get_document(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
         .select_from(EntityRelationship)
         .where(EntityRelationship.document_id == doc.id)
     )).scalar() or 0
+    # Resolve the reviewer's name without forcing the caller to make a
+    # second request.
+    verified_by_name = None
+    if getattr(doc, "verified_by", None):
+        from ocoi_db.models import User
+        reviewer = await db.get(User, doc.verified_by)
+        if reviewer is not None:
+            verified_by_name = reviewer.name or reviewer.email
     return {
         "status": "ok",
         "data": {
@@ -131,6 +153,9 @@ async def get_document(doc_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
             "source_type": s_type,
             "source_title": s_title,
             "relationships_count": rel_count,
+            "verified": bool(getattr(doc, "verified", False)),
+            "verified_at": doc.verified_at.isoformat() if getattr(doc, "verified_at", None) else None,
+            "verified_by_name": verified_by_name,
         },
     }
 
@@ -251,6 +276,7 @@ async def get_document_graph(doc_id: uuid.UUID, db: AsyncSession = Depends(get_d
             "details": r.details,
             "confidence": r.confidence,
             "origin_kind": r.origin_kind,
+            "verified": bool(getattr(r, "verified", False)),
             "document_id": str(r.document_id),
             "document_title": None,
             "document_url": None,

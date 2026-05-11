@@ -154,6 +154,7 @@ class ConnectionEdge(BaseModel):
     document_title: str | None = None
     document_url: str | None = None
     origin_kind: str = "coi_declaration"
+    verified: bool = False
 
 
 class SubGraph(BaseModel):

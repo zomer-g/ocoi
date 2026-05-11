@@ -109,6 +109,14 @@ async def run_migrations():
         ("companies",    "hidden", "ALTER TABLE companies ADD COLUMN hidden BOOLEAN NOT NULL DEFAULT FALSE"),
         ("associations", "hidden", "ALTER TABLE associations ADD COLUMN hidden BOOLEAN NOT NULL DEFAULT FALSE"),
         ("domains",      "hidden", "ALTER TABLE domains ADD COLUMN hidden BOOLEAN NOT NULL DEFAULT FALSE"),
+        # Human verification on documents + their extracted relationships.
+        # Content managers flip ``Document.verified`` from the admin UI,
+        # which the API also cascades to all matching EntityRelationship
+        # rows so the public graph can render verified edges distinctly.
+        ("documents",            "verified",    "ALTER TABLE documents ADD COLUMN verified BOOLEAN NOT NULL DEFAULT FALSE"),
+        ("documents",            "verified_at", "ALTER TABLE documents ADD COLUMN verified_at TIMESTAMP"),
+        ("documents",            "verified_by", "ALTER TABLE documents ADD COLUMN verified_by CHAR(36)"),
+        ("entity_relationships", "verified",    "ALTER TABLE entity_relationships ADD COLUMN verified BOOLEAN NOT NULL DEFAULT FALSE"),
     ]
 
     for table, column, sql in column_migrations:

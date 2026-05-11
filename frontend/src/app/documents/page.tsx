@@ -13,6 +13,8 @@ interface DocSummary {
   source_type?: string | null;
   source_title?: string | null;
   relationships_count?: number;
+  verified?: boolean;
+  verified_at?: string | null;
 }
 
 interface ListResponse {
@@ -24,9 +26,13 @@ interface ListResponse {
 const PAGE_SIZE = 20;
 
 const SOURCE_LABELS: Record<string, string> = {
-  odata: "הסדר ניגוד עניינים",
-  govil: "הסדר ניגוד עניינים",
-  ckan: "CKAN",
+  // ZIP snapshot of all gov.il conflict-of-interest declarations,
+  // imported via the odata.org.il dataset.
+  odata: "הסדר ניגוד עניינים (gov.il)",
+  // Legacy direct gov.il imports
+  govil: "הסדר ניגוד עניינים (gov.il, ישן)",
+  // Items hand-picked from a CKAN search of odata.org.il
+  ckan: "הסדר ניגוד עניינים (חיפוש odata)",
   upload: "העלאה ידנית",
   mk_expenses: "הוצאות קשר עם הציבור",
 };
@@ -34,15 +40,22 @@ const SOURCE_LABELS: Record<string, string> = {
 const SOURCE_BADGE_CLASSES: Record<string, string> = {
   odata: "bg-primary-50 text-primary-700 border-primary-200",
   govil: "bg-primary-50 text-primary-700 border-primary-200",
-  ckan: "bg-gray-50 text-gray-700 border-gray-200",
+  ckan: "bg-indigo-50 text-indigo-700 border-indigo-200",
   upload: "bg-amber-50 text-amber-700 border-amber-200",
   mk_expenses: "bg-emerald-50 text-emerald-700 border-emerald-200",
 };
 
 const SOURCE_FILTERS: { key: string; label: string }[] = [
   { key: "", label: "הכל" },
-  { key: "odata", label: "הסדרי ניגוד עניינים" },
+  { key: "odata", label: "הסדרים — gov.il (ZIP)" },
+  { key: "ckan", label: "הסדרים — חיפוש odata" },
   { key: "mk_expenses", label: "הוצאות קשר עם הציבור" },
+];
+
+const VERIFIED_FILTERS: { key: string; label: string }[] = [
+  { key: "", label: "הכל" },
+  { key: "true", label: "✓ נבדק" },
+  { key: "false", label: "עיבוד מכונה בלבד" },
 ];
 
 function sourceLabel(s?: string | null): string {
@@ -63,14 +76,16 @@ export default function DocumentsListPage() {
   const [q, setQ] = useState("");
   const [submittedQ, setSubmittedQ] = useState("");
   const [sourceFilter, setSourceFilter] = useState<string>("");
+  const [verifiedFilter, setVerifiedFilter] = useState<string>("");
   const [loading, setLoading] = useState(true);
 
-  const fetchPage = useCallback(async (p: number, query: string, src: string) => {
+  const fetchPage = useCallback(async (p: number, query: string, src: string, ver: string) => {
     setLoading(true);
     try {
       const params = new URLSearchParams({ page: String(p), limit: String(PAGE_SIZE) });
       if (query.trim()) params.set("q", query.trim());
       if (src) params.set("source_type", src);
+      if (ver) params.set("verified", ver);
       const res = await fetch(`/api/v1/documents?${params}`);
       const data: ListResponse = await res.json();
       setDocs(data.data || []);
@@ -86,8 +101,8 @@ export default function DocumentsListPage() {
   }, []);
 
   useEffect(() => {
-    fetchPage(page, submittedQ, sourceFilter);
-  }, [page, submittedQ, sourceFilter, fetchPage]);
+    fetchPage(page, submittedQ, sourceFilter, verifiedFilter);
+  }, [page, submittedQ, sourceFilter, verifiedFilter, fetchPage]);
 
   const onSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -97,6 +112,11 @@ export default function DocumentsListPage() {
 
   const onPickSource = (key: string) => {
     setSourceFilter(key);
+    setPage(1);
+  };
+
+  const onPickVerified = (key: string) => {
+    setVerifiedFilter(key);
     setPage(1);
   };
 
@@ -131,7 +151,8 @@ export default function DocumentsListPage() {
 
       <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Source-type filter chips */}
-        <div className="flex flex-wrap gap-2 mb-4" role="tablist" aria-label="סינון לפי סוג מקור">
+        <div className="flex flex-wrap gap-2 mb-2" role="tablist" aria-label="סינון לפי סוג מקור">
+          <span className="text-xs text-gray-500 self-center">סוג מקור:</span>
           {SOURCE_FILTERS.map((s) => {
             const active = sourceFilter === s.key;
             return (
@@ -141,6 +162,27 @@ export default function DocumentsListPage() {
                 className={`whitespace-nowrap px-3 py-1.5 rounded-full text-sm font-medium border transition-colors ${
                   active
                     ? "bg-primary-700 text-white border-primary-700"
+                    : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
+                }`}
+              >
+                {s.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Verified filter chips */}
+        <div className="flex flex-wrap gap-2 mb-4" role="tablist" aria-label="סינון לפי סטטוס בדיקה">
+          <span className="text-xs text-gray-500 self-center">בדיקת אנוש:</span>
+          {VERIFIED_FILTERS.map((s) => {
+            const active = verifiedFilter === s.key;
+            return (
+              <button
+                key={s.key || "all-ver"}
+                onClick={() => onPickVerified(s.key)}
+                className={`whitespace-nowrap px-3 py-1.5 rounded-full text-sm font-medium border transition-colors ${
+                  active
+                    ? "bg-emerald-700 text-white border-emerald-700"
                     : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
                 }`}
               >
@@ -213,6 +255,11 @@ export default function DocumentsListPage() {
                               לא יובא
                             </span>
                           ) : null}
+                          {d.verified && (
+                            <span className="px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 inline-flex items-center gap-1">
+                              ✓ נבדק
+                            </span>
+                          )}
                           <span className="text-gray-400">
                             {relCount.toLocaleString()} קשרים
                           </span>

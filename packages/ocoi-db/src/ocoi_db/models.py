@@ -80,6 +80,17 @@ class Document(Base):
     content_hash: Mapped[str | None] = mapped_column(String(64), index=True)
     conversion_status: Mapped[str] = mapped_column(String(20), default="pending")
     extraction_status: Mapped[str] = mapped_column(String(20), default="pending")
+    # Human verification — a content manager has reviewed the LLM-extracted
+    # relationships for this document and confirmed they're correct. The
+    # cascade to EntityRelationship.verified is done at the API layer so
+    # both pieces stay consistent.
+    verified: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false",
+    )
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    verified_by: Mapped[str | None] = mapped_column(
+        DBUUID(), ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
+    )
     created_at: Mapped[datetime | None] = mapped_column(DateTime, default=func.now())
     converted_at: Mapped[datetime | None] = mapped_column(DateTime())
     extracted_at: Mapped[datetime | None] = mapped_column(DateTime())
@@ -90,6 +101,7 @@ class Document(Base):
     __table_args__ = (
         Index("ix_documents_conversion_status", "conversion_status"),
         Index("ix_documents_extraction_status", "extraction_status"),
+        Index("ix_documents_verified", "verified"),
     )
 
 
@@ -240,6 +252,12 @@ class EntityRelationship(Base):
         String(40), nullable=False, default="coi_declaration",
         server_default="coi_declaration",
     )
+    # Mirrors Document.verified — a human content-manager has signed off
+    # on this specific edge. Cascaded from Document.verified by the
+    # admin verify endpoint so the two flags stay aligned.
+    verified: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false",
+    )
     created_at: Mapped[datetime | None] = mapped_column(DateTime, default=func.now())
 
     __table_args__ = (
@@ -247,6 +265,7 @@ class EntityRelationship(Base):
         Index("ix_rel_target", "target_entity_type", "target_entity_id"),
         Index("ix_rel_type", "relationship_type"),
         Index("ix_rel_origin_kind", "origin_kind"),
+        Index("ix_rel_verified", "verified"),
     )
 
 

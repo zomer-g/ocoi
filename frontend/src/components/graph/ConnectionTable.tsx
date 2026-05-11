@@ -45,6 +45,7 @@ export function ConnectionTable({ edges, nodes, caption, className }: Connection
               <th scope="col" className="px-4 py-3 text-start font-semibold">סוג קשר</th>
               <th scope="col" className="px-4 py-3 text-start font-semibold">סוג נתונים</th>
               <th scope="col" className="px-4 py-3 text-start font-semibold">מגבלה</th>
+              <th scope="col" className="px-4 py-3 text-start font-semibold">נבדק</th>
               <th scope="col" className="px-4 py-3 text-start font-semibold">מסמך מקור</th>
             </tr>
           </thead>
@@ -70,6 +71,17 @@ export function ConnectionTable({ edges, nodes, caption, className }: Connection
                   ) : (
                     <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600">
                       לא
+                    </span>
+                  )}
+                </td>
+                <td className="px-4 py-3">
+                  {edge.verified ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
+                      ✓ נבדק
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-50 text-gray-500 border border-gray-200">
+                      עיבוד מכונה
                     </span>
                   )}
                 </td>

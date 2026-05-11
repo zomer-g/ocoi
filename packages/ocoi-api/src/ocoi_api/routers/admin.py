@@ -626,6 +626,13 @@ async def get_document_detail(doc_id: uuid.UUID, db: AsyncSession = Depends(get_
         },
     ]
 
+    # Resolve reviewer name for the verified panel
+    verified_by_name = None
+    if getattr(doc, "verified_by", None):
+        reviewer = await db.get(User, doc.verified_by)
+        if reviewer is not None:
+            verified_by_name = reviewer.name or reviewer.email
+
     return {
         "status": "ok",
         "data": {
@@ -650,6 +657,10 @@ async def get_document_detail(doc_id: uuid.UUID, db: AsyncSession = Depends(get_
             "extraction_runs": extraction_runs,
             "relationships": relationships,
             "entities": entities,
+            "verified": bool(getattr(doc, "verified", False)),
+            "verified_at": doc.verified_at.isoformat() if getattr(doc, "verified_at", None) else None,
+            "verified_by": str(doc.verified_by) if getattr(doc, "verified_by", None) else None,
+            "verified_by_name": verified_by_name,
         },
     }
 
@@ -1307,6 +1318,64 @@ async def reextract_document(
 
     asyncio.create_task(run_extraction([str(doc_id)]))
     return {"status": "ok", "message": "חילוץ מחדש הופעל"}
+
+
+# ── Human verification ────────────────────────────────────────────────────
+
+
+@router.patch("/documents/{doc_id}/verify")
+async def verify_document(
+    doc_id: uuid.UUID,
+    body: dict,
+    current = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Flip the human-verified flag on a document and cascade the change
+    to every relationship extracted from it.
+
+    Body: ``{"verified": true/false}`` (defaults to ``true`` if omitted).
+    Permission: ``manage_documents`` (admins included).
+    """
+    verified = bool(body.get("verified", True))
+
+    doc = await db.get(Document, doc_id)
+    if doc is None:
+        raise HTTPException(404, "Document not found")
+
+    doc.verified = verified
+    if verified:
+        doc.verified_at = now_israel_naive()
+        # `current` is the User ORM row returned by get_current_admin.
+        doc.verified_by = str(getattr(current, "id", None)) if getattr(current, "id", None) else None
+    else:
+        doc.verified_at = None
+        doc.verified_by = None
+
+    # Cascade so the public graph can render verified edges distinctly.
+    await db.execute(
+        update(EntityRelationship)
+        .where(EntityRelationship.document_id == str(doc_id))
+        .values(verified=verified)
+    )
+    await db.commit()
+
+    # Look up reviewer name for the response so the UI doesn't need
+    # another round-trip.
+    reviewer_name = None
+    if doc.verified_by:
+        reviewer = await db.get(User, doc.verified_by)
+        reviewer_name = getattr(reviewer, "name", None) or getattr(reviewer, "email", None)
+
+    return {
+        "status": "ok",
+        "data": {
+            "id": str(doc.id),
+            "verified": doc.verified,
+            "verified_at": doc.verified_at.isoformat() if doc.verified_at else None,
+            "verified_by": str(doc.verified_by) if doc.verified_by else None,
+            "verified_by_name": reviewer_name,
+        },
+    }
 
 
 # ── CKAN: search + selective import ───────────────────────────────────────

@@ -19,6 +19,9 @@ interface DocSummary {
   source_type?: string | null;
   source_title?: string | null;
   relationships_count?: number;
+  verified?: boolean;
+  verified_at?: string | null;
+  verified_by_name?: string | null;
 }
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -251,6 +254,18 @@ function DocumentContent() {
               {(doc.relationships_count ?? 0) > 0 && (
                 <span className="text-gray-500">
                   {doc.relationships_count!.toLocaleString()} קשרים
+                </span>
+              )}
+              {doc.verified && (
+                <span
+                  className="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-xs inline-flex items-center gap-1"
+                  title={
+                    doc.verified_by_name
+                      ? `נבדק על ידי ${doc.verified_by_name}` + (doc.verified_at ? ` ב-${new Date(doc.verified_at).toLocaleDateString("he-IL")}` : "")
+                      : "נבדק על ידי מנהל תוכן"
+                  }
+                >
+                  ✓ נבדק על ידי מנהל תוכן
                 </span>
               )}
               {doc.extraction_status === "extracted" && (

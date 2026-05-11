@@ -76,6 +76,10 @@ interface DocDetail {
   extraction_runs: ExtractionRun[];
   relationships: Relationship[];
   entities: Entity[];
+  verified?: boolean;
+  verified_at?: string | null;
+  verified_by?: string | null;
+  verified_by_name?: string | null;
 }
 
 interface ExtractionRun {
@@ -330,6 +334,30 @@ export default function DocumentDetailPage() {
     }
   };
 
+  // Toggle the human-verified flag on the document (and cascade to all its
+  // extracted relationships, which the API does for us).
+  const handleVerifyToggle = async () => {
+    if (!docId || !doc) return;
+    const next = !doc.verified;
+    setActionMsg(null);
+    try {
+      const res = await fetch(`/api/v1/admin/documents/${docId}/verify`, {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ verified: next }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setActionMsg({
+        type: "ok",
+        text: next ? "המסמך וכל הקשרים שחולצו ממנו סומנו כנבדקים." : "אישור הבדיקה הוסר.",
+      });
+      await loadDoc();
+    } catch (e) {
+      setActionMsg({ type: "err", text: e instanceof Error ? e.message : "שגיאה בשמירת סטטוס" });
+    }
+  };
+
   const handleDeleteRelationship = async (relId: string) => {
     if (!confirm("למחוק קשר זה?")) return;
     try {
@@ -428,18 +456,53 @@ export default function DocumentDetailPage() {
       </div>
 
       {/* Header with title + actions */}
-      <div className="flex items-start justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">{doc.title || "מסמך"}</h1>
-          <div className="flex items-center gap-3 mt-2 text-sm text-gray-500">
+      <div className="flex items-start justify-between mb-6 gap-4">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h1 className="text-2xl font-bold text-gray-900">{doc.title || "מסמך"}</h1>
+            {doc.verified && (
+              <span
+                className="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-xs inline-flex items-center gap-1"
+                title={
+                  doc.verified_by_name
+                    ? `נבדק על ידי ${doc.verified_by_name}` + (doc.verified_at ? ` · ${formatDate(doc.verified_at)}` : "")
+                    : "נבדק"
+                }
+              >
+                ✓ נבדק
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-3 mt-2 text-sm text-gray-500 flex-wrap">
             <span>{doc.source_title || doc.source_type || "—"}</span>
             <span>·</span>
             <span>{formatSize(doc.file_size)}</span>
             <span>·</span>
             <span>{formatDate(doc.created_at)}</span>
+            {doc.verified_by_name && (
+              <>
+                <span>·</span>
+                <span>נבדק על ידי {doc.verified_by_name}</span>
+              </>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={handleVerifyToggle}
+            className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+              doc.verified
+                ? "bg-gray-100 text-gray-700 hover:bg-gray-200 border border-gray-300"
+                : "bg-emerald-600 text-white hover:bg-emerald-700"
+            }`}
+            title={
+              doc.verified
+                ? "ביטול אישור הבדיקה — הקשרים יסומנו שוב כעיבוד מכונה"
+                : "סמן את המסמך וכל הקשרים שחולצו ממנו כנבדקים על ידי מנהל תוכן"
+            }
+          >
+            {doc.verified ? "הסר אישור בדיקה" : "✓ סמן כנבדק"}
+          </button>
           <a
             href={pdfUrl}
             target="_blank"

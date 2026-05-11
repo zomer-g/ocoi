@@ -120,6 +120,10 @@ export function ConnectionMap({
       labels: string[];
       hasRestriction: boolean;
       hasMkExpense: boolean;
+      // A merged pair is treated as "verified" only when every contributing
+      // edge has been signed off — one unreviewed edge is enough to remove
+      // the badge so the user is never misled about machine-only data.
+      allVerified: boolean;
       docUrls: string[];
     }>();
 
@@ -131,12 +135,14 @@ export function ConnectionMap({
       const label = EDGE_LABELS[edge.relationship_type] || edge.relationship_type;
       const isRestricted = edge.relationship_type === "restricted_from";
       const isMkExpense = edge.origin_kind === "mk_expense";
+      const isVerified = !!edge.verified;
       const docUrl = edge.document_url && !edge.document_url.startsWith("upload://") ? edge.document_url : "";
 
       if (existing) {
         if (!existing.labels.includes(label)) existing.labels.push(label);
         if (isRestricted) existing.hasRestriction = true;
         if (isMkExpense) existing.hasMkExpense = true;
+        if (!isVerified) existing.allVerified = false;
         if (docUrl && !existing.docUrls.includes(docUrl)) existing.docUrls.push(docUrl);
       } else {
         pairMap.set(key, {
@@ -145,6 +151,7 @@ export function ConnectionMap({
           labels: [label],
           hasRestriction: isRestricted,
           hasMkExpense: isMkExpense,
+          allVerified: isVerified,
           docUrls: docUrl ? [docUrl] : [],
         });
       }
@@ -155,7 +162,7 @@ export function ConnectionMap({
         id: `e_${key}`,
         source: info.source,
         target: info.target,
-        label: info.labels.join(" + "),
+        label: (info.allVerified ? "✓ " : "") + info.labels.join(" + "),
         // Restriction wins visually; otherwise mk_expense gets its own
         // green-solid style; everything else is the default dashed gray.
         relType: info.hasRestriction
@@ -163,6 +170,10 @@ export function ConnectionMap({
           : info.hasMkExpense
             ? "mk_expense"
             : "other",
+        // 1 when every contributing edge for this pair was reviewed by a
+        // content manager — drives the green-tick badge in the legend
+        // and bumps the line width in the cytoscape style below.
+        verified: info.allVerified ? 1 : 0,
         docUrl: info.docUrls[0] || "",
       },
     }));
@@ -254,6 +265,15 @@ export function ConnectionMap({
             "target-arrow-color": "#9CA3AF",
             "target-arrow-shape": "triangle",
             "arrow-scale": 0.8,
+          },
+        },
+        // ── Verified edges (any kind) get a subtle weight bump ──
+        {
+          selector: "edge[verified = 1]",
+          style: {
+            // Add a touch of width so verified pairs stand out without
+            // overriding the colour scheme of the underlying kind.
+            width: 3.5,
           },
         },
         // ── Selected node ──
@@ -417,6 +437,10 @@ export function ConnectionMap({
               <line x1="0" y1="4" x2="24" y2="4" stroke="#059669" strokeWidth="2" />
             </svg>
             <span>{originLabel("mk_expense")}</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="text-emerald-600 text-[10px] leading-none">✓</span>
+            <span>נבדק על ידי מנהל תוכן</span>
           </div>
           <div className="flex items-center gap-1.5">
             <svg width="24" height="8" className="shrink-0">
