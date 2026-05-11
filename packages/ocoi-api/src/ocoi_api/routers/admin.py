@@ -1673,14 +1673,12 @@ async def registry_match_status():
     return {"status": "ok", "data": get_registry_match_state()}
 
 
-# ── Admin users (read-only from env) ──────────────────────────────────────
-
-@router.get("/users")
-async def list_admin_users():
-    return {
-        "status": "ok",
-        "data": sorted(settings.admin_email_set),
-    }
+# NOTE: The previous read-only `/users` endpoint that returned
+# `sorted(settings.admin_email_set)` was removed when the full user-CRUD
+# block was added further below. Two `@router.get("/users")` definitions
+# would have FastAPI dispatch to whichever was registered first — the
+# old one — and the new UI would receive a list of bare email strings
+# instead of user dicts, crashing the page with "u.id is undefined".
 
 
 # ── Site Content CMS ─────────────────────────────────────────────────────
