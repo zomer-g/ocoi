@@ -242,18 +242,27 @@ def create_app() -> FastAPI:
             if path.startswith("api/"):
                 raise HTTPException(status_code=404, detail="Not found")
 
+            # Normalise trailing slashes — Next.js `output: "export"` with
+            # the default `trailingSlash: false` writes a flat ``admin.html``
+            # for the ``/admin`` route, *not* ``admin/index.html``.
+            # A user visiting ``/admin/`` (trailing slash) would otherwise
+            # miss the ``.html`` lookup below and fall through to the home
+            # page. Strip the trailing slash before the file checks.
+            normalised = path.rstrip("/")
+
             # Try to serve the exact file first
-            file_path = static_dir / path
+            file_path = static_dir / normalised
             if file_path.is_file():
                 return FileResponse(file_path)
 
             # Try path + .html (Next.js static export generates graph.html, entity.html, etc.)
-            html_path = static_dir / f"{path}.html"
-            if html_path.is_file():
-                return FileResponse(html_path, media_type="text/html")
+            if normalised:
+                html_path = static_dir / f"{normalised}.html"
+                if html_path.is_file():
+                    return FileResponse(html_path, media_type="text/html")
 
-            # Try path/index.html
-            index_path = static_dir / path / "index.html"
+            # Try path/index.html (some routes may still use the nested form)
+            index_path = static_dir / normalised / "index.html"
             if index_path.is_file():
                 return FileResponse(index_path, media_type="text/html")
 
