@@ -118,15 +118,24 @@ function AdminUsersPageInner() {
       // fields, but the page should still survive if a future change
       // strips one of them.
       const rows: AdminUserRow[] = Array.isArray(usersData.data) ? usersData.data : [];
-      const safeRows: AdminUserRow[] = rows.map((u) => ({
-        ...u,
-        permissions: Array.isArray(u.permissions) ? u.permissions : [],
-        name: u.name || u.email || "",
-        // Coerce role into the narrow literal union the rest of the
-        // page expects. Anything other than "admin" is treated as a
-        // content manager.
-        role: u.role === "admin" ? ("admin" as const) : ("content_manager" as const),
-      }));
+      const safeRows: AdminUserRow[] = rows.map((u, idx) => {
+        const id = typeof u.id === "string" && u.id ? u.id : `__missing_id_${idx}__`;
+        if (id.startsWith("__missing_id_")) {
+          // eslint-disable-next-line no-console
+          console.warn("AdminUsersPage: row from API has no id, using fallback", u);
+        }
+        return {
+          ...u,
+          id,
+          email: typeof u.email === "string" ? u.email : "",
+          permissions: Array.isArray(u.permissions) ? u.permissions : [],
+          name: u.name || u.email || "",
+          // Coerce role into the narrow literal union the rest of the
+          // page expects. Anything other than "admin" is treated as a
+          // content manager.
+          role: u.role === "admin" ? ("admin" as const) : ("content_manager" as const),
+        };
+      });
       setUsers(safeRows);
       const cat = catData.data?.permissions;
       setPermissionCatalog(Array.isArray(cat) ? cat : []);
@@ -358,10 +367,16 @@ function AdminUsersPageInner() {
         <div className="text-center py-12 text-gray-400">אין משתמשים עדיין</div>
       ) : (
         <div className="space-y-3">
-          {users.map((u) => {
-            const isMe = !!u.email && me?.email === u.email;
+          {users.map((u, idx) => {
+            const missingId = u.id.startsWith("__missing_id_");
+            const isMe = !missingId && !!u.email && me?.email === u.email;
             const isExpanded = editingId === u.id;
-            const displayName = u.name || u.email || `(משתמש ${u.id.slice(0, 8)})`;
+            const displayName =
+              u.name ||
+              u.email ||
+              (missingId
+                ? `(שורה ${idx + 1} — חסר מזהה ב-API)`
+                : `(משתמש ${u.id.slice(0, 8)})`);
             return (
               <div key={u.id} className="bg-white border border-gray-200 rounded-lg p-4">
                 <div className="flex items-start justify-between gap-3 mb-1">
