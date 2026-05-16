@@ -28,9 +28,15 @@ interface UploadItem {
 }
 
 const SOURCE_LABELS: Record<string, { label: string; color: string }> = {
-  odata: { label: "odata.org.il", color: "bg-blue-50 text-blue-700 border-blue-200" },
-  ckan: { label: "CKAN", color: "bg-purple-50 text-purple-700 border-purple-200" },
-  upload: { label: "העלאה", color: "bg-teal-50 text-teal-700 border-teal-200" },
+  // The `odata` source_type is created exclusively by the bulk ZIP import
+  // of the over.org.il "gov.il versions scraper" dataset
+  // (https://www.odata.org.il/dataset/gov-versions-scraper-ministers_conflict-274fd0fe).
+  // Label it explicitly so admins can tell it apart from CKAN-search picks.
+  odata: { label: "ייבוא OVER (gov.il ZIP)", color: "bg-blue-50 text-blue-700 border-blue-200" },
+  ckan: { label: "חיפוש odata (CKAN)", color: "bg-purple-50 text-purple-700 border-purple-200" },
+  upload: { label: "העלאה ידנית", color: "bg-teal-50 text-teal-700 border-teal-200" },
+  // Documents imported from the Knesset MK constituent-outreach expense Excels.
+  mk_expenses: { label: "הוצאות קשר עם הציבור", color: "bg-emerald-50 text-emerald-700 border-emerald-200" },
   // Legacy: documents imported from the old gov.il scraper still exist in the
   // DB; keep this label so they don't render as a blank chip.
   govil: { label: "Gov.il (ישן)", color: "bg-gray-50 text-gray-600 border-gray-200" },
@@ -486,14 +492,15 @@ export default function DocumentsPage() {
         </div>
 
         {/* Source type */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className="text-xs text-gray-500 w-16 shrink-0">מקור:</span>
-          <div className="flex gap-1">
+          <div className="flex gap-1 flex-wrap">
             {[
               { value: "", label: "הכל" },
-              { value: "odata", label: "odata.org.il" },
-              { value: "ckan", label: "CKAN" },
-              { value: "upload", label: "העלאה" },
+              { value: "odata", label: "ייבוא OVER (ZIP)" },
+              { value: "ckan", label: "חיפוש odata (CKAN)" },
+              { value: "mk_expenses", label: "הוצאות קשר עם הציבור" },
+              { value: "upload", label: "העלאה ידנית" },
               { value: "govil", label: "Gov.il (ישן)" },
             ].map((s) => (
               <button

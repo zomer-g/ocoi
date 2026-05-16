@@ -13,6 +13,7 @@ import {
   deleteDomain,
   createRelationship,
   replaceEntity,
+  deleteDocument,
   type RelationshipCreateData,
   type ReplaceEntityData,
 } from "@/lib/admin-api";
@@ -334,6 +335,25 @@ export default function DocumentDetailPage() {
     }
   };
 
+  // Permanently delete the document and every relationship + extraction
+  // run that points at it. The DELETE endpoint already cascades; we just
+  // ask for double-confirmation because the action is destructive.
+  const handleDeleteDocument = async () => {
+    if (!docId || !doc) return;
+    const ok = window.confirm(
+      `למחוק לצמיתות את המסמך "${doc.title}"?\n\nכל הקשרים שחולצו ממנו (${doc.relationships?.length || 0}) יימחקו גם הם. הפעולה אינה הפיכה.`
+    );
+    if (!ok) return;
+    setActionMsg(null);
+    try {
+      await deleteDocument(docId);
+      // Navigate back to the list once the delete succeeds.
+      window.location.href = "/admin/documents";
+    } catch (e) {
+      setActionMsg({ type: "err", text: e instanceof Error ? e.message : "שגיאה במחיקת המסמך" });
+    }
+  };
+
   // Toggle the human-verified flag on the document (and cascade to all its
   // extracted relationships, which the API does for us).
   const handleVerifyToggle = async () => {
@@ -515,6 +535,17 @@ export default function DocumentDetailPage() {
             </svg>
             PDF
           </a>
+          <button
+            onClick={handleDeleteDocument}
+            className="flex items-center gap-2 px-3 py-2 rounded-lg border border-red-300 text-red-600 hover:bg-red-50 transition-colors text-sm font-medium"
+            title="מחק את המסמך ואת כל הקשרים שחולצו ממנו לצמיתות"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="3 6 5 6 21 6" />
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+            </svg>
+            מחק מסמך
+          </button>
         </div>
       </div>
 
