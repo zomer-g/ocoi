@@ -11,9 +11,12 @@ interface NavLink {
 const DEFAULT_LINKS: NavLink[] = [
   { href: "/", label: "חיפוש" },
   { href: "/graph", label: "מפת קשרים" },
+  { href: "/documents", label: "מסמכים" },
   { href: "/api-docs", label: "API ציבורי" },
   { href: "/about", label: "אודות" },
 ];
+
+const CANONICAL_HREFS = new Set(DEFAULT_LINKS.map((l) => l.href));
 
 export default function SiteContentPage() {
   const [headerLinks, setHeaderLinks] = useState<NavLink[]>(DEFAULT_LINKS);
@@ -27,7 +30,22 @@ export default function SiteContentPage() {
       if (r.data.value) {
         try {
           const parsed = JSON.parse(r.data.value);
-          if (Array.isArray(parsed) && parsed.length > 0) setHeaderLinks(parsed);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            // Self-heal: ensure every canonical link is present, in canonical order,
+            // followed by any extra CMS-only entries. Prevents an admin from
+            // accidentally saving a list that drops a default link.
+            const cmsByHref = new Map<string, NavLink>();
+            for (const l of parsed as NavLink[]) {
+              if (l && l.href) cmsByHref.set(l.href, l);
+            }
+            const merged: NavLink[] = [
+              ...DEFAULT_LINKS.map((l) => cmsByHref.get(l.href) ?? l),
+              ...(parsed as NavLink[]).filter(
+                (l) => l && l.href && !CANONICAL_HREFS.has(l.href),
+              ),
+            ];
+            setHeaderLinks(merged);
+          }
         } catch { /* keep defaults */ }
       }
     }).catch(() => {});
@@ -67,6 +85,11 @@ export default function SiteContentPage() {
   };
 
   const removeLink = (index: number) => {
+    const link = headerLinks[index];
+    if (link && CANONICAL_HREFS.has(link.href)) {
+      flash("err", "לא ניתן להסיר קישור ברירת מחדל");
+      return;
+    }
     setHeaderLinks((prev) => prev.filter((_, i) => i !== index));
   };
 
@@ -83,33 +106,40 @@ export default function SiteContentPage() {
       {/* Header Links */}
       <section className="bg-white rounded-xl border border-gray-200 p-6">
         <h2 className="text-lg font-semibold text-gray-900 mb-4">קישורי כותרת</h2>
-        <p className="text-sm text-gray-500 mb-4">קישורי הניווט שמופיעים בכותרת העליונה של האתר</p>
+        <p className="text-sm text-gray-500 mb-2">קישורי הניווט שמופיעים בכותרת העליונה של האתר</p>
+        <p className="text-xs text-amber-700 mb-4">קישורי ברירת המחדל מוצמדים אוטומטית — ניתן לערוך את הטקסט שלהם אך לא להסיר אותם.</p>
         <div className="space-y-3">
-          {headerLinks.map((link, i) => (
-            <div key={i} className="flex items-center gap-3">
-              <input
-                type="text"
-                value={link.label}
-                onChange={(e) => updateLink(i, "label", e.target.value)}
-                placeholder="טקסט"
-                className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm"
-              />
-              <input
-                type="text"
-                value={link.href}
-                onChange={(e) => updateLink(i, "href", e.target.value)}
-                placeholder="כתובת"
-                dir="ltr"
-                className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono"
-              />
-              <button
-                onClick={() => removeLink(i)}
-                className="text-red-500 hover:text-red-700 px-2 py-1 text-sm"
-              >
-                מחק
-              </button>
-            </div>
-          ))}
+          {headerLinks.map((link, i) => {
+            const isCanonical = CANONICAL_HREFS.has(link.href);
+            return (
+              <div key={i} className="flex items-center gap-3">
+                <input
+                  type="text"
+                  value={link.label}
+                  onChange={(e) => updateLink(i, "label", e.target.value)}
+                  placeholder="טקסט"
+                  className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                />
+                <input
+                  type="text"
+                  value={link.href}
+                  onChange={(e) => updateLink(i, "href", e.target.value)}
+                  placeholder="כתובת"
+                  dir="ltr"
+                  readOnly={isCanonical}
+                  className={`flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono ${isCanonical ? "bg-gray-50 text-gray-500" : ""}`}
+                />
+                <button
+                  onClick={() => removeLink(i)}
+                  disabled={isCanonical}
+                  title={isCanonical ? "קישור ברירת מחדל — לא ניתן להסיר" : undefined}
+                  className="text-red-500 hover:text-red-700 disabled:text-gray-300 disabled:hover:text-gray-300 disabled:cursor-not-allowed px-2 py-1 text-sm"
+                >
+                  מחק
+                </button>
+              </div>
+            );
+          })}
         </div>
         <div className="flex items-center gap-3 mt-4">
           <button
