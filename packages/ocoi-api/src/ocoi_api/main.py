@@ -125,6 +125,16 @@ async def lifespan(app: FastAPI):
     import asyncio
     settings.ensure_dirs()
     asyncio.ensure_future(_init_db())
+    # MCP session manager must be started BEFORE any /mcp request can be
+    # served — its handle_request() needs an active anyio task group.
+    # The sub-app's own lifespan isn't called when it's mounted on a
+    # parent FastAPI app, so we drive it from here.
+    mcp_handle = getattr(app.state, "mcp_handle", None)
+    if mcp_handle is not None:
+        try:
+            await mcp_handle.startup()
+        except Exception as e:
+            print(f"MCP startup failed: {e}")
     # Stripe metered-billing batcher. No-op when MCP is disabled or
     # STRIPE_SECRET_KEY isn't configured (dev environments).
     if settings.mcp_enabled:
@@ -145,6 +155,11 @@ async def lifespan(app: FastAPI):
         stop_billing_batcher()
     except Exception:
         pass
+    if mcp_handle is not None:
+        try:
+            await mcp_handle.shutdown()
+        except Exception:
+            pass
 
 
 def _get_allowed_origins() -> list[str]:
@@ -264,9 +279,13 @@ def create_app() -> FastAPI:
             return JSONResponse(oauth.protected_resource_metadata())
 
         # ── Mount the MCP Streamable HTTP transport at /mcp ─────────────
+        # Stash the handle on app.state so the lifespan hook above can
+        # drive the session manager's startup/shutdown lifecycle.
         try:
             from ocoi_api.mcp import build_mcp_app
-            app.mount("/mcp", build_mcp_app())
+            mcp_handle = build_mcp_app()
+            app.state.mcp_handle = mcp_handle
+            app.mount("/mcp", mcp_handle.app)
         except Exception as e:
             print(f"MCP mount failed: {e}")
 

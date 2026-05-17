@@ -95,9 +95,12 @@ def step_oauth_metadata():
 
 def step_mcp_app_builds():
     from ocoi_api.mcp import build_mcp_app
-    app = build_mcp_app()
-    assert app is not None
-    print("  build_mcp_app() returned:", type(app).__name__)
+    handle = build_mcp_app()
+    assert handle is not None
+    assert handle.app is not None, "MCPApp.app missing"
+    assert callable(handle.startup), "MCPApp.startup must be callable"
+    assert callable(handle.shutdown), "MCPApp.shutdown must be callable"
+    print(f"  build_mcp_app() returned MCPApp(app={type(handle.app).__name__})")
 
 
 def step_fastapi_composes():
