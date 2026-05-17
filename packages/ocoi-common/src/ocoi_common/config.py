@@ -94,6 +94,38 @@ class Settings(BaseSettings):
     registry_match_threshold: float = 0.85
     registry_sync_batch_size: int = 2000
 
+    # ── MCP server ──────────────────────────────────────────────────────
+    # Kill switch — when False the /mcp endpoint + OAuth metadata return
+    # 404/503 so we can disable the surface without redeploying.
+    mcp_enabled: bool = True
+    # Closed-beta gate. When True, Google sign-in succeeds only for
+    # emails that an admin has pre-invited (= a User row already exists
+    # with role 'mcp_user' or higher). When False, any Google identity
+    # gets auto-provisioned on first login — appropriate for fully-public
+    # data, not for anything we plan to bill.
+    mcp_invite_only: bool = True
+    # Canonical public URL OAuth clients see — used as ``issuer`` in the
+    # /.well-known metadata and as the redirect target Google calls back
+    # to. In dev defaults to localhost; production sets this to the apex.
+    mcp_public_url: str = "http://localhost:8000"
+    # Access tokens issued for the MCP audience live this long. Short by
+    # design — refresh tokens cover the long tail.
+    mcp_access_token_minutes: int = 15
+    mcp_refresh_token_days: int = 30
+    # Authorization codes are single-use; this is just a safety upper bound.
+    mcp_authorization_code_minutes: int = 10
+    # OAuth audience claim that separates MCP tokens from the admin
+    # cookie tokens — both are signed by ``jwt_secret_key`` but cross-use
+    # is rejected by the verifier.
+    mcp_jwt_audience: str = "mcp"
+
+    # ── Stripe (metered billing) ────────────────────────────────────────
+    stripe_secret_key: str = ""
+    # The price ID for the per-tool-call metered product. When unset the
+    # billing batcher is a no-op (handy for dev — usage_events still get
+    # written, just never pushed).
+    stripe_metered_price_id: str = ""
+
     def ensure_dirs(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.pdf_dir.mkdir(parents=True, exist_ok=True)

@@ -29,6 +29,9 @@ from ocoi_common.permissions import (
 
 
 def create_access_token(email: str, name: str) -> str:
+    """Admin-cookie token. Audience is omitted so the MCP verifier (which
+    requires ``aud=mcp``) will reject it if it ever leaks into a Bearer
+    header — and vice-versa."""
     payload = {
         "sub": email,
         "name": name,
@@ -39,10 +42,50 @@ def create_access_token(email: str, name: str) -> str:
 
 
 def decode_token(token: str) -> dict:
+    """Decode an admin-cookie token. Rejects MCP tokens (which carry an
+    ``aud`` claim) so a stolen MCP bearer can't be replayed as a cookie."""
     try:
-        return jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
+        decoded = jwt.decode(
+            token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm],
+        )
     except jwt.ExpiredSignatureError:
         raise HTTPException(401, "Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(401, "Invalid token")
+    # Admin cookie tokens never carry an audience. MCP tokens always do.
+    if decoded.get("aud"):
+        raise HTTPException(401, "Wrong token audience")
+    return decoded
+
+
+def create_mcp_access_token(user_id: str, client_id: str, scope: str = "mcp") -> str:
+    """Short-lived bearer token for MCP tool calls. Audience separates it
+    from the admin cookie."""
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": user_id,
+        "aud": settings.mcp_jwt_audience,
+        "client_id": client_id,
+        "scope": scope,
+        "iat": now,
+        "exp": now + timedelta(minutes=settings.mcp_access_token_minutes),
+    }
+    return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+
+
+def decode_mcp_token(token: str) -> dict:
+    """Verify an MCP bearer token. Raises HTTPException(401) on failure."""
+    try:
+        return jwt.decode(
+            token,
+            settings.jwt_secret_key,
+            algorithms=[settings.jwt_algorithm],
+            audience=settings.mcp_jwt_audience,
+        )
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(401, "Token expired")
+    except jwt.InvalidAudienceError:
+        raise HTTPException(401, "Wrong token audience")
     except jwt.InvalidTokenError:
         raise HTTPException(401, "Invalid token")
 
@@ -65,12 +108,22 @@ def user_permissions(user) -> set[str]:
     return {p for p in parsed if isinstance(p, str)}
 
 
-async def get_or_bootstrap_user(email: str, name: str | None = None):
-    """Find the user row for the email or, if the email is on the
-    ADMIN_EMAILS whitelist and no row exists yet, create a fresh
-    ``role='admin'`` row. Returns ``None`` if the email isn't allowed.
+async def get_or_bootstrap_user(
+    email: str,
+    name: str | None = None,
+    *,
+    for_mcp: bool = False,
+):
+    """Find or create the user row for the given Google email.
 
-    Touches ``last_login_at`` whenever a row already exists.
+    * Existing row → returned as-is, ``last_login_at`` touched.
+    * No row, email on ``ADMIN_EMAILS`` whitelist → new ``role='admin'`` row.
+    * No row, ``for_mcp=True`` and ``MCP_INVITE_ONLY=False`` → new
+      ``role='mcp_user'`` row.
+    * No row, ``for_mcp=True`` and ``MCP_INVITE_ONLY=True`` (the default) →
+      ``None``. The Google callback turns this into an "you need an
+      invite" error page so closed-beta access is enforced.
+    * No row, ``for_mcp=False`` → ``None`` (admin panel stays locked down).
     """
     from ocoi_db.engine import async_session_factory
     from ocoi_db.models import User
@@ -90,12 +143,26 @@ async def get_or_bootstrap_user(email: str, name: str | None = None):
             await session.refresh(user)
             return user
 
-        # No row yet — bootstrap admins listed in ADMIN_EMAILS.
+        # No row yet — bootstrap admins listed in ADMIN_EMAILS first so a
+        # whitelisted admin signing in via MCP still gets full admin role.
         if email in settings.admin_email_set:
             user = User(
                 email=email,
                 name=name or email,
                 role="admin",
+                permissions=None,
+                last_login_at=datetime.utcnow(),
+            )
+            session.add(user)
+            await session.commit()
+            await session.refresh(user)
+            return user
+
+        if for_mcp and not settings.mcp_invite_only:
+            user = User(
+                email=email,
+                name=name or email,
+                role="mcp_user",
                 permissions=None,
                 last_login_at=datetime.utcnow(),
             )

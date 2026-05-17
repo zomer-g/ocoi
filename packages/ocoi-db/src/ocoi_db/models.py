@@ -294,10 +294,14 @@ class SiteContent(Base):
 
 
 class User(Base):
-    """Admin-panel user. Two roles:
+    """Admin-panel user. Roles:
 
     * ``admin``           — implicit access to everything, can manage other users.
     * ``content_manager`` — has the per-user permission set in ``permissions``.
+    * ``mcp_user``        — signed in via Google for MCP only. Has no admin
+                            panel access; the role exists so admin queries
+                            can filter MCP-only rows out and so the same
+                            ``User`` table powers both surfaces.
 
     Emails listed in the ``ADMIN_EMAILS`` env var are auto-bootstrapped to a
     ``role='admin'`` row on first login (see ``ocoi_api.auth``).
@@ -361,4 +365,141 @@ class Suggestion(Base):
         Index("ix_suggestions_target", "target_kind", "target_id"),
         Index("ix_suggestions_document", "document_id"),
         Index("ix_suggestions_created_at", "created_at"),
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# MCP server tables — OAuth 2.1 dynamic registration + per-user metering.
+# Picked up by ``create_all_tables()`` on startup (this project doesn't
+# use Alembic for new tables — only for column-level adds).
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class OAuthClient(Base):
+    """OAuth client registered via RFC 7591 dynamic client registration.
+
+    An MCP host (Claude Desktop, Cursor, …) hits POST /oauth/register on
+    first launch and gets back ``client_id``/``client_secret``. We keep
+    the secret hashed; only the registration response shows it cleartext.
+    """
+    __tablename__ = "oauth_clients"
+
+    id: Mapped[str] = mapped_column(DBUUID(), primary_key=True, default=new_uuid)
+    client_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    client_secret_hash: Mapped[str | None] = mapped_column(String(128))
+    # Some MCP clients register without a secret (public clients with PKCE).
+    is_public: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false",
+    )
+    redirect_uris: Mapped[str] = mapped_column(Text, nullable=False)  # JSON array
+    client_name: Mapped[str | None] = mapped_column(String(200))
+    grant_types: Mapped[str | None] = mapped_column(Text)  # JSON array
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime, default=func.now())
+
+    __table_args__ = (
+        Index("ix_oauth_clients_client_id", "client_id"),
+    )
+
+
+class OAuthAuthorizationCode(Base):
+    """Single-use authorization code minted by /oauth/authorize and
+    redeemed at /oauth/token. We store the hash so a stolen DB row can't
+    immediately be redeemed."""
+    __tablename__ = "oauth_authorization_codes"
+
+    id: Mapped[str] = mapped_column(DBUUID(), primary_key=True, default=new_uuid)
+    code_hash: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    client_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    user_id: Mapped[str] = mapped_column(
+        DBUUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False,
+    )
+    redirect_uri: Mapped[str] = mapped_column(Text, nullable=False)
+    code_challenge: Mapped[str | None] = mapped_column(String(200))
+    code_challenge_method: Mapped[str | None] = mapped_column(String(20))
+    scope: Mapped[str | None] = mapped_column(String(200))
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime, default=func.now())
+
+    __table_args__ = (
+        Index("ix_oauth_codes_client_id", "client_id"),
+        Index("ix_oauth_codes_user_id", "user_id"),
+    )
+
+
+class OAuthRefreshToken(Base):
+    """Long-lived refresh token. Access tokens are JWTs and not stored;
+    refresh tokens are opaque hashes so revocation is just a DB write."""
+    __tablename__ = "oauth_refresh_tokens"
+
+    id: Mapped[str] = mapped_column(DBUUID(), primary_key=True, default=new_uuid)
+    token_hash: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    client_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    user_id: Mapped[str] = mapped_column(
+        DBUUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False,
+    )
+    scope: Mapped[str | None] = mapped_column(String(200))
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime, default=func.now())
+
+    __table_args__ = (
+        Index("ix_oauth_refresh_user_id", "user_id"),
+        Index("ix_oauth_refresh_client_id", "client_id"),
+    )
+
+
+class UsageEvent(Base):
+    """One row per MCP tool invocation. Drives admin reporting + the
+    Stripe metered-billing usage records."""
+    __tablename__ = "usage_events"
+
+    id: Mapped[str] = mapped_column(DBUUID(), primary_key=True, default=new_uuid)
+    user_id: Mapped[str] = mapped_column(
+        DBUUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False,
+    )
+    client_id: Mapped[str | None] = mapped_column(String(64))
+    tool: Mapped[str] = mapped_column(String(80), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=func.now())
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    bytes_in: Mapped[int | None] = mapped_column(Integer)
+    bytes_out: Mapped[int | None] = mapped_column(Integer)
+    # ok | error | quota_exceeded
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="ok")
+    error_message: Mapped[str | None] = mapped_column(Text)
+    # NULL = not yet pushed to Stripe. Set to a timestamp once a usage
+    # record has been created on the customer's subscription item.
+    stripe_pushed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index("ix_usage_user_started", "user_id", "started_at"),
+        Index("ix_usage_pending_stripe", "stripe_pushed_at"),
+        Index("ix_usage_tool", "tool"),
+    )
+
+
+class BillingAccount(Base):
+    """One row per MCP user. Plan + quota live here; Stripe IDs link the
+    row to the customer's subscription so the metered-billing batcher
+    knows where to push usage."""
+    __tablename__ = "billing_accounts"
+
+    user_id: Mapped[str] = mapped_column(
+        DBUUID(), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True,
+    )
+    stripe_customer_id: Mapped[str | None] = mapped_column(String(80))
+    stripe_subscription_item_id: Mapped[str | None] = mapped_column(String(80))
+    # 'free'    — usage logged, never pushed to Stripe.
+    # 'metered' — usage pushed; Stripe invoices at the end of the cycle.
+    plan: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="free", server_default="free",
+    )
+    # NULL = unlimited. 0 = effectively blocked. Anything else is the
+    # hard cap per calendar month; quota_exceeded events are still logged
+    # so we can see who's hitting the wall.
+    monthly_quota: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime, default=func.now())
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime, default=func.now(), onupdate=func.now(),
     )

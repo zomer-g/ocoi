@@ -29,6 +29,16 @@ services:
         sync: false
       - key: ADMIN_EMAILS
         sync: false
+      # MCP server
+      - key: MCP_ENABLED
+        value: "true"
+      - key: MCP_PUBLIC_URL
+        sync: false  # e.g. https://ocoi.org.il
+      # Stripe metered billing (test or live keys)
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_METERED_PRICE_ID
+        sync: false
       - key: TZ
         value: Asia/Jerusalem
 

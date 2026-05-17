@@ -25,6 +25,7 @@ const NAV_ITEMS: NavItem[] = [
   { href: "/admin/suggestions", label: "הצעות תיקון", perm: "manage_suggestions" },
   { href: "/admin/site-content", label: "תוכן האתר", perm: "manage_site_content" },
   { href: "/api/admin-docs", label: "API", external: true, adminOnly: true },
+  { href: "/admin/mcp", label: "MCP", adminOnly: true },
   { href: "/admin/users", label: "משתמשים", adminOnly: true },
   { href: "/admin/settings", label: "הגדרות", adminOnly: true },
 ];

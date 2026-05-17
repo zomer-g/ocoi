@@ -4,14 +4,14 @@ import os
 from pathlib import Path
 import uvicorn
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, Depends
+from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
-from ocoi_api.routers import search, entities, connections, documents, external, auth, admin, push, site, suggestions
+from ocoi_api.routers import search, entities, connections, documents, external, auth, admin, push, site, suggestions, oauth
 from ocoi_api.auth import get_current_admin
 from ocoi_common.config import settings
 
@@ -30,6 +30,73 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
         return response
+
+
+# ---------------------------------------------------------------------------
+# MCP-specific CORS middleware
+# ---------------------------------------------------------------------------
+# External MCP clients (claude.ai, chatgpt.com, cursor.com, the MCP Inspector
+# at modelcontextprotocol.io) live on different origins than the API. The
+# global CORSMiddleware below is locked to ALLOWED_ORIGINS — fine for the
+# admin UI, fatal for /mcp. This middleware short-circuits CORS preflight
+# for the MCP + well-known paths and lets ANY origin through. Safety is
+# preserved: /mcp is auth-gated by Bearer JWT and the OAuth flow runs
+# through Google + the invite list.
+# ---------------------------------------------------------------------------
+_MCP_CORS_PATHS = (
+    "/mcp",
+    "/.well-known/oauth-authorization-server/mcp",
+    "/.well-known/oauth-protected-resource/mcp",
+)
+_MCP_CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": (
+        "Authorization, Content-Type, Accept, Mcp-Session-Id, Last-Event-Id"
+    ),
+    "Access-Control-Expose-Headers": "Mcp-Session-Id, WWW-Authenticate",
+    "Access-Control-Max-Age": "86400",
+}
+
+
+def _is_mcp_path(path: str) -> bool:
+    return any(path == p or path.startswith(p + "/") for p in _MCP_CORS_PATHS)
+
+
+class MCPCorsMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if not _is_mcp_path(request.url.path):
+            return await call_next(request)
+        # Preflight: short-circuit so we never hit our routes for OPTIONS.
+        if request.method == "OPTIONS":
+            return Response(status_code=204, headers=_MCP_CORS_HEADERS)
+        response = await call_next(request)
+        for k, v in _MCP_CORS_HEADERS.items():
+            response.headers[k] = v
+        return response
+
+
+class MCPPathNormalizerMiddleware:
+    """Pure ASGI middleware that rewrites the bare `/mcp` path to `/mcp/`
+    so Starlette's Mount (which only matches `/mcp/...`) catches it.
+
+    Without this, MCP clients that hit the canonical URL `https://host/mcp`
+    (no trailing slash — which is what Claude.ai's "MCP server URL" field
+    encourages) would fall through to the SPA catch-all for GET and 405
+    for POST. We rewrite at the ASGI scope level — no body consumed, no
+    redirect issued (POST requests can't reliably follow redirects)."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http" and scope.get("path") == "/mcp":
+            scope = dict(scope)
+            scope["path"] = "/mcp/"
+            raw = scope.get("raw_path") or b"/mcp"
+            if not raw.endswith(b"/"):
+                scope["raw_path"] = raw + b"/"
+        await self.app(scope, receive, send)
 
 
 async def _init_db():
@@ -58,11 +125,24 @@ async def lifespan(app: FastAPI):
     import asyncio
     settings.ensure_dirs()
     asyncio.ensure_future(_init_db())
+    # Stripe metered-billing batcher. No-op when MCP is disabled or
+    # STRIPE_SECRET_KEY isn't configured (dev environments).
+    if settings.mcp_enabled:
+        try:
+            from ocoi_api.mcp.billing import start_billing_batcher
+            start_billing_batcher()
+        except Exception as e:
+            print(f"Billing batcher failed to start: {e}")
     yield
-    # On shutdown: signal extraction to stop gracefully
+    # On shutdown: signal extraction + billing batcher to stop gracefully.
     try:
         from ocoi_api.services.extraction_service import stop_extraction
         stop_extraction()
+    except Exception:
+        pass
+    try:
+        from ocoi_api.mcp.billing import stop_billing_batcher
+        stop_billing_batcher()
     except Exception:
         pass
 
@@ -133,7 +213,7 @@ def create_app() -> FastAPI:
     # Security headers
     app.add_middleware(SecurityHeadersMiddleware)
 
-    # CORS — only needed for external API consumers (frontend is same-origin)
+    # Global CORS — only needed for external API consumers (frontend is same-origin)
     allowed_origins = _get_allowed_origins()
     if allowed_origins:
         app.add_middleware(
@@ -143,6 +223,14 @@ def create_app() -> FastAPI:
             allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
             allow_headers=["Content-Type", "Authorization"],
         )
+
+    # MCP path normalizer — must run BEFORE the Mount router, which
+    # means it has to be the outermost middleware. add_middleware
+    # prepends, so register it after MCPCorsMiddleware below so this
+    # ends up at the very outside.
+    if settings.mcp_enabled:
+        app.add_middleware(MCPCorsMiddleware)
+        app.add_middleware(MCPPathNormalizerMiddleware)
 
     # ── API routers (matched first) ──────────────────────────────────────
     app.include_router(search.router, prefix="/api/v1")
@@ -155,6 +243,32 @@ def create_app() -> FastAPI:
     app.include_router(push.router, prefix="/api/v1")
     app.include_router(site.router, prefix="/api/v1")
     app.include_router(suggestions.router, prefix="/api/v1")
+    # MCP OAuth 2.1 authorization server endpoints. These live at /oauth/*
+    # (not under /api/v1) because the well-known metadata advertises them
+    # at the root issuer URL.
+    if settings.mcp_enabled:
+        app.include_router(oauth.router)
+
+        # ── /.well-known metadata (RFC 8414 + RFC 9728) ─────────────────
+        # The issuer is `<host>/mcp`, so per RFC 8414 §3 the metadata
+        # MUST be served at `<host>/.well-known/<type>/mcp` (root host
+        # + the issuer's path as suffix). Claude.ai validates this path
+        # exactly — putting metadata under `/mcp/.well-known/...` breaks
+        # discovery silently.
+        @app.get("/.well-known/oauth-authorization-server/mcp", include_in_schema=False)
+        async def oauth_as_metadata():
+            return JSONResponse(oauth.authorization_server_metadata())
+
+        @app.get("/.well-known/oauth-protected-resource/mcp", include_in_schema=False)
+        async def oauth_pr_metadata():
+            return JSONResponse(oauth.protected_resource_metadata())
+
+        # ── Mount the MCP Streamable HTTP transport at /mcp ─────────────
+        try:
+            from ocoi_api.mcp import build_mcp_app
+            app.mount("/mcp", build_mcp_app())
+        except Exception as e:
+            print(f"MCP mount failed: {e}")
 
     @app.get("/api/health")
     async def health():
@@ -238,8 +352,9 @@ def create_app() -> FastAPI:
         # Catch-all: serve static files or SPA fallback
         @app.get("/{path:path}", include_in_schema=False)
         async def spa_fallback(request: Request, path: str):
-            # Never intercept API routes — let FastAPI routers handle them
-            if path.startswith("api/"):
+            # Never intercept API / MCP / OAuth / well-known routes — let
+            # the explicit routers / mounts handle them (or 404 cleanly).
+            if path.startswith(("api/", "oauth/", "mcp/", ".well-known/")):
                 raise HTTPException(status_code=404, detail="Not found")
 
             # Normalise trailing slashes — Next.js `output: "export"` with

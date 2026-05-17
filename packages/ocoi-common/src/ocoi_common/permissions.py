@@ -51,6 +51,7 @@ SECTION_PERMISSIONS: dict[str, str | None] = {
     "/api/v1/admin/memory":          None,
     "/api/v1/admin/db-storage":      None,
     "/api/v1/admin/permissions":     None,
+    "/api/v1/admin/mcp":             None,
     # dashboard
     "/api/v1/admin/stats":           "view_dashboard",
     # entities

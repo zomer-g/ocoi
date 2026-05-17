@@ -26,6 +26,7 @@ from ocoi_db.models import (
     Person, Company, Association, Domain,
     EntityRelationship, Document, Source, ExtractionRun, IgnoredResource,
     SiteContent, Suggestion, User,
+    BillingAccount, OAuthClient, UsageEvent,
 )
 
 router = APIRouter(
@@ -2019,5 +2020,271 @@ async def admin_permissions_catalog():
                 {"key": k, "label": v} for k, v in PERMISSION_LABELS_HE.items()
             ],
             "default_content_manager": list(DEFAULT_CONTENT_MANAGER_PERMISSIONS),
+        },
+    }
+
+
+# ── MCP server administration ───────────────────────────────────────────
+# All endpoints are admin-only via SECTION_PERMISSIONS ('/api/v1/admin/mcp').
+
+
+@router.get("/mcp/users")
+async def list_mcp_users(db: AsyncSession = Depends(get_db)):
+    """List every user with MCP activity in the last 30 days + their plan."""
+    from datetime import datetime, timedelta
+    cutoff = datetime.utcnow() - timedelta(days=30)
+    # One query per row would be N+1; do it in two passes.
+    users_with_activity = (await db.execute(
+        select(
+            User.id, User.email, User.name, User.role, User.last_login_at,
+            func.count(UsageEvent.id).label("calls_30d"),
+            func.coalesce(func.sum(UsageEvent.bytes_out), 0).label("bytes_out_30d"),
+        )
+        .join(UsageEvent, UsageEvent.user_id == User.id, isouter=True)
+        .where((UsageEvent.started_at >= cutoff) | (UsageEvent.id.is_(None)))
+        .where(User.role == "mcp_user")
+        .group_by(User.id)
+        .order_by(func.count(UsageEvent.id).desc())
+    )).all()
+
+    billing_rows = (await db.execute(select(BillingAccount))).scalars().all()
+    billing_by_user = {b.user_id: b for b in billing_rows}
+
+    return {
+        "status": "ok",
+        "data": [
+            {
+                "id": str(row.id),
+                "email": row.email,
+                "name": row.name,
+                "role": row.role,
+                "last_login_at": row.last_login_at.isoformat() if row.last_login_at else None,
+                "calls_30d": int(row.calls_30d or 0),
+                "bytes_out_30d": int(row.bytes_out_30d or 0),
+                "plan": (billing_by_user.get(str(row.id)).plan if str(row.id) in billing_by_user else "free"),
+                "monthly_quota": (billing_by_user.get(str(row.id)).monthly_quota if str(row.id) in billing_by_user else None),
+                "stripe_customer_id": (billing_by_user.get(str(row.id)).stripe_customer_id if str(row.id) in billing_by_user else None),
+            }
+            for row in users_with_activity
+        ],
+    }
+
+
+@router.get("/mcp/users/{user_id}/events")
+async def list_mcp_user_events(
+    user_id: uuid.UUID,
+    limit: int = Query(100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+):
+    """Last N usage events for one MCP user — drill-down for the admin UI."""
+    rows = (await db.execute(
+        select(UsageEvent)
+        .where(UsageEvent.user_id == str(user_id))
+        .order_by(UsageEvent.started_at.desc())
+        .limit(limit)
+    )).scalars().all()
+    return {
+        "status": "ok",
+        "data": [
+            {
+                "id": str(ev.id),
+                "tool": ev.tool,
+                "client_id": ev.client_id,
+                "started_at": ev.started_at.isoformat() if ev.started_at else None,
+                "duration_ms": ev.duration_ms,
+                "bytes_in": ev.bytes_in,
+                "bytes_out": ev.bytes_out,
+                "status": ev.status,
+                "error_message": ev.error_message,
+                "stripe_pushed_at": ev.stripe_pushed_at.isoformat() if ev.stripe_pushed_at else None,
+            }
+            for ev in rows
+        ],
+    }
+
+
+@router.patch("/mcp/users/{user_id}")
+async def update_mcp_user_billing(
+    user_id: uuid.UUID,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    """Change plan ('free' | 'metered') or monthly quota. Flipping to
+    'metered' lazily provisions the Stripe customer + subscription item
+    so the next batcher tick can push usage."""
+    user = await db.get(User, user_id)
+    if user is None:
+        raise HTTPException(404, "User not found")
+    row = await db.get(BillingAccount, str(user_id))
+    if row is None:
+        row = BillingAccount(user_id=str(user_id), plan="free")
+        db.add(row)
+        await db.flush()
+
+    if "plan" in body:
+        new_plan = body["plan"]
+        if new_plan not in ("free", "metered"):
+            raise HTTPException(400, "plan must be 'free' or 'metered'")
+        row.plan = new_plan
+        if new_plan == "metered":
+            from ocoi_api.mcp.billing import ensure_stripe_customer
+            try:
+                await ensure_stripe_customer(str(user_id), user.email)
+            except Exception as e:
+                logger.exception("Stripe provisioning failed for user %s", user_id)
+                raise HTTPException(502, f"Stripe error: {e}")
+    if "monthly_quota" in body:
+        q = body["monthly_quota"]
+        if q is not None and (not isinstance(q, int) or q < 0):
+            raise HTTPException(400, "monthly_quota must be a non-negative integer or null")
+        row.monthly_quota = q
+
+    await db.commit()
+    await db.refresh(row)
+    return {
+        "status": "ok",
+        "data": {
+            "user_id": str(user_id),
+            "plan": row.plan,
+            "monthly_quota": row.monthly_quota,
+            "stripe_customer_id": row.stripe_customer_id,
+            "stripe_subscription_item_id": row.stripe_subscription_item_id,
+        },
+    }
+
+
+@router.get("/mcp/clients")
+async def list_mcp_clients(db: AsyncSession = Depends(get_db)):
+    """All registered OAuth clients (Claude Desktop instances, Cursor, etc)."""
+    rows = (await db.execute(
+        select(OAuthClient).order_by(OAuthClient.created_at.desc())
+    )).scalars().all()
+    return {
+        "status": "ok",
+        "data": [
+            {
+                "id": str(c.id),
+                "client_id": c.client_id,
+                "client_name": c.client_name,
+                "is_public": c.is_public,
+                "redirect_uris": json.loads(c.redirect_uris) if c.redirect_uris else [],
+                "created_at": c.created_at.isoformat() if c.created_at else None,
+                "revoked_at": c.revoked_at.isoformat() if c.revoked_at else None,
+            }
+            for c in rows
+        ],
+    }
+
+
+@router.delete("/mcp/clients/{client_pk}")
+async def revoke_mcp_client(client_pk: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """Revoke a registered client. Existing access tokens (JWTs) keep
+    working until they expire (15 min); refresh tokens for the client
+    will be rejected immediately at /oauth/token."""
+    from datetime import datetime
+    row = await db.get(OAuthClient, client_pk)
+    if row is None:
+        raise HTTPException(404, "Client not found")
+    if row.revoked_at is None:
+        row.revoked_at = datetime.utcnow()
+        await db.commit()
+    return {"status": "ok"}
+
+
+@router.post("/mcp/invites")
+async def invite_mcp_user(body: dict, db: AsyncSession = Depends(get_db)):
+    """Pre-create a User row with role='mcp_user' so the email can
+    complete Google OAuth on the MCP surface. With MCP_INVITE_ONLY=true
+    (the default) this is the ONLY way to grant MCP access — emails
+    without a row get the "invite required" error page."""
+    email = (body.get("email") or "").strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(400, "Invalid email")
+    name = (body.get("name") or email).strip()
+    quota_raw = body.get("monthly_quota")
+    if quota_raw is not None and (not isinstance(quota_raw, int) or quota_raw < 0):
+        raise HTTPException(400, "monthly_quota must be a non-negative integer or null")
+
+    existing = (await db.execute(
+        select(User).where(User.email == email)
+    )).scalars().first()
+    if existing is not None:
+        # Reactivate / promote silently. Admin already has admin_users
+        # management for admin↔content_manager swaps; mcp_user is its
+        # own surface and treating "invite existing email" as idempotent
+        # avoids breaking onboarding when the row already exists.
+        if existing.role not in ("admin", "content_manager", "mcp_user"):
+            existing.role = "mcp_user"
+        await db.commit()
+        await db.refresh(existing)
+        user = existing
+    else:
+        user = User(email=email, name=name, role="mcp_user", permissions=None)
+        db.add(user)
+        await db.flush()
+
+    billing = await db.get(BillingAccount, str(user.id))
+    if billing is None:
+        billing = BillingAccount(
+            user_id=str(user.id), plan="free", monthly_quota=quota_raw,
+        )
+        db.add(billing)
+    elif "monthly_quota" in body:
+        billing.monthly_quota = quota_raw
+    await db.commit()
+    return {
+        "status": "ok",
+        "data": {
+            "id": str(user.id),
+            "email": user.email,
+            "name": user.name,
+            "role": user.role,
+            "monthly_quota": billing.monthly_quota,
+            "plan": billing.plan,
+        },
+    }
+
+
+@router.delete("/mcp/users/{user_id}")
+async def remove_mcp_user(user_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """Revoke a user's MCP access. Admin/content_manager rows stay (those
+    are managed in /admin/users); only mcp_user rows are deleted to keep
+    the admin-panel user list clean."""
+    user = await db.get(User, user_id)
+    if user is None:
+        raise HTTPException(404, "User not found")
+    if user.role != "mcp_user":
+        raise HTTPException(400, "This endpoint only removes mcp_user rows — use /admin/users for admin/content_manager")
+    await db.delete(user)
+    await db.commit()
+    return {"status": "ok"}
+
+
+@router.get("/mcp/stats")
+async def mcp_global_stats(db: AsyncSession = Depends(get_db)):
+    """Top-line counters for the admin dashboard."""
+    from datetime import datetime, timedelta
+    cutoff = datetime.utcnow() - timedelta(days=30)
+    total_users = (await db.execute(
+        select(func.count(User.id)).where(User.role == "mcp_user")
+    )).scalar() or 0
+    active_users = (await db.execute(
+        select(func.count(func.distinct(UsageEvent.user_id)))
+        .where(UsageEvent.started_at >= cutoff)
+    )).scalar() or 0
+    total_calls = (await db.execute(
+        select(func.count(UsageEvent.id)).where(UsageEvent.started_at >= cutoff)
+    )).scalar() or 0
+    metered_users = (await db.execute(
+        select(func.count(BillingAccount.user_id))
+        .where(BillingAccount.plan == "metered")
+    )).scalar() or 0
+    return {
+        "status": "ok",
+        "data": {
+            "total_mcp_users": int(total_users),
+            "active_users_30d": int(active_users),
+            "calls_30d": int(total_calls),
+            "metered_users": int(metered_users),
         },
     }
