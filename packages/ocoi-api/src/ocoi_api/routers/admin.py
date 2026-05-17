@@ -2030,42 +2030,59 @@ async def admin_permissions_catalog():
 
 @router.get("/mcp/users")
 async def list_mcp_users(db: AsyncSession = Depends(get_db)):
-    """List every user with MCP activity in the last 30 days + their plan."""
+    """List every user enrolled in the MCP surface (= has a BillingAccount
+    row, created on invite). Includes 30-day usage totals.
+
+    We filter by BillingAccount, not by ``role == 'mcp_user'``, because
+    admins (ADMIN_EMAILS) and content_managers can also be invited to
+    use the MCP surface without losing their primary role. The invite
+    endpoint always creates a BillingAccount, so its presence is the
+    canonical "this user has MCP access" signal.
+    """
     from datetime import datetime, timedelta
     cutoff = datetime.utcnow() - timedelta(days=30)
-    # One query per row would be N+1; do it in two passes.
-    users_with_activity = (await db.execute(
+
+    # Step 1: every user with a BillingAccount row, joined to their billing.
+    enrolled = (await db.execute(
+        select(User, BillingAccount)
+        .join(BillingAccount, BillingAccount.user_id == User.id)
+        .order_by(User.created_at.desc())
+    )).all()
+
+    if not enrolled:
+        return {"status": "ok", "data": []}
+
+    user_ids = [str(u.id) for u, _ in enrolled]
+
+    # Step 2: aggregated usage for those users (one row per user).
+    usage_rows = (await db.execute(
         select(
-            User.id, User.email, User.name, User.role, User.last_login_at,
+            UsageEvent.user_id,
             func.count(UsageEvent.id).label("calls_30d"),
             func.coalesce(func.sum(UsageEvent.bytes_out), 0).label("bytes_out_30d"),
         )
-        .join(UsageEvent, UsageEvent.user_id == User.id, isouter=True)
-        .where((UsageEvent.started_at >= cutoff) | (UsageEvent.id.is_(None)))
-        .where(User.role == "mcp_user")
-        .group_by(User.id)
-        .order_by(func.count(UsageEvent.id).desc())
+        .where(UsageEvent.user_id.in_(user_ids))
+        .where(UsageEvent.started_at >= cutoff)
+        .group_by(UsageEvent.user_id)
     )).all()
-
-    billing_rows = (await db.execute(select(BillingAccount))).scalars().all()
-    billing_by_user = {b.user_id: b for b in billing_rows}
+    usage_by_user = {r.user_id: r for r in usage_rows}
 
     return {
         "status": "ok",
         "data": [
             {
-                "id": str(row.id),
-                "email": row.email,
-                "name": row.name,
-                "role": row.role,
-                "last_login_at": row.last_login_at.isoformat() if row.last_login_at else None,
-                "calls_30d": int(row.calls_30d or 0),
-                "bytes_out_30d": int(row.bytes_out_30d or 0),
-                "plan": (billing_by_user.get(str(row.id)).plan if str(row.id) in billing_by_user else "free"),
-                "monthly_quota": (billing_by_user.get(str(row.id)).monthly_quota if str(row.id) in billing_by_user else None),
-                "stripe_customer_id": (billing_by_user.get(str(row.id)).stripe_customer_id if str(row.id) in billing_by_user else None),
+                "id": str(u.id),
+                "email": u.email,
+                "name": u.name,
+                "role": u.role,
+                "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
+                "calls_30d": int(usage_by_user[str(u.id)].calls_30d) if str(u.id) in usage_by_user else 0,
+                "bytes_out_30d": int(usage_by_user[str(u.id)].bytes_out_30d) if str(u.id) in usage_by_user else 0,
+                "plan": b.plan,
+                "monthly_quota": b.monthly_quota,
+                "stripe_customer_id": b.stripe_customer_id,
             }
-            for row in users_with_activity
+            for u, b in enrolled
         ],
     }
 
@@ -2247,15 +2264,24 @@ async def invite_mcp_user(body: dict, db: AsyncSession = Depends(get_db)):
 
 @router.delete("/mcp/users/{user_id}")
 async def remove_mcp_user(user_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """Revoke a user's MCP access. Admin/content_manager rows stay (those
-    are managed in /admin/users); only mcp_user rows are deleted to keep
-    the admin-panel user list clean."""
+    """Revoke a user's MCP access.
+
+    For ``role='mcp_user'`` rows (MCP-only users) we delete the User
+    entirely. For admins / content_managers we only drop the
+    BillingAccount — their admin login keeps working, they just lose
+    the MCP surface. This matches the rule that /admin/users is the
+    only place that touches admin/content_manager User rows.
+    """
     user = await db.get(User, user_id)
     if user is None:
         raise HTTPException(404, "User not found")
-    if user.role != "mcp_user":
-        raise HTTPException(400, "This endpoint only removes mcp_user rows — use /admin/users for admin/content_manager")
-    await db.delete(user)
+    if user.role == "mcp_user":
+        await db.delete(user)  # cascades to BillingAccount + UsageEvent
+    else:
+        billing = await db.get(BillingAccount, str(user_id))
+        if billing is None:
+            raise HTTPException(404, "User has no MCP access to revoke")
+        await db.delete(billing)
     await db.commit()
     return {"status": "ok"}
 
@@ -2265,8 +2291,10 @@ async def mcp_global_stats(db: AsyncSession = Depends(get_db)):
     """Top-line counters for the admin dashboard."""
     from datetime import datetime, timedelta
     cutoff = datetime.utcnow() - timedelta(days=30)
+    # Counts everyone enrolled in MCP (= has a BillingAccount row), not
+    # just role='mcp_user', so admins who use MCP are included.
     total_users = (await db.execute(
-        select(func.count(User.id)).where(User.role == "mcp_user")
+        select(func.count(BillingAccount.user_id))
     )).scalar() or 0
     active_users = (await db.execute(
         select(func.count(func.distinct(UsageEvent.user_id)))
