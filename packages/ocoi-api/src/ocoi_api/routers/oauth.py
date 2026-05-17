@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -29,6 +30,8 @@ import httpx
 import jwt
 from fastapi import APIRouter, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+
+_log = logging.getLogger("ocoi.mcp.oauth")
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -75,6 +78,32 @@ def _gen_token(nbytes: int = 32) -> str:
 def _require_mcp_enabled() -> None:
     if not settings.mcp_enabled:
         raise HTTPException(404, "MCP disabled")
+
+
+# ─── RFC 6749 §5.2 error helper ───────────────────────────────────────────
+# Every error response from /token + /register MUST follow this shape, or
+# OAuth clients (Claude.ai, the MCP Inspector) treat the response as an
+# unknown server error and abort discovery. FastAPI's default
+# ``{"detail": "..."}`` is NOT compliant.
+
+_OAUTH_NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
+
+
+def _oauth_error(
+    error: str,
+    description: str,
+    status: int = 400,
+) -> JSONResponse:
+    """RFC 6749 §5.2 / §3.2.2.1 — error responses MUST use these field
+    names. ``error`` is one of: invalid_request, invalid_client,
+    invalid_grant, unauthorized_client, unsupported_grant_type,
+    invalid_scope, server_error, temporarily_unavailable."""
+    _log.info("oauth error: %s — %s", error, description)
+    return JSONResponse(
+        {"error": error, "error_description": description},
+        status_code=status,
+        headers=_OAUTH_NO_STORE,
+    )
 
 
 def _base_url() -> str:
@@ -165,19 +194,31 @@ async def register_client(body: dict, request: Request):
     """RFC 7591 — MCP clients (Claude Desktop, Cursor, …) register on
     first launch. We accept the minimum metadata and ignore the rest."""
     _require_mcp_enabled()
+    _log.info("client registration: client_name=%s redirect_uris=%s",
+              body.get("client_name"), body.get("redirect_uris"))
 
     redirect_uris = body.get("redirect_uris") or []
     if not isinstance(redirect_uris, list) or not redirect_uris:
-        raise HTTPException(400, "redirect_uris must be a non-empty array")
-    # Sanity-check each URI shape.
+        # RFC 7591 §3.2.2 — DCR errors use the same {error, error_description} shape.
+        return JSONResponse(
+            {"error": "invalid_redirect_uri",
+             "error_description": "redirect_uris must be a non-empty array"},
+            status_code=400,
+        )
     for uri in redirect_uris:
         if not isinstance(uri, str):
-            raise HTTPException(400, "redirect_uris entries must be strings")
+            return JSONResponse(
+                {"error": "invalid_redirect_uri",
+                 "error_description": "redirect_uris entries must be strings"},
+                status_code=400,
+            )
         parsed = urlparse(uri)
         if parsed.scheme not in ("http", "https") and not uri.startswith("http://localhost"):
-            # MCP allows custom schemes for desktop apps in practice, but
-            # we keep it conservative; relax later if a real client needs it.
-            raise HTTPException(400, f"Unsupported redirect_uri scheme: {parsed.scheme}")
+            return JSONResponse(
+                {"error": "invalid_redirect_uri",
+                 "error_description": f"Unsupported scheme: {parsed.scheme}"},
+                status_code=400,
+            )
 
     client_name = (body.get("client_name") or "").strip() or "Unknown MCP Client"
     grant_types = body.get("grant_types") or ["authorization_code", "refresh_token"]
@@ -312,13 +353,17 @@ async def google_callback(
 
     email = (userinfo.get("email") or "").lower()
     name = userinfo.get("name") or email
+    _log.info("google callback: email=%s client_id=%s redirect_uri=%s",
+              email, pending.get("client_id"), redirect_uri)
     user = await get_or_bootstrap_user(email, name, for_mcp=True)
     if user is None:
+        _log.info("invite gate rejected: email=%s (no User row)", email)
         # The user *did* authenticate with Google, they're just not on the
         # invite list. Rendering an HTML page (rather than redirecting back
         # to the MCP client with ?error=) keeps the explanation in front of
         # the user — most MCP clients just say "auth failed" if you bounce.
         return _invite_required_page(email)
+    _log.info("invite gate ok: user_id=%s email=%s role=%s", user.id, user.email, user.role)
 
     # Mint the authorization code. We only store its hash so the row alone
     # isn't enough to redeem.
@@ -392,9 +437,18 @@ async def token(
     client_id: str | None = Form(None),
     client_secret: str | None = Form(None),
 ):
-    """Issue or refresh an access token. Mints a new refresh token on
-    every exchange (refresh-token rotation, RFC 6749 §10.4 recommendation)."""
+    """Issue or refresh an access token (RFC 6749 §4.1.3 + §6).
+
+    All error responses follow RFC 6749 §5.2 — Claude.ai parses
+    ``error`` + ``error_description`` and shows a useful message;
+    anything else (e.g. FastAPI's ``{"detail": ...}``) trips its
+    "Authorization with the MCP server failed" path.
+    """
     _require_mcp_enabled()
+    _log.info(
+        "token request: grant_type=%s client_id=%s have_code=%s have_verifier=%s have_refresh=%s",
+        grant_type, client_id, bool(code), bool(code_verifier), bool(refresh_token),
+    )
 
     # client_id may also arrive in Authorization: Basic
     auth_header = request.headers.get("Authorization", "")
@@ -409,41 +463,43 @@ async def token(
             pass
 
     if not client_id:
-        raise HTTPException(400, "client_id required")
+        return _oauth_error("invalid_request", "client_id required")
 
     async with async_session_factory() as session:
         client = (await session.execute(
             select(OAuthClient).where(OAuthClient.client_id == client_id)
         )).scalars().first()
         if client is None or client.revoked_at is not None:
-            raise HTTPException(401, "Unknown or revoked client")
+            return _oauth_error("invalid_client", "Unknown or revoked client", status=401)
         if not client.is_public:
             if not client_secret or not client.client_secret_hash:
-                raise HTTPException(401, "client_secret required")
+                return _oauth_error("invalid_client", "client_secret required", status=401)
             if not secrets.compare_digest(_hash(client_secret), client.client_secret_hash):
-                raise HTTPException(401, "Bad client_secret")
+                return _oauth_error("invalid_client", "Bad client_secret", status=401)
 
         if grant_type == "authorization_code":
             if not code or not redirect_uri:
-                raise HTTPException(400, "code + redirect_uri required")
+                return _oauth_error("invalid_request", "code + redirect_uri required")
             row = (await session.execute(
                 select(OAuthAuthorizationCode).where(
                     OAuthAuthorizationCode.code_hash == _hash(code)
                 )
             )).scalars().first()
             if row is None:
-                raise HTTPException(400, "Invalid code")
+                return _oauth_error("invalid_grant", "Authorization code not found")
             if row.used_at is not None:
-                # Token replay — best-effort: invalidate any refresh tokens
-                # we'd already issued from this code. RFC 6749 §10.5.
-                raise HTTPException(400, "Code already used")
+                # RFC 6749 §10.5 — replay protection.
+                return _oauth_error("invalid_grant", "Authorization code already used")
             if row.expires_at < _now().replace(tzinfo=None):
-                raise HTTPException(400, "Code expired")
+                return _oauth_error("invalid_grant", "Authorization code expired")
             if row.client_id != client_id:
-                raise HTTPException(400, "Code was issued to a different client")
+                return _oauth_error("invalid_grant", "Code was issued to a different client")
             if row.redirect_uri != redirect_uri:
-                raise HTTPException(400, "redirect_uri mismatch")
-            _verify_pkce(row.code_challenge, row.code_challenge_method, code_verifier)
+                return _oauth_error("invalid_grant", "redirect_uri mismatch")
+            try:
+                _verify_pkce(row.code_challenge, row.code_challenge_method, code_verifier)
+            except HTTPException as exc:
+                return _oauth_error("invalid_grant", str(exc.detail))
 
             row.used_at = _now().replace(tzinfo=None)
             user_id = row.user_id
@@ -451,25 +507,25 @@ async def token(
             await session.commit()
         elif grant_type == "refresh_token":
             if not refresh_token:
-                raise HTTPException(400, "refresh_token required")
+                return _oauth_error("invalid_request", "refresh_token required")
             row = (await session.execute(
                 select(OAuthRefreshToken).where(
                     OAuthRefreshToken.token_hash == _hash(refresh_token)
                 )
             )).scalars().first()
             if row is None or row.revoked_at is not None:
-                raise HTTPException(400, "Invalid refresh_token")
+                return _oauth_error("invalid_grant", "Invalid or revoked refresh_token")
             if row.expires_at < _now().replace(tzinfo=None):
-                raise HTTPException(400, "Refresh token expired")
+                return _oauth_error("invalid_grant", "Refresh token expired")
             if row.client_id != client_id:
-                raise HTTPException(400, "Refresh token belongs to a different client")
+                return _oauth_error("invalid_grant", "Refresh token belongs to a different client")
             # Rotate.
             row.revoked_at = _now().replace(tzinfo=None)
             user_id = row.user_id
             scope = row.scope or "mcp"
             await session.commit()
         else:
-            raise HTTPException(400, f"Unsupported grant_type: {grant_type}")
+            return _oauth_error("unsupported_grant_type", f"grant_type '{grant_type}' is not supported")
 
         # Issue fresh access + refresh tokens.
         new_refresh = _gen_token(32)
@@ -483,13 +539,19 @@ async def token(
         await session.commit()
 
     access_token = create_mcp_access_token(user_id=user_id, client_id=client_id, scope=scope)
-    return {
-        "access_token": access_token,
-        "token_type": "Bearer",
-        "expires_in": settings.mcp_access_token_minutes * 60,
-        "refresh_token": new_refresh,
-        "scope": scope,
-    }
+    _log.info("token issued: user_id=%s client_id=%s scope=%s grant=%s",
+              user_id, client_id, scope, grant_type)
+    # RFC 6749 §5.1 — success response, also no-store.
+    return JSONResponse(
+        {
+            "access_token": access_token,
+            "token_type": "Bearer",
+            "expires_in": settings.mcp_access_token_minutes * 60,
+            "refresh_token": new_refresh,
+            "scope": scope,
+        },
+        headers=_OAUTH_NO_STORE,
+    )
 
 
 # ─── Revocation (RFC 7009) ────────────────────────────────────────────────
