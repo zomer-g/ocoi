@@ -30,7 +30,7 @@ from starlette.routing import Mount
 
 from ocoi_api.mcp.auth import BearerAuthMiddleware
 from ocoi_api.mcp.metering import QuotaExceeded
-from ocoi_api.mcp.tools import TOOL_DEFS
+from ocoi_api.mcp.tools import SERVER_INSTRUCTIONS, TOOL_DEFS
 
 _log = logging.getLogger("ocoi.mcp.server")
 
@@ -59,7 +59,10 @@ def build_mcp_app() -> MCPApp:
         _log.warning("MCP SDK not importable (%s); /mcp will 404", exc)
         return _disabled()
 
-    server: MCPServer = MCPServer("ocoi")
+    # The `instructions` field surfaces in the MCP InitializeResult and
+    # is prepended once to the LLM's context — the highest-leverage spot
+    # to enforce the "label as processed data + cite sources" rules.
+    server: MCPServer = MCPServer("ocoi", instructions=SERVER_INSTRUCTIONS)
 
     # ── list_tools ──
     @server.list_tools()  # type: ignore[misc]

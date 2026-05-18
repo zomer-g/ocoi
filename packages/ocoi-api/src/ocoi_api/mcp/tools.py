@@ -15,9 +15,11 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ocoi_api.mcp.metering import metered
+from ocoi_common.config import settings
 from ocoi_db.engine import async_session_factory
 from ocoi_db.graph import find_path, get_neighbors
 from ocoi_db.models import (
@@ -40,12 +42,47 @@ _ENTITY_MODELS = {
 }
 
 
+# ─── Citation + attribution helpers ───────────────────────────────────────
+# Every tool response carries (a) a `data_attribution` blurb the LLM is
+# instructed to surface to the user, (b) `ocoi_url` for each entity so
+# the user can verify on the public site, and (c) a `sources` list of
+# documents wherever the response is about specific entities. Together
+# with the server `instructions` field these enforce the project rule:
+# every claim must be traceable back to a government PDF.
+
+_OCOI_BASE = settings.mcp_public_url.rstrip("/") if settings.mcp_public_url else ""
+
+DATA_ATTRIBUTION_HE = (
+    "מידע מעובד מתוך הצהרות ניגוד עניינים פומביות של בעלי תפקידים בישראל. "
+    "מעובד ע\"י ניגוד עניינים לעם (ocoi.org.il) באמצעות OCR + חילוץ ישויות בעזרת LLM. "
+    "ייתכנו טעויות חילוץ או נתונים לא מעודכנים — תמיד הפנו את המשתמש לקישור המקור."
+)
+DATA_ATTRIBUTION_EN = (
+    "Processed data from public Israeli conflict-of-interest declarations. "
+    "Pipeline: OCR → LLM-based entity extraction by OCOI (ocoi.org.il). "
+    "Extraction errors and stale data are possible — always cite the source links."
+)
+
+
+def _entity_url(entity_type: str, entity_id: str) -> str:
+    if not _OCOI_BASE:
+        return ""
+    return f"{_OCOI_BASE}/entity?type={entity_type}&id={entity_id}"
+
+
+def _document_url(document_id: str) -> str:
+    if not _OCOI_BASE:
+        return ""
+    return f"{_OCOI_BASE}/document?id={document_id}"
+
+
 def _entity_to_dict(entity, etype: str) -> dict[str, Any]:
     base: dict[str, Any] = {
         "id": str(entity.id),
         "entity_type": etype,
         "name_hebrew": entity.name_hebrew,
         "name_english": getattr(entity, "name_english", None),
+        "ocoi_url": _entity_url(etype, str(entity.id)),
     }
     for f in ("title", "position", "ministry"):
         if hasattr(entity, f):
@@ -61,6 +98,68 @@ def _coerce_uuid(value: str) -> str:
         return str(uuid.UUID(value))
     except (ValueError, TypeError):
         raise ValueError(f"Invalid entity id (not a UUID): {value}")
+
+
+async def _sources_for_entity(
+    session: AsyncSession,
+    entity_type: str,
+    entity_id: str,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    """Return every distinct document that mentions the given entity."""
+    rows = (await session.execute(
+        select(Document.id, Document.title, Document.file_url)
+        .join(EntityRelationship, EntityRelationship.document_id == Document.id)
+        .where(
+            or_(
+                and_(
+                    EntityRelationship.source_entity_type == entity_type,
+                    EntityRelationship.source_entity_id == entity_id,
+                ),
+                and_(
+                    EntityRelationship.target_entity_type == entity_type,
+                    EntityRelationship.target_entity_id == entity_id,
+                ),
+            )
+        )
+        .distinct()
+        .limit(limit)
+    )).all()
+    return [
+        {
+            "document_id": str(r.id),
+            "title": r.title,
+            "original_pdf_url": r.file_url,
+            "ocoi_url": _document_url(str(r.id)),
+        }
+        for r in rows
+    ]
+
+
+async def _sources_for_document_ids(
+    session: AsyncSession, document_ids: list[str],
+) -> list[dict[str, Any]]:
+    """Return citation entries for a known set of document UUIDs.
+    Used to flatten the SubGraph edges' document references into a
+    single `sources` list at the top of graph responses."""
+    if not document_ids:
+        return []
+    unique = list({d for d in document_ids if d})
+    if not unique:
+        return []
+    rows = (await session.execute(
+        select(Document.id, Document.title, Document.file_url)
+        .where(Document.id.in_(unique))
+    )).all()
+    return [
+        {
+            "document_id": str(r.id),
+            "title": r.title,
+            "original_pdf_url": r.file_url,
+            "ocoi_url": _document_url(str(r.id)),
+        }
+        for r in rows
+    ]
 
 
 # ─── Tool functions ───────────────────────────────────────────────────────
@@ -85,9 +184,19 @@ async def tool_search(
     return {
         "total": total,
         "results": [
-            {"id": r.id, "entity_type": r.entity_type.value, "name": r.name}
+            {
+                "id": r.id,
+                "entity_type": r.entity_type.value,
+                "name": r.name,
+                "ocoi_url": _entity_url(r.entity_type.value, r.id),
+            }
             for r in results
         ],
+        "data_attribution": DATA_ATTRIBUTION_HE,
+        "next_step_hint": (
+            "Call entity_get or graph_neighbors on a result's id to fetch "
+            "its source documents (citations the model MUST quote to the user)."
+        ),
     }
 
 
@@ -100,8 +209,24 @@ async def tool_entity_get(entity_type: str, id: str) -> dict[str, Any]:
     async with async_session_factory() as session:
         row = await session.get(model, eid)
         if row is None:
-            return {"found": False}
-        return {"found": True, "entity": _entity_to_dict(row, entity_type)}
+            return {"found": False, "data_attribution": DATA_ATTRIBUTION_HE}
+        sources = await _sources_for_entity(session, entity_type, eid)
+        return {
+            "found": True,
+            "entity": _entity_to_dict(row, entity_type),
+            "sources": sources,
+            "data_attribution": DATA_ATTRIBUTION_HE,
+        }
+
+
+def _enrich_subgraph(graph_dict: dict[str, Any]) -> dict[str, Any]:
+    """Attach ocoi_url to every node so the LLM can link entities."""
+    for node in graph_dict.get("nodes", []):
+        et = node.get("entity_type")
+        nid = node.get("id")
+        if et and nid:
+            node["ocoi_url"] = _entity_url(et, nid)
+    return graph_dict
 
 
 @metered("graph_neighbors")
@@ -114,7 +239,14 @@ async def tool_graph_neighbors(
     eid = _coerce_uuid(entity_id)
     async with async_session_factory() as session:
         subgraph = await get_neighbors(session, eid, entity_type, depth=depth)
-    return subgraph.model_dump()
+        graph = _enrich_subgraph(subgraph.model_dump())
+        doc_ids = [e.get("document_id") for e in graph.get("edges", []) if e.get("document_id")]
+        sources = await _sources_for_document_ids(session, doc_ids)
+    return {
+        "graph": graph,
+        "sources": sources,
+        "data_attribution": DATA_ATTRIBUTION_HE,
+    }
 
 
 @metered("graph_path")
@@ -134,9 +266,17 @@ async def tool_graph_path(
             _coerce_uuid(to_id), to_type,
             max_hops=max_hops,
         )
-    if subgraph is None:
-        return {"found": False}
-    return {"found": True, "graph": subgraph.model_dump()}
+        if subgraph is None:
+            return {"found": False, "data_attribution": DATA_ATTRIBUTION_HE}
+        graph = _enrich_subgraph(subgraph.model_dump())
+        doc_ids = [e.get("document_id") for e in graph.get("edges", []) if e.get("document_id")]
+        sources = await _sources_for_document_ids(session, doc_ids)
+    return {
+        "found": True,
+        "graph": graph,
+        "sources": sources,
+        "data_attribution": DATA_ATTRIBUTION_HE,
+    }
 
 
 @metered("document_get")
@@ -145,17 +285,19 @@ async def tool_document_get(id: str, include_markdown: bool = False) -> dict[str
     async with async_session_factory() as session:
         doc = await session.get(Document, did)
         if doc is None:
-            return {"found": False}
+            return {"found": False, "data_attribution": DATA_ATTRIBUTION_HE}
         out: dict[str, Any] = {
             "found": True,
             "id": str(doc.id),
             "title": doc.title,
-            "file_url": doc.file_url,
+            "original_pdf_url": doc.file_url,
+            "ocoi_url": _document_url(str(doc.id)),
             "file_format": doc.file_format,
             "conversion_status": doc.conversion_status,
             "extraction_status": doc.extraction_status,
             "verified": doc.verified,
             "created_at": doc.created_at.isoformat() if doc.created_at else None,
+            "data_attribution": DATA_ATTRIBUTION_HE,
         }
         if include_markdown:
             # markdown_content is a deferred column — touching the attr
@@ -171,6 +313,7 @@ async def tool_document_get(id: str, include_markdown: bool = False) -> dict[str
 async def tool_document_entities(id: str) -> dict[str, Any]:
     did = _coerce_uuid(id)
     async with async_session_factory() as session:
+        doc = await session.get(Document, did)
         rels = (await session.execute(
             select(EntityRelationship).where(EntityRelationship.document_id == did)
         )).scalars().all()
@@ -188,7 +331,22 @@ async def tool_document_entities(id: str) -> dict[str, Any]:
             ent = await session.get(model, eid)
             if ent is not None:
                 entities.append(_entity_to_dict(ent, etype))
-    return {"document_id": str(did), "entities": entities, "relationship_count": len(rels)}
+
+    source_obj = None
+    if doc is not None:
+        source_obj = {
+            "document_id": str(doc.id),
+            "title": doc.title,
+            "original_pdf_url": doc.file_url,
+            "ocoi_url": _document_url(str(doc.id)),
+        }
+    return {
+        "document_id": str(did),
+        "entities": entities,
+        "relationship_count": len(rels),
+        "sources": [source_obj] if source_obj else [],
+        "data_attribution": DATA_ATTRIBUTION_HE,
+    }
 
 
 @metered("top_connected")
@@ -236,8 +394,16 @@ async def tool_top_connected(
                 "id": str(eid),
                 "name_hebrew": name,
                 "edge_count": int(edges),
+                "ocoi_url": _entity_url(etype, str(eid)),
             })
-    return {"results": entries}
+    return {
+        "results": entries,
+        "data_attribution": DATA_ATTRIBUTION_HE,
+        "next_step_hint": (
+            "Call entity_get(entity_type, id) to fetch the source documents "
+            "for any entry the user wants to discuss."
+        ),
+    }
 
 
 @metered("by_ministry")
@@ -261,7 +427,16 @@ async def tool_by_ministry(ministry: str) -> dict[str, Any]:
                 "restrictions_count": len([r for r in rels if r.relationship_type == "restricted_from"]),
                 "total_connections": len(rels),
             })
-    return {"ministry_query": ministry, "results": data, "total": len(data)}
+    return {
+        "ministry_query": ministry,
+        "results": data,
+        "total": len(data),
+        "data_attribution": DATA_ATTRIBUTION_HE,
+        "next_step_hint": (
+            "Each person carries an ocoi_url. Call graph_neighbors on a "
+            "person.id to fetch their source documents."
+        ),
+    }
 
 
 @metered("registry_lookup")
@@ -290,6 +465,11 @@ async def tool_registry_lookup(
                 }
                 for r in rows
             ],
+            "data_attribution": (
+                "Records from the Israeli government's official registries "
+                "(data.gov.il), mirrored by OCOI for fast lookup. The source_type "
+                "field names the originating registry."
+            ),
         }
 
 
@@ -298,7 +478,52 @@ async def tool_stats() -> dict[str, Any]:
     from ocoi_db.crud import count_entities
     async with async_session_factory() as session:
         counts = await count_entities(session)
-    return {"counts": counts}
+    return {
+        "counts": counts,
+        "data_attribution": DATA_ATTRIBUTION_HE,
+        "source_site": _OCOI_BASE,
+    }
+
+
+# ─── Server-level instructions (MCP InitializeResult.instructions) ───────
+# These are prepended to the LLM's context once per session. The hard
+# requirements for citations live here so they're never out of view.
+
+SERVER_INSTRUCTIONS = """\
+OCOI MCP server — ניגוד עניינים לעם.
+
+This server exposes **processed** conflict-of-interest data extracted
+from public Israeli government declarations. The pipeline is:
+  PDF → OCR → Hebrew NLP + LLM extraction → entity & relationship graph.
+
+Every relationship is a model's best guess. It is NOT verified legal
+fact. Extraction errors, OCR errors, missing context, and stale data
+are all common.
+
+THREE RULES WHEN PRESENTING THIS DATA TO THE USER:
+
+1. **Label it as processed data.** Every response that uses information
+   from this server must include a sentence like:
+   "לפי הנתונים המעובדים של ניגוד עניינים לעם (ocoi.org.il)..."
+   or in English:
+   "According to OCOI's processed conflict-of-interest data..."
+   Never present extracted relationships as if they were authoritative
+   government output.
+
+2. **Cite sources.** Every tool response includes a `sources` array (or
+   `ocoi_url` per entity). When you state a fact, name the source
+   document and link to it. Markdown format:
+   `[שם המסמך](https://www.ocoi.org.il/document?id=...)`
+   For entities link to their profile page:
+   `[שם הישות](https://www.ocoi.org.il/entity?type=...&id=...)`
+
+3. **Encourage verification.** When the user asks something material,
+   tell them they can verify against the original PDF
+   (`original_pdf_url` field) and the OCOI page (`ocoi_url` field).
+
+These rules are non-negotiable. The whole project's credibility rests on
+each claim being traceable back to a government PDF — preserve that.
+"""
 
 
 # ─── Tool registry ────────────────────────────────────────────────────────
@@ -307,6 +532,11 @@ async def tool_stats() -> dict[str, Any]:
 # in English (clients pass them to the model) and state that names are
 # in Hebrew so the LLM doesn't try to romanise input.
 
+_CITE_REMINDER = (
+    " Response includes `sources` (and/or `ocoi_url` per entity) — you "
+    "MUST cite these to the user with the document title + ocoi_url."
+)
+
 
 TOOL_DEFS: list[dict[str, Any]] = [
     {
@@ -314,7 +544,9 @@ TOOL_DEFS: list[dict[str, Any]] = [
         "description": (
             "Search the OCOI Israeli conflict-of-interest dataset for persons, "
             "companies, associations, or domains by name. Entity names are in "
-            "Hebrew — pass the query in Hebrew. Returns up to `limit` matches."
+            "Hebrew — pass the query in Hebrew. Returns up to `limit` matches, "
+            "each with an `ocoi_url` you can show the user. For source documents, "
+            "follow up with entity_get or graph_neighbors on a specific id."
         ),
         "fn": tool_search,
         "schema": {
@@ -333,7 +565,11 @@ TOOL_DEFS: list[dict[str, Any]] = [
     },
     {
         "name": "entity_get",
-        "description": "Fetch a single entity by id and type. Returns full row.",
+        "description": (
+            "Fetch a single entity by id and type. Response includes the entity, "
+            "its OCOI profile URL, and the list of source documents that mention "
+            "it — every claim about this entity MUST cite from `sources`."
+        ),
         "fn": tool_entity_get,
         "schema": {
             "type": "object",
@@ -352,7 +588,10 @@ TOOL_DEFS: list[dict[str, Any]] = [
         "description": (
             "Get all relationships (edges) connected to an entity up to `depth` hops. "
             "depth=1 = direct neighbours; depth=2..3 expands the subgraph. Returns "
-            "nodes + edges as a SubGraph object."
+            "graph.nodes + graph.edges, plus a top-level `sources` list of every "
+            "document the edges came from. Each edge in graph.edges also has its "
+            "own document_id/document_title/document_url — use those when explaining "
+            "a specific relationship to the user."
         ),
         "fn": tool_graph_neighbors,
         "schema": {
@@ -373,7 +612,8 @@ TOOL_DEFS: list[dict[str, Any]] = [
         "description": (
             "Find a path between two entities, if one exists, up to `max_hops`. "
             "Useful for explaining how a public official is connected to a "
-            "company or another official."
+            "company or another official. Response includes `sources` for every "
+            "edge in the path — cite the chain of documents, not just the endpoints."
         ),
         "fn": tool_graph_path,
         "schema": {
