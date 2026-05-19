@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { getTopConnected, getMinistries, type RankedEntity, type MinistryInfo } from "@/lib/api-client";
+import { useOriginFilter } from "@/lib/originFilter";
 
 const TABS = [
   { key: "", label: "הכל" },
@@ -34,16 +35,23 @@ export function EntityDiscovery() {
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(0);
   const [loading, setLoading] = useState(true);
+  // When MK expenses are hidden we exclude them from the connection
+  // count too, so the ranking on this list matches what visitors see in
+  // the showcase / entity pages.
+  const { showMkExpenses } = useOriginFilter();
+  const excludeOrigins = showMkExpenses ? "" : "mk_expense";
 
   const fetchEntities = useCallback(async (tab: string, pg: number, append: boolean) => {
     setLoading(true);
     try {
       if (tab === "ministry") {
-        const res = await getMinistries();
+        const res = await getMinistries(excludeOrigins || undefined);
         setMinistries(res.data);
         setTotalPages(1);
       } else {
-        const res = await getTopConnected(tab || undefined, pg, PAGE_SIZE);
+        const res = await getTopConnected(
+          tab || undefined, pg, PAGE_SIZE, excludeOrigins || undefined,
+        );
         setEntities((prev) => (append ? [...prev, ...res.data] : res.data));
         setTotalPages(res.meta.pages);
       }
@@ -55,7 +63,7 @@ export function EntityDiscovery() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [excludeOrigins]);
 
   useEffect(() => {
     setPage(1);

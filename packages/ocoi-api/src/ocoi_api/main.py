@@ -108,6 +108,14 @@ async def _init_db():
             await create_all_tables()
             await run_migrations()
             print("DB initialized successfully.")
+            # Schedule showcase pre-warm AFTER the DB is reachable. The
+            # first visitor of the day otherwise pays ~1-2s computing the
+            # "two suns" pair while staring at a "טוען המחשה…" spinner.
+            try:
+                from ocoi_api.routers.connections import prewarm_showcase_cache
+                asyncio.ensure_future(prewarm_showcase_cache())
+            except Exception as e:
+                print(f"Showcase pre-warm scheduling failed: {e}")
             break
         except Exception as e:
             if attempt < 4:

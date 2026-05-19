@@ -92,9 +92,15 @@ export interface RankedEntity {
   ministry?: string | null;
 }
 
-export async function getTopConnected(type?: string, page = 1, limit = 50) {
+export async function getTopConnected(
+  type?: string,
+  page = 1,
+  limit = 50,
+  excludeOrigins?: string,
+) {
   const params = new URLSearchParams({ page: String(page), limit: String(limit) });
   if (type) params.set("type", type);
+  if (excludeOrigins) params.set("exclude_origins", excludeOrigins);
   return fetchApi<PaginatedResponse<RankedEntity>>(`/entities/top-connected?${params}`);
 }
 
@@ -104,6 +110,9 @@ export interface MinistryInfo {
   connection_count: number;
 }
 
-export async function getMinistries() {
-  return fetchApi<{ data: MinistryInfo[] }>("/entities/ministries");
+export async function getMinistries(excludeOrigins?: string) {
+  const qs = excludeOrigins
+    ? `?exclude_origins=${encodeURIComponent(excludeOrigins)}`
+    : "";
+  return fetchApi<{ data: MinistryInfo[] }>(`/entities/ministries${qs}`);
 }

@@ -210,6 +210,61 @@ async def graph_showcase(
     return {"status": "ok", "data": payload}
 
 
+# ── Pre-warm hook ────────────────────────────────────────────────────────
+# Called from main.py's lifespan so the first visitor of the day doesn't
+# pay the 1-2s "two suns" computation. Populates BOTH variants: with and
+# without MK-expense edges (the only two combinations the UI ever asks
+# for today). Failures are swallowed — pre-warming is best-effort, the
+# live endpoint will compute on demand if the cache is still cold.
+
+
+async def _populate_showcase(
+    excluded_origins: tuple[str, ...] | None = None,
+) -> None:
+    """Compute + cache one showcase variant. Opens its own session so it
+    can run from a background task (no incoming Request, no Depends)."""
+    from ocoi_db.engine import async_session_factory
+
+    excluded = excluded_origins or ()
+    today = _today_key()
+    cache_key = (today, excluded)
+    if cache_key in _showcase_cache:
+        return
+
+    async with async_session_factory() as session:
+        subgraph = await find_showcase_pair(
+            session,
+            rotation_seed=_today_seed(),
+            excluded_origins=list(excluded) if excluded else None,
+        )
+        if subgraph is None:
+            _showcase_cache[cache_key] = None
+            return
+        await _enrich_subgraph(session, subgraph)
+        _showcase_cache[cache_key] = subgraph.model_dump()
+
+
+async def prewarm_showcase_cache() -> None:
+    """Fire-and-forget — populate both variants for today. The MK-hidden
+    variant runs first because it's the public default."""
+    import logging
+    import time
+    log = logging.getLogger("ocoi.api.showcase")
+    for variant_label, excluded in (
+        ("hidden_mk", ("mk_expense",)),
+        ("all_origins", ()),
+    ):
+        t0 = time.perf_counter()
+        try:
+            await _populate_showcase(excluded)
+            log.info(
+                "showcase pre-warm OK (%s) in %.0fms",
+                variant_label, (time.perf_counter() - t0) * 1000,
+            )
+        except Exception as e:
+            log.warning("showcase pre-warm failed (%s): %s", variant_label, e)
+
+
 @router.get("/graph/subgraph")
 async def graph_subgraph(
     center: uuid.UUID = Query(...),

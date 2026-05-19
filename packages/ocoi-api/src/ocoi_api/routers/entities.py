@@ -242,9 +242,26 @@ async def top_connected(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     type: str = Query("", description="Filter: person, company, association"),
+    exclude_origins: str = Query(
+        "",
+        description="Comma-separated origin_kind values to drop "
+                    "(e.g. 'mk_expense'). Connection counts then ignore "
+                    "those edges so the ranking matches the visible graph.",
+    ),
     db: AsyncSession = Depends(get_db),
 ):
-    """Return entities ranked by number of connections (descending)."""
+    """Return entities ranked by number of connections (descending).
+
+    When `exclude_origins` is set, edges from those origin_kinds are
+    excluded from the count BEFORE ranking — so a person whose top rank
+    comes solely from MK-expense edges drops off the list when MK
+    expenses are hidden. This keeps the discovery feed consistent with
+    whatever the rest of the page is currently showing.
+    """
+    excluded = {p.strip() for p in (exclude_origins or "").split(",") if p.strip()}
+    excluded &= {"coi_declaration", "mk_expense"}  # whitelist known values
+    excluded_list = sorted(excluded)
+
     # Build a union of all entity references from both sides of relationships
     source_refs = select(
         EntityRelationship.source_entity_id.label("entity_id"),
@@ -258,6 +275,14 @@ async def top_connected(
     if type:
         source_refs = source_refs.where(EntityRelationship.source_entity_type == type)
         target_refs = target_refs.where(EntityRelationship.target_entity_type == type)
+
+    if excluded_list:
+        source_refs = source_refs.where(
+            EntityRelationship.origin_kind.notin_(excluded_list)
+        )
+        target_refs = target_refs.where(
+            EntityRelationship.origin_kind.notin_(excluded_list)
+        )
 
     all_refs = union_all(source_refs, target_refs).subquery("all_refs")
 
@@ -327,9 +352,19 @@ async def top_connected(
 
 @router.get("/entities/ministries")
 async def list_ministries(
+    exclude_origins: str = Query(
+        "",
+        description="Comma-separated origin_kind values to drop from "
+                    "the connection_count tally (keeps it consistent with "
+                    "the rest of the page when MK expenses are hidden).",
+    ),
     db: AsyncSession = Depends(get_db),
 ):
     """Return ministries ranked by number of associated persons and their total connections."""
+    excluded = {p.strip() for p in (exclude_origins or "").split(",") if p.strip()}
+    excluded &= {"coi_declaration", "mk_expense"}
+    excluded_list = sorted(excluded)
+
     # Get all persons grouped by ministry
     ministry_q = (
         select(
@@ -354,17 +389,22 @@ async def list_ministries(
         # Count connections for these persons
         conn_count = 0
         if person_ids:
+            source_filter = [
+                EntityRelationship.source_entity_type == "person",
+                EntityRelationship.source_entity_id.in_(person_ids),
+            ]
+            target_filter = [
+                EntityRelationship.target_entity_type == "person",
+                EntityRelationship.target_entity_id.in_(person_ids),
+            ]
+            if excluded_list:
+                source_filter.append(EntityRelationship.origin_kind.notin_(excluded_list))
+                target_filter.append(EntityRelationship.origin_kind.notin_(excluded_list))
             source_count = await db.execute(
-                select(func.count()).select_from(EntityRelationship).where(
-                    EntityRelationship.source_entity_type == "person",
-                    EntityRelationship.source_entity_id.in_(person_ids),
-                )
+                select(func.count()).select_from(EntityRelationship).where(*source_filter)
             )
             target_count = await db.execute(
-                select(func.count()).select_from(EntityRelationship).where(
-                    EntityRelationship.target_entity_type == "person",
-                    EntityRelationship.target_entity_id.in_(person_ids),
-                )
+                select(func.count()).select_from(EntityRelationship).where(*target_filter)
             )
             conn_count = (source_count.scalar() or 0) + (target_count.scalar() or 0)
 
