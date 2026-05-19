@@ -15,6 +15,26 @@ from ocoi_db.models import Person, Company, Association, Domain
 router = APIRouter(tags=["connections"])
 
 
+# ── origin_kind filter helpers ──────────────────────────────────────────
+# Most public surfaces (home page + entity page) accept an `exclude_origins`
+# query string: comma-separated origin_kind values to drop from the result.
+# The frontend uses this to hide `mk_expense` (Knesset constituent-outreach
+# payments) by default since those edges visually overwhelm the COI graph.
+
+# Only origin_kinds we know about are accepted; anything else is silently
+# ignored so a malformed query string can't widen the result set.
+_KNOWN_ORIGINS = {"coi_declaration", "mk_expense"}
+
+
+def _parse_exclude_origins(raw: str | None) -> tuple[str, ...]:
+    """Normalise the query string into a stable tuple suitable for
+    caching. Sorted + lower-cased + filtered to known values."""
+    if not raw:
+        return ()
+    parts = {p.strip().lower() for p in raw.split(",") if p.strip()}
+    return tuple(sorted(p for p in parts if p in _KNOWN_ORIGINS))
+
+
 class EntityTypeParam(str, Enum):
     person = "person"
     company = "company"
@@ -96,9 +116,18 @@ async def graph_neighbors(
     entity_id: uuid.UUID,
     type: EntityTypeParam = Query(..., description="Entity type"),
     depth: int = Query(1, ge=1, le=3),
+    exclude_origins: str | None = Query(
+        None,
+        description="Comma-separated origin_kind values to drop "
+                    "(e.g. 'mk_expense'). Unknown values are ignored.",
+    ),
     db: AsyncSession = Depends(get_db),
 ):
-    subgraph = await get_neighbors(db, entity_id, type.value, depth)
+    excluded = _parse_exclude_origins(exclude_origins)
+    subgraph = await get_neighbors(
+        db, entity_id, type.value, depth,
+        excluded_origins=excluded or None,
+    )
     await _enrich_subgraph(db, subgraph)
     return {
         "status": "ok",
@@ -125,10 +154,9 @@ async def graph_path(
     }
 
 
-# Module-level cache for the showcase result. The pair rotates by date in
-# Israel time, so the cache key is just today's date string. A new day →
-# new query → new pair. Same day → instant.
-_showcase_cache: tuple[str, dict[str, Any] | None] | None = None
+# In-process cache for the showcase result. Key is (today_date, exclude_origins)
+# so the toggle-on and toggle-off variants live side by side.
+_showcase_cache: dict[tuple[str, tuple[str, ...]], dict[str, Any] | None] = {}
 
 
 def _today_key() -> str:
@@ -142,24 +170,43 @@ def _today_seed() -> int:
 
 
 @router.get("/graph/showcase")
-async def graph_showcase(db: AsyncSession = Depends(get_db)):
+async def graph_showcase(
+    exclude_origins: str | None = Query(
+        None,
+        description="Comma-separated origin_kind values to drop. "
+                    "Each combination is cached separately for the day.",
+    ),
+    db: AsyncSession = Depends(get_db),
+):
     """Return a "two suns" subgraph illustrating two persons whose declared
     networks overlap. Used by the home page to demonstrate the data shape.
     The chosen pair rotates daily; the result is cached in-process for the
-    rest of the calendar day (Israel time)."""
-    global _showcase_cache
+    rest of the calendar day (Israel time), keyed by date + excluded
+    origins so toggling the MK-expense filter doesn't blow away the cache
+    for the other variant."""
     today = _today_key()
-    if _showcase_cache and _showcase_cache[0] == today:
-        return {"status": "ok", "data": _showcase_cache[1], "cached": True}
+    excluded = _parse_exclude_origins(exclude_origins)
+    cache_key = (today, excluded)
+    if cache_key in _showcase_cache:
+        return {"status": "ok", "data": _showcase_cache[cache_key], "cached": True}
 
-    subgraph = await find_showcase_pair(db, rotation_seed=_today_seed())
+    # Prune stale day entries — keeps the dict from growing forever.
+    for k in list(_showcase_cache):
+        if k[0] != today:
+            del _showcase_cache[k]
+
+    subgraph = await find_showcase_pair(
+        db,
+        rotation_seed=_today_seed(),
+        excluded_origins=excluded or None,
+    )
     if subgraph is None:
-        _showcase_cache = (today, None)
+        _showcase_cache[cache_key] = None
         return {"status": "ok", "data": None}
 
     await _enrich_subgraph(db, subgraph)
     payload = subgraph.model_dump()
-    _showcase_cache = (today, payload)
+    _showcase_cache[cache_key] = payload
     return {"status": "ok", "data": payload}
 
 

@@ -1,12 +1,46 @@
 """Graph queries using recursive CTEs on entity_relationships table.
 
 Compatible with both SQLite and PostgreSQL.
+
+All query helpers accept an optional ``excluded_origins`` set so the
+public surface can hide edges from specific ``origin_kind`` values
+(notably ``mk_expense`` — Knesset constituent-outreach payment imports,
+which are useful but visually overwhelm the COI declaration graph by
+default). Pass ``None`` or empty to include everything (current
+behaviour).
 """
 
-from sqlalchemy import text
+from typing import Iterable
+
+from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ocoi_common.models import ConnectionEdge, EntitySummary, EntityType, SubGraph
+
+
+def _origin_filter_sql(
+    excluded_origins: Iterable[str] | None,
+    *,
+    alias: str = "r",
+) -> str:
+    """Return a SQL fragment that must be AND-ed onto the WHERE clause
+    of any query against ``entity_relationships``. Empty string when
+    nothing's excluded so the caller can splice it unconditionally.
+
+    Uses an expanding bindparam so SQLAlchemy renders ``IN (?,?,...)``
+    correctly on both SQLite and PostgreSQL.
+    """
+    if not excluded_origins:
+        return ""
+    return f" AND {alias}.origin_kind NOT IN :excluded_origins"
+
+
+def _bind_excluded(stmt, excluded_origins: Iterable[str] | None):
+    """Attach an expanding bindparam for ``excluded_origins`` when the
+    caller passed a non-empty set; no-op otherwise."""
+    if not excluded_origins:
+        return stmt
+    return stmt.bindparams(bindparam("excluded_origins", expanding=True))
 
 
 async def get_neighbors(
@@ -14,20 +48,25 @@ async def get_neighbors(
     entity_id,
     entity_type: str,
     depth: int = 1,
+    *,
+    excluded_origins: Iterable[str] | None = None,
 ) -> SubGraph:
     """Get neighboring entities up to `depth` hops away."""
     eid = str(entity_id)
+    excluded = list(excluded_origins) if excluded_origins else None
     if depth == 1:
-        return await _get_direct_neighbors(session, eid, entity_type)
-    return await _get_recursive_neighbors(session, eid, entity_type, depth)
+        return await _get_direct_neighbors(session, eid, entity_type, excluded)
+    return await _get_recursive_neighbors(session, eid, entity_type, depth, excluded)
 
 
 async def _get_direct_neighbors(
     session: AsyncSession,
     entity_id: str,
     entity_type: str,
+    excluded_origins: list[str] | None = None,
 ) -> SubGraph:
-    query = text("""
+    extra = _origin_filter_sql(excluded_origins)
+    query = text(f"""
         SELECT
             r.source_entity_type, r.source_entity_id,
             r.target_entity_type, r.target_entity_id,
@@ -35,10 +74,15 @@ async def _get_direct_neighbors(
             r.document_id, d.title AS doc_title, d.file_url AS doc_url
         FROM entity_relationships r
         LEFT JOIN documents d ON d.id = r.document_id
-        WHERE (r.source_entity_type = :etype AND r.source_entity_id = :eid)
-           OR (r.target_entity_type = :etype AND r.target_entity_id = :eid)
+        WHERE ((r.source_entity_type = :etype AND r.source_entity_id = :eid)
+            OR (r.target_entity_type = :etype AND r.target_entity_id = :eid))
+          {extra}
     """)
-    result = await session.execute(query, {"eid": entity_id, "etype": entity_type})
+    query = _bind_excluded(query, excluded_origins)
+    params: dict = {"eid": entity_id, "etype": entity_type}
+    if excluded_origins:
+        params["excluded_origins"] = excluded_origins
+    result = await session.execute(query, params)
     rows = result.fetchall()
     return _build_subgraph_from_rows(rows)
 
@@ -48,9 +92,13 @@ async def _get_recursive_neighbors(
     entity_id: str,
     entity_type: str,
     depth: int,
+    excluded_origins: list[str] | None = None,
 ) -> SubGraph:
     """Multi-hop neighbor query using recursive CTE (works on both SQLite and PostgreSQL)."""
-    query = text("""
+    # Filter must apply to BOTH the anchor select AND the recursive step
+    # so excluded edges are also unavailable as hop-springboards.
+    extra = _origin_filter_sql(excluded_origins)
+    query = text(f"""
         WITH RECURSIVE graph_walk AS (
             SELECT
                 r.source_entity_type, r.source_entity_id,
@@ -59,8 +107,9 @@ async def _get_recursive_neighbors(
                 r.document_id,
                 1 AS depth
             FROM entity_relationships r
-            WHERE (r.source_entity_type = :etype AND r.source_entity_id = :eid)
-               OR (r.target_entity_type = :etype AND r.target_entity_id = :eid)
+            WHERE ((r.source_entity_type = :etype AND r.source_entity_id = :eid)
+                OR (r.target_entity_type = :etype AND r.target_entity_id = :eid))
+              {extra}
 
             UNION
 
@@ -79,6 +128,7 @@ async def _get_recursive_neighbors(
                  AND r.target_entity_id = gw.source_entity_id)
             )
             WHERE gw.depth < :max_depth
+              {extra}
         )
         SELECT DISTINCT
             gw.source_entity_type, gw.source_entity_id,
@@ -88,9 +138,11 @@ async def _get_recursive_neighbors(
         FROM graph_walk gw
         LEFT JOIN documents d ON d.id = gw.document_id
     """)
-    result = await session.execute(
-        query, {"eid": entity_id, "etype": entity_type, "max_depth": depth}
-    )
+    query = _bind_excluded(query, excluded_origins)
+    params: dict = {"eid": entity_id, "etype": entity_type, "max_depth": depth}
+    if excluded_origins:
+        params["excluded_origins"] = excluded_origins
+    result = await session.execute(query, params)
     rows = result.fetchall()
     return _build_subgraph_from_rows(rows)
 
@@ -170,6 +222,8 @@ async def _hidden_id_set(session: AsyncSession, table: str) -> set[str]:
 async def find_showcase_pair(
     session: AsyncSession,
     rotation_seed: int = 0,
+    *,
+    excluded_origins: Iterable[str] | None = None,
 ) -> SubGraph | None:
     """Find a "two suns" showcase: pick two persons who share at least one
     visible (non-hidden) hub and return the full union of their direct
@@ -211,6 +265,10 @@ async def find_showcase_pair(
     # share at least one VISIBLE neighbour after pruning.
     HUB_CANDIDATES = 20
     HUB_OVER_FETCH = 80
+    # When excluded_origins is set we count only the surviving edges, so
+    # a hub that owes its top rank to MK-expense rows isn't preferred.
+    excluded = list(excluded_origins) if excluded_origins else None
+    hub_origin_filter = _origin_filter_sql(excluded, alias="entity_relationships")
     hub_pick_q = text(f"""
         SELECT target_entity_type AS hub_type,
                target_entity_id   AS hub_id,
@@ -218,12 +276,15 @@ async def find_showcase_pair(
         FROM entity_relationships
         WHERE source_entity_type = 'person'
           AND target_entity_type IN ('company', 'association', 'domain')
+          {hub_origin_filter}
         GROUP BY target_entity_type, target_entity_id
         HAVING COUNT(DISTINCT source_entity_id) >= 2
         ORDER BY person_count DESC, target_entity_id
         LIMIT {HUB_OVER_FETCH}
     """)
-    raw_hub_rows = (await session.execute(hub_pick_q)).fetchall()
+    hub_pick_q = _bind_excluded(hub_pick_q, excluded)
+    hub_params = {"excluded_origins": excluded} if excluded else {}
+    raw_hub_rows = (await session.execute(hub_pick_q, hub_params)).fetchall()
 
     visible_hubs: list[tuple[str, str]] = []
     for ht, hi, _pc in raw_hub_rows:
@@ -233,16 +294,19 @@ async def find_showcase_pair(
         visible_hubs.append((ht, hi_str))
     visible_hubs = visible_hubs[:HUB_CANDIDATES]
 
-    nbr_q = text("""
+    nbr_extra = _origin_filter_sql(excluded)
+    nbr_q = text(f"""
         SELECT r.source_entity_type, r.source_entity_id,
                r.target_entity_type, r.target_entity_id,
                r.relationship_type, r.details, r.origin_kind, r.verified,
                r.document_id, d.title AS doc_title, d.file_url AS doc_url
         FROM entity_relationships r
         LEFT JOIN documents d ON d.id = r.document_id
-        WHERE (r.source_entity_type = 'person' AND r.source_entity_id IN (:p1, :p2))
-           OR (r.target_entity_type = 'person' AND r.target_entity_id IN (:p1, :p2))
+        WHERE ((r.source_entity_type = 'person' AND r.source_entity_id IN (:p1, :p2))
+            OR (r.target_entity_type = 'person' AND r.target_entity_id IN (:p1, :p2)))
+          {nbr_extra}
     """)
+    nbr_q = _bind_excluded(nbr_q, excluded)
 
     if visible_hubs:
         n_hubs = len(visible_hubs)
@@ -275,7 +339,10 @@ async def find_showcase_pair(
             p1 = visible_persons[i1]
             p2 = visible_persons[i2]
 
-            rows = (await session.execute(nbr_q, {"p1": p1, "p2": p2})).fetchall()
+            nbr_params: dict = {"p1": p1, "p2": p2}
+            if excluded:
+                nbr_params["excluded_origins"] = excluded
+            rows = (await session.execute(nbr_q, nbr_params)).fetchall()
             # Drop edges that touch any hidden entity so the validity check
             # below sees what the user will actually render.
             visible_rows = [
@@ -305,24 +372,29 @@ async def find_showcase_pair(
             return _trim_two_suns(visible_rows, p1, p2)
 
     # ── Fallback: star (1 visible hub, ≥ 2 visible persons) ─────────────
-    star_pick_q = text("""
+    star_filter = _origin_filter_sql(excluded, alias="entity_relationships")
+    star_pick_q = text(f"""
         SELECT target_entity_type AS hub_type,
                target_entity_id   AS hub_id,
                COUNT(DISTINCT source_entity_id) AS person_count
         FROM entity_relationships
         WHERE source_entity_type = 'person'
           AND target_entity_type IN ('company', 'association')
+          {star_filter}
         GROUP BY target_entity_type, target_entity_id
         HAVING COUNT(DISTINCT source_entity_id) >= 2
         ORDER BY person_count DESC, target_entity_id
         LIMIT 20
     """)
-    star_candidates = (await session.execute(star_pick_q)).fetchall()
+    star_pick_q = _bind_excluded(star_pick_q, excluded)
+    star_params = {"excluded_origins": excluded} if excluded else {}
+    star_candidates = (await session.execute(star_pick_q, star_params)).fetchall()
     for ht, hi, _pc in star_candidates:
         hi_str = str(hi)
         if _is_hidden(ht, hi_str):
             continue
-        edges_q = text("""
+        edges_filter = _origin_filter_sql(excluded)
+        edges_q = text(f"""
             SELECT r.source_entity_type, r.source_entity_id,
                    r.target_entity_type, r.target_entity_id,
                    r.relationship_type, r.details, r.origin_kind, r.verified,
@@ -332,12 +404,15 @@ async def find_showcase_pair(
             WHERE r.source_entity_type = 'person'
               AND r.target_entity_type = :hub_type
               AND r.target_entity_id   = :hub_id
+              {edges_filter}
             ORDER BY r.created_at, r.id
             LIMIT 12
         """)
-        rows = (await session.execute(
-            edges_q, {"hub_type": ht, "hub_id": hi_str}
-        )).fetchall()
+        edges_q = _bind_excluded(edges_q, excluded)
+        edges_params: dict = {"hub_type": ht, "hub_id": hi_str}
+        if excluded:
+            edges_params["excluded_origins"] = excluded
+        rows = (await session.execute(edges_q, edges_params)).fetchall()
         # Skip rows whose person endpoint is hidden so the star stays clean.
         visible_rows = [
             r for r in rows
@@ -347,7 +422,8 @@ async def find_showcase_pair(
             return _build_subgraph_from_rows(visible_rows[:6])
 
     # ── Fallback: any direct person → person edge (both visible) ─────────
-    direct_q = text("""
+    direct_filter = _origin_filter_sql(excluded)
+    direct_q = text(f"""
         SELECT r.source_entity_type, r.source_entity_id,
                r.target_entity_type, r.target_entity_id,
                r.relationship_type, r.details, r.origin_kind, r.verified,
@@ -357,9 +433,12 @@ async def find_showcase_pair(
         WHERE r.source_entity_type = 'person'
           AND r.target_entity_type = 'person'
           AND r.source_entity_id <> r.target_entity_id
+          {direct_filter}
         LIMIT 20
     """)
-    direct_rows = (await session.execute(direct_q)).fetchall()
+    direct_q = _bind_excluded(direct_q, excluded)
+    direct_params = {"excluded_origins": excluded} if excluded else {}
+    direct_rows = (await session.execute(direct_q, direct_params)).fetchall()
     for r in direct_rows:
         if _is_hidden(r[0], str(r[1])) or _is_hidden(r[2], str(r[3])):
             continue

@@ -3,13 +3,16 @@
 import { useState, useCallback } from "react";
 import { ConnectionMap } from "@/components/graph/ConnectionMap";
 import { ConnectionTable } from "@/components/graph/ConnectionTable";
+import { MkExpenseToggle } from "@/components/MkExpenseToggle";
 import type { SubGraph } from "@/lib/api-client";
+import { useOriginFilter } from "@/lib/originFilter";
 
 export default function GraphPage() {
   const [graph, setGraph] = useState<SubGraph | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [showTable, setShowTable] = useState(false);
+  const { excludeOriginsParam } = useOriginFilter();
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -27,7 +30,7 @@ export default function GraphPage() {
       if (firstResult) {
         // Then get the graph
         const graphRes = await fetch(
-          `/api/v1/graph/neighbors/${firstResult.id}?type=${firstResult.entity_type}&depth=2`
+          `/api/v1/graph/neighbors/${firstResult.id}?type=${firstResult.entity_type}&depth=2${excludeOriginsParam}`
         );
         const graphData = await graphRes.json();
         setGraph(graphData.data);
@@ -42,7 +45,7 @@ export default function GraphPage() {
   const handleExpand = useCallback(async (nodeId: string, nodeType: string) => {
     try {
       const res = await fetch(
-        `/api/v1/graph/neighbors/${nodeId}?type=${nodeType}&depth=1`
+        `/api/v1/graph/neighbors/${nodeId}?type=${nodeType}&depth=1${excludeOriginsParam}`
       );
       const data = await res.json();
       const newGraph: SubGraph = data.data;
@@ -68,7 +71,7 @@ export default function GraphPage() {
     } catch {
       // ignore
     }
-  }, []);
+  }, [excludeOriginsParam]);
 
   return (
     <div className="flex flex-col" style={{ minHeight: "calc(100vh - 60px)" }}>
@@ -98,14 +101,17 @@ export default function GraphPage() {
           </p>
         </div>
 
-        {graph && graph.edges.length > 0 && (
-          <button
-            onClick={() => setShowTable((v) => !v)}
-            className="px-3 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors shrink-0"
-          >
-            {showTable ? "הסתר טבלה" : "הצג כטבלה"}
-          </button>
-        )}
+        <div className="flex items-center gap-3 shrink-0">
+          <MkExpenseToggle />
+          {graph && graph.edges.length > 0 && (
+            <button
+              onClick={() => setShowTable((v) => !v)}
+              className="px-3 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+            >
+              {showTable ? "הסתר טבלה" : "הצג כטבלה"}
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="flex-1 bg-gray-100" style={{ minHeight: "500px" }}>

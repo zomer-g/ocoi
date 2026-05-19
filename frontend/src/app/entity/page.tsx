@@ -4,7 +4,9 @@ import { useEffect, useState, useCallback, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { ConnectionMap } from "@/components/graph/ConnectionMap";
 import { ConnectionTable } from "@/components/graph/ConnectionTable";
+import { MkExpenseToggle } from "@/components/MkExpenseToggle";
 import type { SubGraph, ConnectionEdge, EntitySummary } from "@/lib/api-client";
+import { useOriginFilter } from "@/lib/originFilter";
 
 interface EntityData {
   id: string;
@@ -22,6 +24,9 @@ function EntityContent() {
   const searchParams = useSearchParams();
   const id = searchParams.get("id") || "";
   const type = searchParams.get("type") || "person";
+  // Honour the global MK-expense toggle for the entity's neighbour map +
+  // any subsequent "expand node" lookups. Refetches when the toggle flips.
+  const { excludeOriginsParam } = useOriginFilter();
 
   const [entity, setEntity] = useState<EntityData | null>(null);
   const [graph, setGraph] = useState<SubGraph | null>(null);
@@ -45,7 +50,7 @@ function EntityContent() {
 
         const [entityRes, graphRes] = await Promise.all([
           fetch(`/api/v1/${plural}/${id}`),
-          fetch(`/api/v1/graph/neighbors/${id}?type=${type}&depth=1`),
+          fetch(`/api/v1/graph/neighbors/${id}?type=${type}&depth=1${excludeOriginsParam}`),
         ]);
 
         const entityData = await entityRes.json();
@@ -61,11 +66,13 @@ function EntityContent() {
     };
 
     fetchData();
-  }, [id, type]);
+  }, [id, type, excludeOriginsParam]);
 
   const handleExpand = useCallback(async (nodeId: string, nodeType: string) => {
     try {
-      const res = await fetch(`/api/v1/graph/neighbors/${nodeId}?type=${nodeType}&depth=1`);
+      const res = await fetch(
+        `/api/v1/graph/neighbors/${nodeId}?type=${nodeType}&depth=1${excludeOriginsParam}`,
+      );
       const data = await res.json();
       const newGraph: SubGraph = data.data;
       if (!newGraph || !graph) return;
@@ -97,7 +104,7 @@ function EntityContent() {
     } catch {
       // ignore
     }
-  }, [graph]);
+  }, [graph, excludeOriginsParam]);
 
   if (loading) return <div className="text-center py-12 text-gray-400">טוען...</div>;
   if (!id || !entity) return <div className="text-center py-12 text-gray-400">לא נמצא</div>;
@@ -134,21 +141,24 @@ function EntityContent() {
 
       {graph && (graph.nodes.length > 0 || graph.edges.length > 0) && (
         <div className="bg-white rounded-lg border border-gray-200">
-          <div className="flex items-center justify-between p-4 border-b border-gray-200">
+          <div className="flex items-center justify-between p-4 border-b border-gray-200 gap-3">
             <h2 className="text-lg font-semibold text-gray-900">
               מפת קשרים
               <span className="text-sm font-normal text-gray-400 mr-2">
                 (לחיצה כפולה על צומת להרחבה)
               </span>
             </h2>
-            {graph.edges.length > 0 && (
-              <button
-                onClick={() => setShowTable((v) => !v)}
-                className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
-              >
-                {showTable ? "הסתר טבלה" : "הצג כטבלה"}
-              </button>
-            )}
+            <div className="flex items-center gap-3">
+              <MkExpenseToggle />
+              {graph.edges.length > 0 && (
+                <button
+                  onClick={() => setShowTable((v) => !v)}
+                  className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                >
+                  {showTable ? "הסתר טבלה" : "הצג כטבלה"}
+                </button>
+              )}
+            </div>
           </div>
           <div className="h-[500px]">
             <ConnectionMap

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { ConnectionMap } from "@/components/graph/ConnectionMap";
 import type { SubGraph } from "@/lib/api-client";
+import { useOriginFilter } from "@/lib/originFilter";
 
 const TYPE_LABEL_HE: Record<string, string> = {
   person: "איש/אשת ציבור",
@@ -14,10 +15,19 @@ const TYPE_LABEL_HE: Record<string, string> = {
 export function ShowcaseGraph() {
   const [graph, setGraph] = useState<SubGraph | null>(null);
   const [loading, setLoading] = useState(true);
+  // When the user flips the MK-expense toggle, this changes and the
+  // effect below re-fetches. The backend caches each variant separately
+  // so toggling back is instant.
+  const { excludeOriginsParam } = useOriginFilter();
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/v1/graph/showcase")
+    setLoading(true);
+    // Note: showcase endpoint accepts the filter as a query string; the
+    // pair selection itself runs on the filtered edge set so toggling
+    // can actually *change* the chosen "two suns".
+    const qs = excludeOriginsParam ? `?${excludeOriginsParam.replace(/^&/, "")}` : "";
+    fetch(`/api/v1/graph/showcase${qs}`)
       .then((r) => r.json())
       .then((d) => {
         if (cancelled) return;
@@ -34,7 +44,7 @@ export function ShowcaseGraph() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [excludeOriginsParam]);
 
   // After loading: hide if there's no usable data.
   if (!loading && (!graph || graph.nodes.length < 2 || graph.edges.length < 1)) {

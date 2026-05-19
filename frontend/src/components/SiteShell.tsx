@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { OriginFilterProvider } from "@/lib/originFilter";
 
 interface NavLink {
   href: string;
@@ -64,7 +65,7 @@ export default function SiteShell({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <>
+    <OriginFilterProvider>
       <header className="bg-primary-800 sticky top-0 z-50">
         <nav className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-14 sm:h-16 flex items-center justify-between">
           <a href="/" className="flex items-center gap-2 text-white">
@@ -96,6 +97,6 @@ export default function SiteShell({ children }: { children: React.ReactNode }) {
           {footerText}
         </div>
       </footer>
-    </>
+    </OriginFilterProvider>
   );
 }

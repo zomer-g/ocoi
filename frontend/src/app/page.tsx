@@ -5,6 +5,7 @@ import { SearchBar } from "@/components/search/SearchBar";
 import { SearchResults } from "@/components/search/SearchResults";
 import { EntityDiscovery } from "@/components/EntityDiscovery";
 import { ShowcaseGraph } from "@/components/ShowcaseGraph";
+import { MkExpenseToggle } from "@/components/MkExpenseToggle";
 import type { EntitySummary } from "@/lib/api-client";
 import { getStats } from "@/lib/api-client";
 
@@ -85,15 +86,29 @@ export default function HomePage() {
 
       {!loading && query && (
         <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-          <p className="text-sm text-gray-500 mb-4">
-            {total} תוצאות עבור &quot;{query}&quot;
-          </p>
+          <div className="flex items-center justify-between mb-4">
+            <p className="text-sm text-gray-500">
+              {total} תוצאות עבור &quot;{query}&quot;
+            </p>
+            {/* Subtle — controls the relationship graph that appears
+                when the visitor clicks through into an entity page. */}
+            <MkExpenseToggle />
+          </div>
           <SearchResults results={results} />
         </div>
       )}
 
-      {/* Showcase: a real connection from the data, shown when not searching */}
-      {!loading && !query && <ShowcaseGraph />}
+      {/* Showcase: a real connection from the data, shown when not searching.
+          The toggle sits in the showcase header (just below the section
+          title) so it stays understated but discoverable. */}
+      {!loading && !query && (
+        <>
+          <ShowcaseGraph />
+          <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 -mt-1 mb-2 flex justify-center">
+            <MkExpenseToggle />
+          </div>
+        </>
+      )}
 
       {/* Entity Discovery - shown when not searching */}
       {!loading && !query && <EntityDiscovery />}
