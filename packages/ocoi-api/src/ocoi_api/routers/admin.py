@@ -3,6 +3,7 @@
 import json
 import logging
 import uuid
+from datetime import datetime
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, HTTPException, Request, UploadFile, File
 
 logger = logging.getLogger("ocoi.api.admin")
@@ -25,7 +26,7 @@ from ocoi_db.crud import _add_alias, _get_aliases
 from ocoi_db.models import (
     Person, Company, Association, Domain,
     EntityRelationship, Document, Source, ExtractionRun, IgnoredResource,
-    SiteContent, Suggestion, User,
+    SiteContent, Suggestion, User, EntityMatchProposal,
     BillingAccount, OAuthClient, UsageEvent,
 )
 
@@ -2286,6 +2287,208 @@ async def remove_mcp_user(user_id: uuid.UUID, db: AsyncSession = Depends(get_db)
     return {"status": "ok"}
 
 
+# ── Duplicate-entity detection: scan + merge + review queue ────────────
+
+
+@router.post("/entities/merge")
+async def merge_two_entities(
+    body: dict,
+    current = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Manual entity merge — point all relationships from ``merge_id``
+    at ``keep_id``, fold the merge entity's name + aliases into the
+    keep entity, and delete the merge row. Used both by the proposal
+    approval flow and by an admin doing it directly from the entity UI.
+
+    Body: ``{entity_type, keep_id, merge_id}``. Permission: manage_entities.
+    """
+    from ocoi_api.services.match_service import merge_entities
+
+    entity_type = (body.get("entity_type") or "").strip()
+    keep_id = (body.get("keep_id") or "").strip()
+    merge_id = (body.get("merge_id") or "").strip()
+    if not entity_type or not keep_id or not merge_id:
+        raise HTTPException(400, "entity_type, keep_id, merge_id required")
+
+    try:
+        summary = await merge_entities(db, entity_type, keep_id, merge_id)
+        await db.commit()
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"status": "ok", "data": summary}
+
+
+@router.post("/matches/scan-duplicates")
+async def matches_scan_duplicates(
+    background_tasks: BackgroundTasks,
+    body: dict | None = None,
+):
+    """Kick off the background duplicate-scan job. By default scans
+    person + company + association; the body may pass
+    ``{"kinds": ["person"]}`` to narrow it down."""
+    from ocoi_api.services.match_service import (
+        get_match_status,
+        run_duplicate_scan,
+        try_claim_scan,
+    )
+
+    if not try_claim_scan():
+        raise HTTPException(409, "Scan already running")
+
+    kinds = None
+    if body and isinstance(body.get("kinds"), list):
+        kinds = [str(k) for k in body["kinds"] if isinstance(k, str)]
+    if not kinds:
+        kinds = ["person", "company", "association"]
+
+    background_tasks.add_task(run_duplicate_scan, tuple(kinds))
+    return {"status": "ok", "message": "סריקת כפילויות החלה ברקע", "scanning": kinds, "state": get_match_status()}
+
+
+@router.get("/matches/scan-status")
+async def matches_scan_status():
+    from ocoi_api.services.match_service import get_match_status
+    return {"status": "ok", "data": get_match_status()}
+
+
+@router.post("/matches/scan-reset")
+async def matches_scan_reset():
+    """Force-reset the scan slot. Use if a previous run got stuck and
+    the trigger endpoint keeps returning 409."""
+    from ocoi_api.services.match_service import reset_match_state
+    reset_match_state()
+    return {"status": "ok"}
+
+
+@router.get("/matches")
+async def matches_list(
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=200),
+    proposal_kind: str | None = Query(None, description="'duplicate' / 'registry_match'"),
+    status: str | None = Query("pending", description="pending / approved / rejected / dismissed / all"),
+    entity_type: str | None = Query(None),
+    min_score: float | None = Query(None, ge=0.0, le=1.0),
+    db: AsyncSession = Depends(get_db),
+):
+    """List EntityMatchProposal rows with optional filters, newest /
+    highest-score first. Each row is enriched with display names for
+    both sides so the UI doesn't need a second round-trip."""
+    from ocoi_api.services.match_service import proposal_to_dict
+
+    q = select(EntityMatchProposal)
+    cq = select(func.count()).select_from(EntityMatchProposal)
+    filters = []
+    if proposal_kind:
+        filters.append(EntityMatchProposal.proposal_kind == proposal_kind)
+    if status and status != "all":
+        filters.append(EntityMatchProposal.status == status)
+    if entity_type:
+        filters.append(EntityMatchProposal.entity_type == entity_type)
+    if min_score is not None:
+        filters.append(EntityMatchProposal.score >= min_score)
+    for f in filters:
+        q = q.where(f)
+        cq = cq.where(f)
+
+    total = (await db.execute(cq)).scalar() or 0
+    rows = (await db.execute(
+        q.order_by(
+            EntityMatchProposal.status.asc(),  # pending first
+            EntityMatchProposal.score.desc(),
+            EntityMatchProposal.created_at.desc(),
+        )
+        .offset((page - 1) * limit)
+        .limit(limit)
+    )).scalars().all()
+
+    data = [await proposal_to_dict(db, r) for r in rows]
+    return {
+        "status": "ok",
+        "data": data,
+        "meta": {
+            "total": total,
+            "page": page,
+            "limit": limit,
+            "pages": (total + limit - 1) // limit if total else 0,
+        },
+    }
+
+
+@router.post("/matches/{proposal_id}/approve")
+async def matches_approve(
+    proposal_id: uuid.UUID,
+    current = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Approve a proposal. For 'duplicate' proposals this runs the
+    actual merge — entity_id is kept, target_id is folded in."""
+    from ocoi_api.services.match_service import merge_entities
+
+    proposal = await db.get(EntityMatchProposal, proposal_id)
+    if not proposal:
+        raise HTTPException(404, "Proposal not found")
+    if proposal.status != "pending":
+        raise HTTPException(409, f"Proposal already {proposal.status}")
+
+    if proposal.proposal_kind == "duplicate":
+        try:
+            summary = await merge_entities(
+                db,
+                proposal.entity_type,
+                proposal.entity_id,
+                proposal.target_id,
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        # Mark every other open proposal that references the merged-away
+        # id as dismissed — they're no longer actionable.
+        await db.execute(
+            update(EntityMatchProposal)
+            .where(
+                EntityMatchProposal.id != proposal.id,
+                EntityMatchProposal.status == "pending",
+                or_(
+                    and_(
+                        EntityMatchProposal.entity_type == proposal.target_type,
+                        EntityMatchProposal.entity_id == proposal.target_id,
+                    ),
+                    and_(
+                        EntityMatchProposal.target_type == proposal.target_type,
+                        EntityMatchProposal.target_id == proposal.target_id,
+                    ),
+                ),
+            )
+            .values(status="dismissed", reviewed_at=datetime.utcnow())
+        )
+    else:
+        summary = {"proposal_kind": proposal.proposal_kind}
+
+    proposal.status = "approved"
+    proposal.reviewed_by = str(getattr(current, "id", None)) if getattr(current, "id", None) else None
+    proposal.reviewed_at = datetime.utcnow()
+    await db.commit()
+    return {"status": "ok", "data": summary}
+
+
+@router.post("/matches/{proposal_id}/reject")
+async def matches_reject(
+    proposal_id: uuid.UUID,
+    current = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reject a proposal — "definitely not the same". Keeps the row so
+    a future scan doesn't re-propose the same pair."""
+    proposal = await db.get(EntityMatchProposal, proposal_id)
+    if not proposal:
+        raise HTTPException(404, "Proposal not found")
+    proposal.status = "rejected"
+    proposal.reviewed_by = str(getattr(current, "id", None)) if getattr(current, "id", None) else None
+    proposal.reviewed_at = datetime.utcnow()
+    await db.commit()
+    return {"status": "ok"}
+
+
 @router.get("/mcp/stats")
 async def mcp_global_stats(db: AsyncSession = Depends(get_db)):
     """Top-line counters for the admin dashboard."""
@@ -2316,3 +2519,22 @@ async def mcp_global_stats(db: AsyncSession = Depends(get_db)):
             "metered_users": int(metered_users),
         },
     }
+
+
+@router.post("/matches/{proposal_id}/dismiss")
+async def matches_dismiss(
+    proposal_id: uuid.UUID,
+    current = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Dismiss a proposal — "skip for now". Behaviour is identical to
+    reject for the scanner (won't be re-proposed), but UI can show
+    these separately so the admin tells "ignored" from "not a match"."""
+    proposal = await db.get(EntityMatchProposal, proposal_id)
+    if not proposal:
+        raise HTTPException(404, "Proposal not found")
+    proposal.status = "dismissed"
+    proposal.reviewed_by = str(getattr(current, "id", None)) if getattr(current, "id", None) else None
+    proposal.reviewed_at = datetime.utcnow()
+    await db.commit()
+    return {"status": "ok"}

@@ -293,6 +293,65 @@ class SiteContent(Base):
     updated_at: Mapped[datetime | None] = mapped_column(DateTime, default=func.now(), onupdate=func.now())
 
 
+class EntityMatchProposal(Base):
+    """A candidate match between two records — either two entities of the
+    same type that look like duplicates, or an entity ↔ external-registry
+    pairing — produced by the background scan jobs and queued for human
+    review in the admin panel.
+
+    The same table backs both Phase-1 duplicate-detection and the future
+    registry-match-as-suggestion flow; `proposal_kind` discriminates.
+    """
+    __tablename__ = "entity_match_proposals"
+
+    id: Mapped[str] = mapped_column(DBUUID(), primary_key=True, default=new_uuid)
+
+    # 'duplicate'        — same-type entity / entity pair to consider merging
+    # 'registry_match'   — entity that may map to a RegistryRecord row
+    proposal_kind: Mapped[str] = mapped_column(String(30), nullable=False)
+
+    # The "left" side — always one of our own entities (person/company/…).
+    entity_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    entity_id: Mapped[str] = mapped_column(DBUUID(), nullable=False)
+
+    # The "right" side. For 'duplicate' proposals it's another entity of
+    # the same type (target_kind='entity'); for 'registry_match' it's a
+    # RegistryRecord id (target_kind='registry').
+    target_kind: Mapped[str] = mapped_column(String(20), nullable=False, default="entity")
+    target_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    target_id: Mapped[str] = mapped_column(DBUUID(), nullable=False)
+
+    score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # JSON-encoded list of strings describing which signals fired, e.g.
+    # ["token_sort=0.97", "first_name_match", "alias_overlap"].
+    reasons: Mapped[str | None] = mapped_column(Text)
+
+    # 'pending' | 'approved' | 'rejected' | 'dismissed'
+    # rejected = "not the same" (won't be suggested again)
+    # dismissed = "skip for now, maybe revisit"
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending", server_default="pending",
+    )
+    reviewed_by: Mapped[str | None] = mapped_column(
+        DBUUID(), ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime, default=func.now())
+
+    __table_args__ = (
+        Index("ix_emp_status_kind", "status", "proposal_kind"),
+        Index("ix_emp_entity", "entity_type", "entity_id"),
+        Index("ix_emp_target", "target_type", "target_id"),
+        # An entity-pair can have at most one open proposal at any time.
+        # Different proposal kinds can coexist on the same entity though.
+        Index(
+            "ix_emp_pair_unique",
+            "proposal_kind", "entity_type", "entity_id", "target_type", "target_id",
+            unique=True,
+        ),
+    )
+
+
 class User(Base):
     """Admin-panel user. Roles:
 

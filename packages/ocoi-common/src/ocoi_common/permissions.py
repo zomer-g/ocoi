@@ -60,6 +60,8 @@ SECTION_PERMISSIONS: dict[str, str | None] = {
     "/api/v1/admin/associations":    "manage_entities",
     "/api/v1/admin/domains":         "manage_entities",
     "/api/v1/admin/lookup":          "manage_entities",
+    "/api/v1/admin/entities":        "manage_entities",   # /entities/merge
+    "/api/v1/admin/matches":         "manage_entities",   # duplicate/registry review queue
     # relationships
     "/api/v1/admin/relationships":   "manage_relationships",
     # documents

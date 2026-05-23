@@ -18,6 +18,7 @@ type NavItem = {
 const NAV_ITEMS: NavItem[] = [
   { href: "/admin", label: "לוח בקרה", perm: "view_dashboard" },
   { href: "/admin/entities", label: "ישויות", perm: "manage_entities" },
+  { href: "/admin/matches", label: "התאמות כפילויות", perm: "manage_entities" },
   { href: "/admin/relationships", label: "קשרים", perm: "manage_relationships" },
   { href: "/admin/documents", label: "מסמכים", perm: "manage_documents" },
   { href: "/admin/import", label: "ייבוא", perm: "manage_import" },
