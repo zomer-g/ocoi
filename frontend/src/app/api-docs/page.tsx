@@ -405,6 +405,90 @@ export default function ApiDocsPage() {
 
         {!loading && !error && (
           <>
+            {/* MCP — discoverable separately from the REST docs because it
+                speaks a different protocol (JSON-RPC over HTTPS), needs
+                auth (Google OAuth), and is positioned as a closed beta. */}
+            <section className="mb-8">
+              <div className="bg-gradient-to-br from-amber-50 to-amber-100 border border-amber-300 rounded-xl p-5 sm:p-6">
+                <div className="flex items-start justify-between gap-3 flex-wrap mb-3">
+                  <div>
+                    <h2 className="text-xl font-bold text-amber-900 mb-1">
+                      MCP — חיבור ישיר ל-Claude / Cursor / סוכני AI
+                    </h2>
+                    <p className="text-sm text-amber-800">
+                      גישה מובנית לדאטה דרך Model Context Protocol — ה-LLM יכול
+                      לחפש, לטייל בגרף הקשרים ולצטט מסמכי מקור בלי לעבור דרך ה-API למעלה.
+                    </p>
+                  </div>
+                  <span className="shrink-0 text-xs px-2 py-1 rounded-full bg-amber-200 text-amber-900 border border-amber-300 font-medium">
+                    ביתא סגורה
+                  </span>
+                </div>
+
+                {/* Request access */}
+                <div className="bg-white/70 border border-amber-200 rounded-lg p-4 mb-4">
+                  <h3 className="text-sm font-semibold text-amber-900 mb-1">
+                    איך מקבלים גישה?
+                  </h3>
+                  <p className="text-sm text-amber-800">
+                    שלחו אימייל ל-{" "}
+                    <a
+                      href="mailto:guy@z-g.co.il?subject=בקשת%20גישה%20ל-MCP%20של%20ניגוד%20עניינים%20לעם"
+                      className="font-mono text-amber-900 underline decoration-amber-400 underline-offset-2 hover:decoration-amber-700"
+                    >
+                      guy@z-g.co.il
+                    </a>{" "}
+                    עם כתובת ה-Google שאתם רוצים לחבר ושורה־שתיים על מטרת השימוש (מחקר, עיתונאות, כלי משלכם וכו׳). ההזמנה ניתנת ידנית, בדרך כלל באותו יום.
+                  </p>
+                </div>
+
+                {/* How to connect after approval */}
+                <div className="bg-white/70 border border-amber-200 rounded-lg p-4">
+                  <h3 className="text-sm font-semibold text-amber-900 mb-2">
+                    אחרי שאישרנו את הכתובת — איך מתחברים מ-Claude
+                  </h3>
+                  <ol className="text-sm text-amber-800 space-y-2 list-decimal pr-5 marker:text-amber-700 marker:font-semibold">
+                    <li>
+                      ב-Claude (אפליקציית הדסקטופ או claude.ai בדפדפן) פתחו <strong>Settings</strong> → <strong>Connectors</strong>.
+                    </li>
+                    <li>
+                      לחצו על הכפתור <strong>+ Add custom connector</strong> (או &quot;Personal plugins&quot; → <strong>+</strong>).
+                    </li>
+                    <li>
+                      בשדה <em>Name</em> כתבו שם שתזהו (למשל &quot;ניגוד עניינים&quot;).<br/>
+                      בשדה <em>URL</em> או <em>Server URL</em> הדביקו את הכתובת:
+                      <div className="mt-2 flex items-center gap-2 flex-wrap">
+                        <code className="bg-amber-900 text-amber-50 px-3 py-1.5 rounded font-mono text-sm" dir="ltr">
+                          https://www.ocoi.org.il/mcp
+                        </code>
+                        <button
+                          type="button"
+                          onClick={() => navigator.clipboard?.writeText("https://www.ocoi.org.il/mcp")}
+                          className="text-xs px-2 py-1 rounded border border-amber-300 bg-white text-amber-900 hover:bg-amber-50"
+                        >
+                          העתק
+                        </button>
+                      </div>
+                    </li>
+                    <li>
+                      לחצו <strong>Connect</strong>. ייפתח חלון Google — התחברו <strong>עם אותה כתובת מייל</strong> שעליה ביקשתם הזמנה.
+                    </li>
+                    <li>
+                      Google יחזיר אתכם אוטומטית ל-Claude. ה-connector יסומן כ-Connected, ובסרגל הכלים של השיחה יופיעו פעולות חדשות (חיפוש, מפת קשרים, מסמכי מקור).
+                    </li>
+                    <li>
+                      פתחו שיחה חדשה ושאלו שאלה כמו{" "}
+                      <em>&quot;חפש ב-OCOI את שם בעל התפקיד והצג קשרים&quot;</em> —
+                      Claude יקרא אוטומטית לכלים, יצטט את מסמכי המקור, ויקשר חזרה לאתר.
+                    </li>
+                  </ol>
+                  <p className="text-xs text-amber-700 mt-3">
+                    אם החיבור נכשל עם &quot;Couldn&apos;t reach the MCP server&quot;: ודאו ש-URL מתחיל ב-<code className="bg-white px-1 rounded" dir="ltr">https://www.</code> (עם www) ולא רק <code className="bg-white px-1 rounded" dir="ltr">ocoi.org.il</code>.
+                  </p>
+                </div>
+              </div>
+            </section>
+
             {/* Intro / how-to-use section */}
             <section className="mb-8 space-y-4">
               <div className="bg-primary-50 border border-primary-200 rounded-lg p-4 text-sm space-y-2">
