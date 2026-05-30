@@ -122,3 +122,76 @@ Inactive: text-primary-100 hover:bg-white/10 hover:text-white
 - Reduced motion: prefers-reduced-motion disables animations
 - Semantic HTML: nav, main, footer
 - ARIA attributes on interactive elements
+
+## API + MCP Card (canonical)
+
+הקטע הזה הוא ה-reference עבור **Ocal** ו-**Ckan-versions**. לא לשנות
+ללא תיאום משפחתי — שלושת הפרויקטים מצפים שהקרטיב יראה זהה כדי
+שהמשפחה תיראה כמוצר אחד.
+
+מימוש מתועד: [`frontend/src/components/api/McpCard.tsx`](src/components/api/McpCard.tsx).
+משוטף בעמוד `/api-docs` (ראה [`frontend/src/app/api-docs/page.tsx`](src/app/api-docs/page.tsx)).
+
+### MCP Card container
+
+```
+bg-amber-50 border border-amber-200 rounded-lg p-6 mb-6
+```
+
+### Beta badge
+
+```
+bg-yellow-100 text-yellow-800 rounded-full px-2 py-0.5 text-xs
+```
+
+טקסט: **"ביתא סגורה"** (לא "דורש הזמנה" — להאחיד טרמינולוגיה משפחתית).
+
+### Sub-card (איך מקבלים גישה / איך מתחברים)
+
+```
+bg-white border border-amber-100 rounded-lg p-4
+```
+
+### URL button (the canonical "paste this into Claude" chip)
+
+```
+bg-stone-800 text-white font-mono rounded-md px-4 py-2
+```
+
+ליד "העתק":
+
+```
+bg-white text-stone-800 border border-stone-300 rounded-md px-3 py-2 text-sm
+```
+
+### Base URL info card (the API intro box right below the MCP card)
+
+```
+bg-primary-50 border border-primary-200 rounded-lg p-4 text-sm
+```
+
+### Hero subtitle on `/api-docs`
+
+```
+text-primary-100 text-sm sm:text-base
+```
+
+(זה השוני היחיד מההירו של עמוד הבית — שם השתמשנו ב-`text-primary-200`.
+ב-`/api-docs` מעבירים ל-`primary-100` כי הוא קריא יותר ומיישר עם Ocal.)
+
+### Endpoint cards (the collapsible list below the MCP card)
+
+```
+bg-white rounded-lg border border-gray-200 overflow-hidden scroll-mt-24
+```
+
+— **לא** `bg-gray-50`. הרקע הלבן הוא חלק מהזהות המשפחתית.
+
+### Header icon size (Shield in OCOI / Calendar in Ocal)
+
+```
+w-7 h-7 sm:w-8 sm:h-8
+```
+
+מוגדר ב-[`SiteShell.tsx`](src/components/SiteShell.tsx). אחיו צריכים
+לשמור על אותה גודל כך שהמוצא הוויזואלי של הלוגו עקבי.
