@@ -46,13 +46,15 @@ export default function HomePage() {
 
   return (
     <>
-      {/* Hero section */}
-      <section className="bg-gradient-to-b from-primary-800 to-primary-700 py-10 sm:py-14 px-4">
-        <div className="max-w-4xl mx-auto text-center">
-          <h1 className="text-2xl sm:text-3xl lg:text-4xl font-bold text-white mb-2">
+      {/* Hero section — canonical per DESIGN_SYSTEM.md → "Home Hero
+          (canonical)". Sizes / paddings / colours MUST stay aligned
+          with OCAL + OVER. */}
+      <section className="bg-gradient-to-b from-primary-800 to-primary-700 py-12 sm:py-16 px-4">
+        <div className="max-w-3xl mx-auto text-center">
+          <h1 className="text-3xl sm:text-4xl lg:text-5xl font-bold text-white mb-2">
             ניגוד עניינים לעם
           </h1>
-          <p className="text-primary-200 text-sm sm:text-base mb-8">
+          <p className="text-primary-100 text-sm sm:text-base mb-8">
             חיפוש בהסדרי ניגוד עניינים של בעלי תפקידים ציבוריים
           </p>
 

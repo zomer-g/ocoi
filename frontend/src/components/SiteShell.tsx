@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { usePathname } from "next/navigation";
 import { OriginFilterProvider } from "@/lib/originFilter";
 
 interface NavLink {
@@ -21,6 +22,11 @@ const DEFAULT_FOOTER = "ניגוד עניינים לעם — שקיפות ניג
 export default function SiteShell({ children }: { children: React.ReactNode }) {
   const [navLinks, setNavLinks] = useState<NavLink[]>(DEFAULT_NAV);
   const [footerText, setFooterText] = useState(DEFAULT_FOOTER);
+  // Active-link state is family-canonical (see DESIGN_SYSTEM.md →
+  // "Home Hero / Navigation"). usePathname is null on the very first
+  // server render; we treat null as "no link active" so SSR + hydrate
+  // produce identical markup.
+  const pathname = usePathname();
 
   useEffect(() => {
     fetch("/api/v1/site/content/header_links")
@@ -75,15 +81,30 @@ export default function SiteShell({ children }: { children: React.ReactNode }) {
             <span className="text-lg sm:text-xl font-bold">ניגוד עניינים לעם</span>
           </a>
           <div className="flex gap-1">
-            {navLinks.map((item) => (
-              <a
-                key={item.href}
-                href={item.href}
-                className="px-3 sm:px-4 py-2 rounded-lg text-sm font-medium text-primary-100 hover:bg-white/10 hover:text-white transition-colors"
-              >
-                {item.label}
-              </a>
-            ))}
+            {navLinks.map((item) => {
+              // "/" matches only itself; everything else matches on
+              // pathname.startsWith(item.href) so nested routes (e.g.
+              // /entity?id=…) still highlight their tab.
+              const isActive =
+                pathname != null &&
+                (item.href === "/"
+                  ? pathname === "/"
+                  : pathname === item.href || pathname.startsWith(item.href + "/"));
+              return (
+                <a
+                  key={item.href}
+                  href={item.href}
+                  aria-current={isActive ? "page" : undefined}
+                  className={`px-3 sm:px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    isActive
+                      ? "bg-white/15 text-white"
+                      : "text-primary-100 hover:bg-white/10 hover:text-white"
+                  }`}
+                >
+                  {item.label}
+                </a>
+              );
+            })}
           </div>
         </nav>
       </header>

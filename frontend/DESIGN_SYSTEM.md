@@ -195,3 +195,87 @@ w-7 h-7 sm:w-8 sm:h-8
 
 מוגדר ב-[`SiteShell.tsx`](src/components/SiteShell.tsx). אחיו צריכים
 לשמור על אותה גודל כך שהמוצא הוויזואלי של הלוגו עקבי.
+
+## Home Hero (canonical)
+
+חובה לכל אחד משלושת אתרי "לעם". הוויזואל זהה לחלוטין; רק
+הטקסטים והמספרים משתנים. ההקפדה הזו היא שמייצרת את התחושה
+ששלושת האתרים חולקים DNA.
+
+מימוש: [`frontend/src/app/page.tsx`](src/app/page.tsx) +
+[`frontend/src/components/search/SearchBar.tsx`](src/components/search/SearchBar.tsx).
+
+### Container
+
+```
+bg-gradient-to-b from-primary-800 to-primary-700 py-12 sm:py-16 px-4
+```
+
+טקסט `center`, ילדים `max-w-3xl mx-auto`.
+
+### H1 (product name)
+
+```
+text-3xl sm:text-4xl lg:text-5xl font-bold text-white mb-2
+```
+
+### Subtitle
+
+```
+text-primary-100 text-sm sm:text-base mb-8
+```
+
+(לא `primary-200`. אנחנו רוצים את הקריאות המוגברת על הגרדיאנט.)
+
+### Search bar (single white pill, NO separate button)
+
+הסיבה לעיצוב הזה: אם יש כפתור "חפש" נפרד הוא בולע פוקוס מהשדה
+עצמו. ב-AA contrast הלבן-על-לבן עובד מצוין, וה-Enter key מספיק.
+
+**Container (pill):**
+
+```
+relative bg-white rounded-full shadow-lg max-w-2xl mx-auto
+```
+
+**Input:**
+
+```
+w-full pr-12 pl-6 py-4 rounded-full text-lg text-gray-900
+bg-transparent placeholder:text-gray-400
+focus:outline-none focus:ring-2 focus:ring-primary-500
+focus:ring-offset-2 focus:ring-offset-primary-800
+```
+
+**Search icon (decorative, RTL right side):**
+
+```
+absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400
+pointer-events-none
+```
+
+— `text-gray-400` בלבד; **לא** `text-white/60` (זו הגרסה הישנה
+שעבדה רק מעל רקע כהה).
+
+### Stats row (אופציונלי — שלוש מטריקות מתחת לחיפוש)
+
+```
+flex justify-center gap-8 sm:gap-12 mt-8
+```
+
+מספר: `text-2xl sm:text-3xl font-bold text-white`
+תווית: `text-xs sm:text-sm text-primary-200`
+
+## Navigation (canonical active state)
+
+ב-[`SiteShell.tsx`](src/components/SiteShell.tsx) מחושב `isActive` מ-
+`usePathname()` ("/" matches בדיוק; כל שאר הקישורים matches גם על
+`pathname.startsWith(href + "/")` כדי שתת-נתיבים יישארו מסומנים).
+
+```
+px-3 sm:px-4 py-2 rounded-lg text-sm font-medium transition-colors
+isActive  ? bg-white/15 text-white
+          : text-primary-100 hover:bg-white/10 hover:text-white
+```
+
+`aria-current="page"` נקבע על הקישור הפעיל לקוראי מסך.
