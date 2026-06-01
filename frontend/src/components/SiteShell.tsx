@@ -27,6 +27,12 @@ export default function SiteShell({ children }: { children: React.ReactNode }) {
   // server render; we treat null as "no link active" so SSR + hydrate
   // produce identical markup.
   const pathname = usePathname();
+  // Mobile drawer state. Closed on every route change so clicking a
+  // link in the open drawer doesn't leave it stuck open after navigation.
+  const [mobileOpen, setMobileOpen] = useState(false);
+  useEffect(() => {
+    setMobileOpen(false);
+  }, [pathname]);
 
   useEffect(() => {
     fetch("/api/v1/site/content/header_links")
@@ -70,42 +76,107 @@ export default function SiteShell({ children }: { children: React.ReactNode }) {
       .catch(() => {});
   }, []);
 
+  // Active-state helper — shared by desktop nav + mobile drawer so both
+  // surfaces stay visually in sync.
+  const isActiveLink = (href: string): boolean => {
+    if (pathname == null) return false;
+    return href === "/"
+      ? pathname === "/"
+      : pathname === href || pathname.startsWith(href + "/");
+  };
+
   return (
     <OriginFilterProvider>
       <header className="bg-primary-800 sticky top-0 z-50">
-        <nav className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-14 sm:h-16 flex items-center justify-between">
-          <a href="/" className="flex items-center gap-2 text-white">
-            <svg xmlns="http://www.w3.org/2000/svg" className="w-7 h-7 sm:w-8 sm:h-8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-            </svg>
-            <span className="text-lg sm:text-xl font-bold">ניגוד עניינים לעם</span>
-          </a>
-          <div className="flex gap-1">
-            {navLinks.map((item) => {
-              // "/" matches only itself; everything else matches on
-              // pathname.startsWith(item.href) so nested routes (e.g.
-              // /entity?id=…) still highlight their tab.
-              const isActive =
-                pathname != null &&
-                (item.href === "/"
-                  ? pathname === "/"
-                  : pathname === item.href || pathname.startsWith(item.href + "/"));
-              return (
-                <a
-                  key={item.href}
-                  href={item.href}
-                  aria-current={isActive ? "page" : undefined}
-                  className={`px-3 sm:px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                    isActive
-                      ? "bg-white/15 text-white"
-                      : "text-primary-100 hover:bg-white/10 hover:text-white"
-                  }`}
-                >
-                  {item.label}
-                </a>
-              );
-            })}
+        <nav className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="h-14 sm:h-16 flex items-center justify-between gap-2">
+            <a href="/" className="flex items-center gap-2 text-white min-w-0">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="w-7 h-7 sm:w-8 sm:h-8 shrink-0"
+                viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+              >
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+              </svg>
+              <span className="text-base sm:text-xl font-bold truncate">
+                ניגוד עניינים לעם
+              </span>
+            </a>
+
+            {/* Desktop nav — visible at sm and up */}
+            <div className="hidden sm:flex gap-1">
+              {navLinks.map((item) => {
+                const isActive = isActiveLink(item.href);
+                return (
+                  <a
+                    key={item.href}
+                    href={item.href}
+                    aria-current={isActive ? "page" : undefined}
+                    className={`px-3 sm:px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                      isActive
+                        ? "bg-white/15 text-white"
+                        : "text-primary-100 hover:bg-white/10 hover:text-white"
+                    }`}
+                  >
+                    {item.label}
+                  </a>
+                );
+              })}
+            </div>
+
+            {/* Mobile hamburger — sub-sm only */}
+            <button
+              type="button"
+              onClick={() => setMobileOpen((v) => !v)}
+              aria-expanded={mobileOpen}
+              aria-controls="mobile-nav"
+              aria-label={mobileOpen ? "סגור תפריט ניווט" : "פתח תפריט ניווט"}
+              className="sm:hidden p-2 rounded-lg text-primary-100 hover:bg-white/10 hover:text-white shrink-0"
+            >
+              {mobileOpen ? (
+                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M18 6L6 18M6 6l12 12" />
+                </svg>
+              ) : (
+                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 6h18M3 12h18M3 18h18" />
+                </svg>
+              )}
+            </button>
           </div>
+
+          {/* Mobile dropdown — full-width panel below the bar.
+              `-mx-*` matches the header's responsive horizontal padding
+              so the panel reaches the screen edges; inner `px-4` keeps
+              the link rows aligned with the brand. */}
+          {mobileOpen && (
+            <div
+              id="mobile-nav"
+              className="sm:hidden border-t border-primary-600 -mx-4 sm:-mx-6 lg:-mx-8 bg-primary-700"
+            >
+              <div className="px-4 py-2 space-y-1">
+                {navLinks.map((item) => {
+                  const isActive = isActiveLink(item.href);
+                  return (
+                    <a
+                      key={item.href}
+                      href={item.href}
+                      onClick={() => setMobileOpen(false)}
+                      aria-current={isActive ? "page" : undefined}
+                      className={`block px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                        isActive
+                          ? "bg-white/15 text-white"
+                          : "text-primary-100 hover:bg-white/10 hover:text-white"
+                      }`}
+                    >
+                      {item.label}
+                    </a>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </nav>
       </header>
 

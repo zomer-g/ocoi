@@ -279,3 +279,69 @@ isActive  ? bg-white/15 text-white
 ```
 
 `aria-current="page"` נקבע על הקישור הפעיל לקוראי מסך.
+
+## Mobile Header (canonical)
+
+חובה לכל שלושת אתרי "לעם". Breakpoint: **640px** (Tailwind `sm:`).
+ללא המבנה הזה הברנד גולש ב-iPhone וקישורי הניווט נדחפים החוצה.
+
+מימוש: [`SiteShell.tsx`](src/components/SiteShell.tsx).
+
+### Above `sm:` (≥640px)
+
+| Element | Class |
+|---|---|
+| Header | `bg-primary-800 sticky top-0 z-50` |
+| Row container | `h-16 flex items-center justify-between` |
+| Brand icon | `w-8 h-8 shrink-0` |
+| Brand text | `text-xl font-bold` |
+| Nav container | `hidden sm:flex gap-1` |
+| Active link | `bg-white/15 text-white` |
+| Inactive link | `text-primary-100 hover:bg-white/10 hover:text-white` |
+| Link padding | `px-3 sm:px-4 py-2 rounded-lg text-sm font-medium` |
+
+### Below `sm:` (<640px)
+
+| Element | Class |
+|---|---|
+| Row container | `h-14 flex items-center justify-between gap-2` |
+| Brand `<a>` | `flex items-center gap-2 text-white min-w-0` |
+| Brand icon | `w-7 h-7 shrink-0` |
+| Brand text | `text-base font-bold truncate` |
+| Inline nav | `hidden` (hides the desktop list) |
+| Hamburger button | `sm:hidden p-2 rounded-lg text-primary-100 hover:bg-white/10 hover:text-white shrink-0` |
+| Hamburger icon | `w-5 h-5` (three lines when closed, X when open) |
+
+### Mobile dropdown panel
+
+Rendered only when `mobileOpen === true`. Lives as a sibling of the
+header row (still inside the same `<nav>`), so it inherits the
+horizontal padding but breaks out to full width with negative margins:
+
+```
+sm:hidden border-t border-primary-600 -mx-4 sm:-mx-6 lg:-mx-8 bg-primary-700
+```
+
+Inner wrapper: `px-4 py-2 space-y-1`.
+
+Each link:
+
+```
+block px-3 py-2.5 rounded-lg text-sm font-medium
+isActive  ? bg-white/15 text-white
+          : text-primary-100 hover:bg-white/10 hover:text-white
+```
+
+### Behaviour contract
+
+* `min-w-0` + `truncate` on the brand wrapper — long product names
+  (e.g. "ניגוד עניינים לעם") **must not push the hamburger off-screen**.
+* `shrink-0` on both the brand SVG and the hamburger so the row only
+  squeezes the text.
+* `aria-expanded` reflects open state; `aria-controls="mobile-nav"`
+  points at the panel `id`; `aria-label` is bilingual-friendly Hebrew.
+* The panel **closes automatically** on route change (`useEffect` on
+  `usePathname`) so the back/forward button doesn't strand it open.
+* Clicking any link also closes the panel synchronously via
+  `onClick={() => setMobileOpen(false)}` — covers in-page anchors that
+  don't change `pathname`.
