@@ -2471,6 +2471,66 @@ async def matches_approve(
     return {"status": "ok", "data": summary}
 
 
+@router.get("/matches/clusters")
+async def matches_clusters(
+    entity_type: str | None = Query(None, description="Filter by 'person' / 'company' / 'association'."),
+    min_score: float = Query(0.85, ge=0.0, le=1.0),
+    db: AsyncSession = Depends(get_db),
+):
+    """Group pending duplicate proposals into connected components so the
+    admin can collapse a 30-row cluster in one click instead of 435."""
+    from ocoi_api.services.match_service import build_duplicate_clusters
+    clusters = await build_duplicate_clusters(
+        db, entity_type=entity_type, min_score=min_score,
+    )
+    return {
+        "status": "ok",
+        "data": clusters,
+        "meta": {"total": len(clusters)},
+    }
+
+
+@router.post("/matches/clusters/merge")
+async def matches_cluster_merge(
+    body: dict,
+    current = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Merge an entire duplicate cluster into a single canonical entity.
+
+    Body:
+      ``entity_type`` — 'person' / 'company' / 'association'
+      ``canonical_id`` — entity to keep (others fold into it)
+      ``member_ids`` — full list of cluster members; canonical_id is
+        ignored if present in the list (we never merge an entity into
+        itself).
+    """
+    from ocoi_api.services.match_service import merge_cluster
+
+    entity_type = (body.get("entity_type") or "").strip()
+    canonical_id = (body.get("canonical_id") or "").strip()
+    raw_members = body.get("member_ids") or []
+    if not entity_type:
+        raise HTTPException(400, "entity_type required")
+    if not canonical_id:
+        raise HTTPException(400, "canonical_id required")
+    if not isinstance(raw_members, list) or not raw_members:
+        raise HTTPException(400, "member_ids must be a non-empty array")
+
+    try:
+        summary = await merge_cluster(
+            db,
+            entity_type=entity_type,
+            canonical_id=canonical_id,
+            member_ids=[str(m) for m in raw_members],
+            reviewer_id=str(getattr(current, "id", None)) if getattr(current, "id", None) else None,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    await db.commit()
+    return {"status": "ok", "data": summary}
+
+
 @router.post("/matches/{proposal_id}/reject")
 async def matches_reject(
     proposal_id: uuid.UUID,

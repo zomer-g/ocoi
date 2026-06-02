@@ -41,6 +41,18 @@ interface ScanStatus {
   current_kind: string | null;
 }
 
+interface ClusterMember extends EntitySummary {
+  connection_count: number;
+}
+
+interface DuplicateCluster {
+  entity_type: string;
+  size: number;
+  canonical_id: string;
+  members: ClusterMember[];
+  proposals: { id: string; left_id: string; right_id: string; score: number; reasons: string[] }[];
+}
+
 const STATUS_OPTIONS: { value: string; label: string; cls: string }[] = [
   { value: "pending", label: "ממתינות", cls: "bg-amber-100 text-amber-800 border-amber-300" },
   { value: "approved", label: "מאושרות", cls: "bg-emerald-100 text-emerald-800 border-emerald-300" },
@@ -132,6 +144,13 @@ export default function AdminMatchesPage() {
   const [kindFilter, setKindFilter] = useState<string>("");
   const [savingId, setSavingId] = useState<string | null>(null);
   const [scan, setScan] = useState<ScanStatus | null>(null);
+  const [clusters, setClusters] = useState<DuplicateCluster[]>([]);
+  const [clustersLoading, setClustersLoading] = useState(false);
+  const [mergingCluster, setMergingCluster] = useState<string | null>(null);
+  // Per-cluster override: when the admin wants to keep a member other
+  // than the auto-recommended canonical, they pick from a dropdown and
+  // we remember it for that cluster only.
+  const [canonicalOverride, setCanonicalOverride] = useState<Record<string, string>>({});
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -158,6 +177,34 @@ export default function AdminMatchesPage() {
     }
   }, [statusFilter, kindFilter]);
 
+  const refreshClusters = useCallback(async () => {
+    // Clusters depend on PENDING proposals; only fetch them when the user
+    // is on the "ממתינות" tab, otherwise the API would return [] anyway.
+    if (statusFilter !== "pending") {
+      setClusters([]);
+      return;
+    }
+    setClustersLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (kindFilter) params.set("entity_type", kindFilter);
+      const res = await fetch(
+        `/api/v1/admin/matches/clusters${params.toString() ? `?${params}` : ""}`,
+        { credentials: "include" },
+      );
+      if (!res.ok) throw new Error(`שגיאה בטעינת אשכולות (${res.status})`);
+      const data = await res.json();
+      setClusters(Array.isArray(data.data) ? data.data : []);
+    } catch (e) {
+      // Don't blow up the whole page on cluster-fetch failure.
+      // eslint-disable-next-line no-console
+      console.error(e);
+      setClusters([]);
+    } finally {
+      setClustersLoading(false);
+    }
+  }, [statusFilter, kindFilter]);
+
   const refreshScan = useCallback(async () => {
     try {
       const res = await fetch(`/api/v1/admin/matches/scan-status`, { credentials: "include" });
@@ -172,7 +219,8 @@ export default function AdminMatchesPage() {
   useEffect(() => {
     refresh();
     refreshScan();
-  }, [refresh, refreshScan]);
+    refreshClusters();
+  }, [refresh, refreshScan, refreshClusters]);
 
   // Poll scan status while it's running so the user sees progress.
   useEffect(() => {
@@ -210,6 +258,43 @@ export default function AdminMatchesPage() {
       await refreshScan();
     } catch {
       // ignore
+    }
+  };
+
+  const mergeCluster = async (cluster: DuplicateCluster) => {
+    const canonicalId =
+      canonicalOverride[cluster.canonical_id] || cluster.canonical_id;
+    const canonical = cluster.members.find((m) => m.id === canonicalId);
+    const others = cluster.members.filter((m) => m.id !== canonicalId);
+    if (!canonical || others.length === 0) return;
+    const confirmText =
+      `למזג ${cluster.size} ישויות לאחת?\n\n` +
+      `הישות שתישאר: "${canonical.name}" (${canonical.connection_count} קשרים)\n` +
+      `הישויות שיימחקו (${others.length}): ${others.map((m) => `"${m.name}"`).join(", ")}\n\n` +
+      `הקשרים של כל ה-${others.length} יועברו לישות שנשארת. הפעולה אינה הפיכה.`;
+    if (!window.confirm(confirmText)) return;
+    setMergingCluster(cluster.canonical_id);
+    setError(null);
+    try {
+      const res = await fetch(`/api/v1/admin/matches/clusters/merge`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          entity_type: cluster.entity_type,
+          canonical_id: canonicalId,
+          member_ids: cluster.members.map((m) => m.id),
+        }),
+      });
+      if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(txt || `שגיאה (${res.status})`);
+      }
+      await Promise.all([refresh(), refreshClusters()]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "שגיאה במיזוג אשכול");
+    } finally {
+      setMergingCluster(null);
     }
   };
 
@@ -341,6 +426,147 @@ export default function AdminMatchesPage() {
 
       {error && (
         <div className="mb-4 p-3 rounded-lg bg-red-50 text-red-700 text-sm">{error}</div>
+      )}
+
+      {/* ── Clusters block — only on the "pending" tab. Most cleanup wins
+            happen here: one click collapses 30 הצלחה rows in a single shot.
+            The per-pair list below stays available for low-confidence
+            cases where a human still wants to inspect each edge. */}
+      {statusFilter === "pending" && (
+        <section className="mb-6">
+          <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
+            <h2 className="text-base font-semibold text-gray-800">
+              אשכולות כפילויות
+              {clusters.length > 0 && (
+                <span className="text-xs font-normal text-gray-500 mr-2">
+                  ({clusters.length} אשכולות · {clusters.reduce((s, c) => s + c.size, 0)} ישויות)
+                </span>
+              )}
+            </h2>
+            <span className="text-xs text-gray-400">
+              מזג ישויות זהות בלחיצה אחת. הקנונית נבחרה אוטומטית לפי מס&apos; הקשרים
+            </span>
+          </div>
+
+          {clustersLoading ? (
+            <div className="text-center py-8 text-gray-400 text-sm">טוען אשכולות...</div>
+          ) : clusters.length === 0 ? (
+            <div className="text-center py-6 text-gray-400 text-sm bg-gray-50 border border-gray-200 rounded-lg">
+              אין כרגע אשכולות לפתרון. {items.length === 0 && "הפעל סריקה כדי להתחיל."}
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {clusters.map((cluster) => {
+                const overrideId = canonicalOverride[cluster.canonical_id];
+                const canonicalId = overrideId || cluster.canonical_id;
+                const totalConnections = cluster.members.reduce(
+                  (s, m) => s + (m.connection_count || 0),
+                  0,
+                );
+                const isMerging = mergingCluster === cluster.canonical_id;
+                return (
+                  <div
+                    key={`${cluster.entity_type}-${cluster.canonical_id}`}
+                    className="bg-amber-50 border border-amber-200 rounded-lg p-4"
+                  >
+                    <div className="flex items-center justify-between gap-2 flex-wrap mb-3">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${KIND_BADGE[cluster.entity_type] || "bg-gray-100 text-gray-700"}`}>
+                          {KIND_LABEL[cluster.entity_type] || cluster.entity_type}
+                        </span>
+                        <span className="text-sm font-semibold text-amber-900">
+                          {cluster.size} ישויות
+                        </span>
+                        <span className="text-xs text-amber-800">
+                          · {totalConnections.toLocaleString()} קשרים סך הכל
+                        </span>
+                      </div>
+                      <button
+                        onClick={() => mergeCluster(cluster)}
+                        disabled={isMerging}
+                        className="px-3 py-1.5 text-sm rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 font-medium"
+                      >
+                        {isMerging ? "ממזג..." : `מזג את כל ${cluster.size} ל"${cluster.members.find((m) => m.id === canonicalId)?.name || "?"}"`}
+                      </button>
+                    </div>
+
+                    {/* Member list — first row is recommended canonical
+                        (or whatever the user picked via the radio).
+                        Each row shows its connection count + a radio
+                        button to override the canonical selection. */}
+                    <div className="bg-white border border-amber-100 rounded-lg divide-y divide-gray-100">
+                      {cluster.members.map((m) => {
+                        const isCanonical = m.id === canonicalId;
+                        return (
+                          <label
+                            key={m.id}
+                            className={`flex items-center justify-between gap-3 px-3 py-2 cursor-pointer ${
+                              isCanonical ? "bg-emerald-50" : "hover:bg-gray-50"
+                            }`}
+                          >
+                            <div className="flex items-center gap-2 min-w-0 flex-1">
+                              <input
+                                type="radio"
+                                name={`cluster-${cluster.canonical_id}`}
+                                checked={isCanonical}
+                                onChange={() =>
+                                  setCanonicalOverride((prev) => ({
+                                    ...prev,
+                                    [cluster.canonical_id]: m.id,
+                                  }))
+                                }
+                                disabled={isMerging}
+                                className="shrink-0"
+                              />
+                              <span className={`text-sm truncate ${isCanonical ? "font-semibold text-gray-900" : "text-gray-700"}`}>
+                                {m.name || "(ללא שם)"}
+                              </span>
+                              {(m.title || m.position || m.ministry) && (
+                                <span className="text-xs text-gray-400 truncate">
+                                  · {[m.title, m.position, m.ministry].filter(Boolean).join(" · ")}
+                                </span>
+                              )}
+                              {Array.isArray(m.aliases) && m.aliases.length > 0 && (
+                                <span className="text-xs text-gray-400 truncate hidden sm:inline">
+                                  · כינויים: {m.aliases.slice(0, 2).join(", ")}
+                                  {m.aliases.length > 2 && ` (+${m.aliases.length - 2})`}
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className={`text-xs ${isCanonical ? "text-emerald-700 font-semibold" : "text-gray-500"}`}>
+                                {m.connection_count} קשרים
+                              </span>
+                              {isCanonical && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-200 text-emerald-900 font-medium">
+                                  נשמרת
+                                </span>
+                              )}
+                              <Link
+                                href={
+                                  cluster.entity_type === "person"
+                                    ? `/admin/entities/detail?type=persons&id=${m.id}`
+                                    : cluster.entity_type === "company"
+                                      ? `/admin/entities/detail?type=companies&id=${m.id}`
+                                      : `/admin/entities/detail?type=associations&id=${m.id}`
+                                }
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-xs text-primary-600 hover:underline"
+                              >
+                                ↗
+                              </Link>
+                            </div>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
       )}
 
       <p className="text-xs text-gray-400 mb-3">{total.toLocaleString()} הצעות</p>

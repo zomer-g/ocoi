@@ -15,7 +15,7 @@ import logging
 from datetime import datetime
 from typing import Iterable
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ocoi_common.timezone import now_israel
@@ -449,3 +449,257 @@ async def _entity_summary(session: AsyncSession, etype: str, eid: str) -> dict:
         summary["position"] = getattr(row, "position", None)
         summary["ministry"] = getattr(row, "ministry", None)
     return summary
+
+
+# ── Cluster view (union-find over pending duplicate proposals) ─────────
+#
+# The per-pair "approve / reject" flow is fine when there are five rows
+# called "משה כחלון" — but breaks down at thirty rows called "הצלחה",
+# where the scanner emits C(30,2)=435 proposals all referring to the
+# same logical group. ``build_duplicate_clusters`` collapses those
+# proposals into connected components so the admin sees one card per
+# cluster and merges the whole thing in a single click.
+
+
+async def build_duplicate_clusters(
+    session: AsyncSession,
+    *,
+    entity_type: str | None = None,
+    min_score: float = SCORE_THRESHOLD,
+) -> list[dict]:
+    """Return clusters of entities that share at least one pending
+    duplicate proposal of score ≥ ``min_score``.
+
+    Each cluster is the connected component obtained by treating every
+    pending proposal as an undirected edge (entity_id, target_id) inside
+    the same entity_type. We also pre-pick a recommended ``canonical_id``
+    — the entity that should be kept when the cluster is merged — so the
+    UI can show "מזג הכל ל-X" without another round-trip.
+
+    The canonical heuristic is:
+      1. Most relationships (highest in-degree + out-degree). The entity
+         already touching the most edges has the strongest gravity; merging
+         the others into it minimises the number of FK updates and is most
+         likely the row a human would have picked anyway.
+      2. Longest name_hebrew — ties usually mean "X ינר" vs "X" with the
+         longer one being the more specific / corrected name.
+      3. Lowest id — stable deterministic tiebreaker.
+    """
+    # 1. Pull every pending duplicate proposal at-or-above the threshold.
+    where = [
+        EntityMatchProposal.proposal_kind == "duplicate",
+        EntityMatchProposal.status == "pending",
+        EntityMatchProposal.score >= min_score,
+    ]
+    if entity_type:
+        where.append(EntityMatchProposal.entity_type == entity_type)
+    rows = (await session.execute(
+        select(
+            EntityMatchProposal.id,
+            EntityMatchProposal.entity_type,
+            EntityMatchProposal.entity_id,
+            EntityMatchProposal.target_id,
+            EntityMatchProposal.score,
+            EntityMatchProposal.reasons,
+        ).where(*where)
+    )).all()
+    if not rows:
+        return []
+
+    # 2. Union-find over (entity_type, entity_id) keys.
+    parent: dict[tuple[str, str], tuple[str, str]] = {}
+
+    def find(node: tuple[str, str]) -> tuple[str, str]:
+        # Path compression so a long chain collapses to O(1) on the next
+        # walk; safe because the dict is rebuilt per call.
+        root = node
+        while parent.get(root, root) != root:
+            root = parent[root]
+        cur = node
+        while parent.get(cur, cur) != root:
+            nxt = parent[cur]
+            parent[cur] = root
+            cur = nxt
+        return root
+
+    def union(a: tuple[str, str], b: tuple[str, str]) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    proposals_by_root: dict[tuple[str, str], list[dict]] = {}
+    for pid, etype, eid, tid, score, reasons_raw in rows:
+        key_a = (str(etype), str(eid))
+        key_b = (str(etype), str(tid))
+        parent.setdefault(key_a, key_a)
+        parent.setdefault(key_b, key_b)
+        union(key_a, key_b)
+
+    # 3. Re-group all proposals by their cluster root.
+    components: dict[tuple[str, str], set[tuple[str, str]]] = {}
+    for pid, etype, eid, tid, score, reasons_raw in rows:
+        key_a = (str(etype), str(eid))
+        root = find(key_a)
+        comp = components.setdefault(root, set())
+        comp.add(key_a)
+        comp.add((str(etype), str(tid)))
+        try:
+            reasons = json.loads(reasons_raw) if reasons_raw else []
+        except Exception:
+            reasons = []
+        proposals_by_root.setdefault(root, []).append({
+            "id": str(pid),
+            "left_id": str(eid),
+            "right_id": str(tid),
+            "score": float(score or 0.0),
+            "reasons": reasons if isinstance(reasons, list) else [],
+        })
+
+    # 4. Hydrate each cluster with display data + pick the canonical.
+    out: list[dict] = []
+    for root, member_keys in components.items():
+        if len(member_keys) < 2:
+            # All edges of this component must have been to the same id —
+            # nothing to merge, drop it.
+            continue
+
+        cluster_type = root[0]
+        member_ids = [eid for (_etype, eid) in member_keys]
+
+        # Connection counts for canonical selection. One query per cluster
+        # keeps it bounded; clusters are small (typically 3-50 members)
+        # so we don't bother batching across clusters.
+        conn_q = await session.execute(
+            select(
+                EntityRelationship.source_entity_id.label("anchor"),
+                EntityRelationship.id,
+            ).where(
+                EntityRelationship.source_entity_type == cluster_type,
+                EntityRelationship.source_entity_id.in_(member_ids),
+            )
+        )
+        source_counts: dict[str, int] = {}
+        for anchor, _ in conn_q.fetchall():
+            source_counts[str(anchor)] = source_counts.get(str(anchor), 0) + 1
+        conn_q = await session.execute(
+            select(
+                EntityRelationship.target_entity_id.label("anchor"),
+                EntityRelationship.id,
+            ).where(
+                EntityRelationship.target_entity_type == cluster_type,
+                EntityRelationship.target_entity_id.in_(member_ids),
+            )
+        )
+        target_counts: dict[str, int] = {}
+        for anchor, _ in conn_q.fetchall():
+            target_counts[str(anchor)] = target_counts.get(str(anchor), 0) + 1
+
+        members = []
+        for mid in member_ids:
+            summary = await _entity_summary(session, cluster_type, mid)
+            conn_count = source_counts.get(mid, 0) + target_counts.get(mid, 0)
+            summary["connection_count"] = conn_count
+            members.append(summary)
+
+        # Sort key per heuristic (above). The first element is canonical.
+        members.sort(key=lambda m: (
+            -m.get("connection_count", 0),
+            -len((m.get("name") or "")),
+            m["id"],
+        ))
+        canonical_id = members[0]["id"]
+
+        out.append({
+            "entity_type": cluster_type,
+            "size": len(members),
+            "canonical_id": canonical_id,
+            "members": members,
+            "proposals": proposals_by_root.get(root, []),
+        })
+
+    # Largest clusters first — those are the biggest cleanup wins.
+    out.sort(key=lambda c: (-c["size"], c["entity_type"], c["canonical_id"]))
+    return out
+
+
+async def merge_cluster(
+    session: AsyncSession,
+    *,
+    entity_type: str,
+    canonical_id: str,
+    member_ids: list[str],
+    reviewer_id: str | None = None,
+) -> dict:
+    """Collapse an entire duplicate cluster into ``canonical_id`` in one
+    transaction (managed by the caller). Runs ``merge_entities`` for
+    every member ≠ canonical, then marks all pending proposals that
+    reference any cluster member as ``approved`` with ``reviewer_id``.
+
+    Returns a summary dict the admin UI can display."""
+    if entity_type not in _SCAN_MODELS:
+        raise ValueError(f"unsupported entity type: {entity_type}")
+    canonical_id = str(canonical_id)
+    member_ids = [str(m) for m in member_ids if str(m) != canonical_id]
+    if not member_ids:
+        return {
+            "canonical_id": canonical_id,
+            "merged_count": 0,
+            "moved_source_rels": 0,
+            "moved_target_rels": 0,
+            "self_loops_removed": 0,
+            "aliases_added": [],
+            "proposals_approved": 0,
+        }
+
+    total_src = 0
+    total_tgt = 0
+    total_loops = 0
+    aliases_added: list[str] = []
+    merged_ids: list[str] = []
+
+    for mid in member_ids:
+        try:
+            summary = await merge_entities(session, entity_type, canonical_id, mid)
+        except ValueError:
+            # Entity may have been merged in a prior pass (e.g. user ran
+            # merge twice). Skip silently rather than aborting the rest
+            # of the cluster.
+            continue
+        total_src += int(summary.get("moved_source_rels") or 0)
+        total_tgt += int(summary.get("moved_target_rels") or 0)
+        total_loops += int(summary.get("self_loops_removed") or 0)
+        aliases_added.extend(summary.get("aliases_added") or [])
+        merged_ids.append(mid)
+
+    # Mark every still-pending proposal that touched ANY member of the
+    # cluster as approved. Without this, the merged-away ids would still
+    # produce ghost proposals in the queue.
+    all_ids = [canonical_id] + member_ids
+    approved_q = await session.execute(
+        update(EntityMatchProposal)
+        .where(
+            EntityMatchProposal.proposal_kind == "duplicate",
+            EntityMatchProposal.entity_type == entity_type,
+            EntityMatchProposal.status == "pending",
+            or_(
+                EntityMatchProposal.entity_id.in_(all_ids),
+                EntityMatchProposal.target_id.in_(all_ids),
+            ),
+        )
+        .values(
+            status="approved",
+            reviewed_by=reviewer_id,
+            reviewed_at=datetime.utcnow(),
+        )
+    )
+
+    return {
+        "canonical_id": canonical_id,
+        "merged_count": len(merged_ids),
+        "merged_ids": merged_ids,
+        "moved_source_rels": total_src,
+        "moved_target_rels": total_tgt,
+        "self_loops_removed": total_loops,
+        "aliases_added": sorted(set(aliases_added)),
+        "proposals_approved": int(approved_q.rowcount or 0),
+    }
