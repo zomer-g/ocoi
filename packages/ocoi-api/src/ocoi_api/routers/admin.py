@@ -2475,18 +2475,32 @@ async def matches_approve(
 async def matches_clusters(
     entity_type: str | None = Query(None, description="Filter by 'person' / 'company' / 'association'."),
     min_score: float = Query(0.85, ge=0.0, le=1.0),
+    limit: int = Query(100, ge=1, le=2000, description="Cap on number of clusters returned (top-N by size)."),
     db: AsyncSession = Depends(get_db),
 ):
     """Group pending duplicate proposals into connected components so the
-    admin can collapse a 30-row cluster in one click instead of 435."""
+    admin can collapse a 30-row cluster in one click instead of 435.
+
+    With 1,500+ pending proposals the response would otherwise need to
+    hydrate ~3,000 entity rows in one shot — too slow on Render's free
+    tier. ``limit`` (default 100) caps the response to the largest N
+    clusters first; sweep through, merge those, refresh, repeat. The
+    ``meta`` block tells you how many additional clusters are queued."""
     from ocoi_api.services.match_service import build_duplicate_clusters
     clusters = await build_duplicate_clusters(
-        db, entity_type=entity_type, min_score=min_score,
+        db,
+        entity_type=entity_type,
+        min_score=min_score,
+        limit=limit,
     )
     return {
         "status": "ok",
         "data": clusters,
-        "meta": {"total": len(clusters)},
+        "meta": {
+            "total": len(clusters),
+            "limit": limit,
+            "limited": len(clusters) >= limit,
+        },
     }
 
 

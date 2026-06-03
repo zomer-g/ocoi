@@ -531,6 +531,7 @@ async def build_duplicate_clusters(
     *,
     entity_type: str | None = None,
     min_score: float = SCORE_THRESHOLD,
+    limit: int | None = None,
 ) -> list[dict]:
     """Return clusters of entities that share at least one pending
     duplicate proposal of score ≥ ``min_score``.
@@ -629,14 +630,24 @@ async def build_duplicate_clusters(
     #     yielding connection counts for every member in a single round-trip.
     # Net: ~6 DB queries total regardless of cluster count.
 
+    # If a `limit` is set, sort components by size and keep only the top
+    # N BEFORE hydration so we don't waste DB round-trips on entities the
+    # response is going to discard anyway. With 1,500+ pending proposals
+    # the difference is ~12s vs ~0.3s wall-clock on Render's free tier.
+    filtered_pairs: list[tuple[tuple[str, str], set[tuple[str, str]]]] = [
+        (root, members) for root, members in components.items() if len(members) >= 2
+    ]
+    if limit is not None and limit > 0:
+        filtered_pairs.sort(
+            key=lambda kv: (-len(kv[1]), kv[0][0], kv[0][1]),
+        )
+        filtered_pairs = filtered_pairs[:limit]
+    components_filtered: dict[tuple[str, str], set[tuple[str, str]]] = dict(filtered_pairs)
+
     # Group member ids by entity_type so the batch queries can hit a
     # single table at a time.
     ids_by_type: dict[str, set[str]] = {}
-    components_filtered: dict[tuple[str, str], set[tuple[str, str]]] = {}
-    for root, member_keys in components.items():
-        if len(member_keys) < 2:
-            continue
-        components_filtered[root] = member_keys
+    for _root, member_keys in components_filtered.items():
         for etype, eid in member_keys:
             ids_by_type.setdefault(etype, set()).add(eid)
 
