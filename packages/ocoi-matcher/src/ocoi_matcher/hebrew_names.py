@@ -54,6 +54,23 @@ COMPANY_SUFFIXES: frozenset[str] = frozenset({
     "ltd", "limited", "llc", "inc", "corp",
 })
 
+# Hebrew construct-state organisation prefixes — almost always boilerplate
+# that obscures the real name. Without stripping these, "עמותת הצלחה"
+# (tokens: ["עמותת", "הצלחה"]) and "תנועת הצלחה" (["תנועת", "הצלחה"])
+# look only ~50% similar to the matcher; with stripping both collapse to
+# ["הצלחה"] and score 1.0.
+ORG_PREFIXES: frozenset[str] = frozenset({
+    "עמותת", "תנועת", "חברת", "אגודת", "מפלגת", "ארגון", "ארגונת",
+    "קרן", "קבוצת", "מכון", "מועדון", "מפעל", "ועד", "ועדת",
+    "ר", "רעמ",  # rare honorific shorthands seen in scraped names
+    # final form variants
+    "עמותהת", "תנועהת",
+    # plural variants
+    "עמותות", "תנועות", "חברות", "מפלגות",
+    # noisy "of-the-X" tokens
+    "ה", "של", "את",
+})
+
 
 def _strip_punct(s: str) -> str:
     s = _PUNCT_RE.sub("", s)
@@ -79,15 +96,20 @@ def tokens(name: str, *, kind: str = "person") -> list[str]:
     """Sorted, honorific-stripped token list. Empty when ``name`` has no
     informative content after stripping.
 
-    Use ``kind='company'`` to also strip legal suffixes (בע״מ etc.) so
-    "פלאפון בע״מ" and "פלאפון תקשורת בע״מ" produce a comparable token
-    set without the boilerplate.
+    Use ``kind='company'`` (or any non-person kind) to also strip legal
+    suffixes (בע״מ, חברה …) and construct-state organisation prefixes
+    (עמותת, תנועת, חברת …). Without that, two clearly-identical orgs
+    like "עמותת הצלחה" and "תנועת הצלחה" score only ~0.5 — well below
+    the duplicate threshold — and we miss obvious cleanup wins.
     """
     if not name:
         return []
     cleaned = normalize(name)
     raw = [t for t in cleaned.split(" ") if t]
-    drops = HONORIFICS if kind == "person" else (HONORIFICS | COMPANY_SUFFIXES)
+    if kind == "person":
+        drops = HONORIFICS
+    else:
+        drops = HONORIFICS | COMPANY_SUFFIXES | ORG_PREFIXES
     out = [t for t in raw if t not in drops]
     out.sort()
     return out
@@ -192,6 +214,33 @@ def similarity(a: str, b: str, *, kind: str = "person") -> tuple[float, list[str
         # Even when the sets match, return a score tightly below 1.0 so
         # truly exact strings can be sorted above word-swap matches.
         return 0.97, reasons
+
+    # Substring containment — for organisations especially, the short
+    # form of the name is routinely a prefix of the full form
+    # ("הצלחה" ⊂ "הצלחה התנועה הצרכנית לקידום חברה כלכלית הוגנת"). The
+    # plain token_sort_ratio collapses to ~0.2 because of the length
+    # gap, so the duplicate is missed. We catch it here.
+    # Guard with a 3-char minimum so we don't fire on single Hebrew
+    # letters that contain each other accidentally.
+    shorter, longer = (norm_a, norm_b) if len(norm_a) <= len(norm_b) else (norm_b, norm_a)
+    if len(shorter) >= 3 and shorter in longer:
+        reasons.append("substring_match")
+        return 0.92, reasons
+
+    # Token-set containment for organisations: if every token in the
+    # shorter name appears in the longer one (after suffix/prefix
+    # stripping), they're almost certainly the same organisation with
+    # extra qualifier words attached. Catches cases like
+    # ["הצלחה", "לקידום", "חברה", "הוגנת"]  ⊂
+    # ["הצלחה", "התנועה", "הצרכנית", "לקידום", "חברה", "כלכלית", "הוגנת"].
+    sa, sb = set(ta), set(tb)
+    small, big = (sa, sb) if len(sa) <= len(sb) else (sb, sa)
+    if len(small) >= 1 and small.issubset(big):
+        reasons.append(f"token_subset={len(small)}/{len(big)}")
+        # Score scales with how close the bigger set is to the smaller —
+        # a 1/2 subset is weaker than a 3/4 one.
+        coverage = len(small) / len(big)
+        return max(0.88, 0.7 + 0.25 * coverage), reasons
 
     tsr = _token_sort_ratio(ta, tb)
     jac = _jaccard(ta, tb)
