@@ -146,6 +146,7 @@ export default function AdminMatchesPage() {
   const [scan, setScan] = useState<ScanStatus | null>(null);
   const [clusters, setClusters] = useState<DuplicateCluster[]>([]);
   const [clustersLoading, setClustersLoading] = useState(false);
+  const [clustersLimited, setClustersLimited] = useState(false);
   const [mergingCluster, setMergingCluster] = useState<string | null>(null);
   // Per-cluster override: when the admin wants to keep a member other
   // than the auto-recommended canonical, they pick from a dropdown and
@@ -191,20 +192,25 @@ export default function AdminMatchesPage() {
     }
     setClustersLoading(true);
     try {
-      const params = new URLSearchParams();
+      // Default to 30 — the server can hydrate ~500 IDs per request in
+      // under 3s on Render free. Bigger N hits the proxy timeout when
+      // mega-clusters (50-100 members) are in the top slice.
+      const params = new URLSearchParams({ limit: "30" });
       if (kindFilter) params.set("entity_type", kindFilter);
       const res = await fetch(
-        `/api/v1/admin/matches/clusters${params.toString() ? `?${params}` : ""}`,
+        `/api/v1/admin/matches/clusters?${params}`,
         { credentials: "include" },
       );
       if (!res.ok) throw new Error(`שגיאה בטעינת אשכולות (${res.status})`);
       const data = await res.json();
       setClusters(Array.isArray(data.data) ? data.data : []);
+      setClustersLimited(Boolean(data.meta?.limited));
     } catch (e) {
       // Don't blow up the whole page on cluster-fetch failure.
       // eslint-disable-next-line no-console
       console.error(e);
       setClusters([]);
+      setClustersLimited(false);
     } finally {
       setClustersLoading(false);
     }
@@ -518,12 +524,14 @@ export default function AdminMatchesPage() {
               אשכולות כפילויות
               {clusters.length > 0 && (
                 <span className="text-xs font-normal text-gray-500 mr-2">
-                  ({clusters.length} אשכולות · {clusters.reduce((s, c) => s + c.size, 0)} ישויות)
+                  ({clusters.length} {clustersLimited ? "אשכולות (הגדולים ביותר) · " : "אשכולות · "}{clusters.reduce((s, c) => s + c.size, 0)} ישויות)
                 </span>
               )}
             </h2>
             <span className="text-xs text-gray-400">
-              סמן כמה שתרצה ולחץ &quot;מזג בחירה&quot;. הקנונית נבחרת אוטומטית לפי מס&apos; הקשרים.
+              {clustersLimited
+                ? "מציג את 30 הגדולים. לאחר מיזוג רענן לראות את הבאים."
+                : "סמן כמה שתרצה ולחץ \"מזג בחירה\". הקנונית נבחרת אוטומטית לפי מס' הקשרים."}
             </span>
           </div>
 

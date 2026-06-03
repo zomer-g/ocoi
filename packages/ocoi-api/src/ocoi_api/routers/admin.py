@@ -2475,7 +2475,7 @@ async def matches_approve(
 async def matches_clusters(
     entity_type: str | None = Query(None, description="Filter by 'person' / 'company' / 'association'."),
     min_score: float = Query(0.85, ge=0.0, le=1.0),
-    limit: int = Query(100, ge=1, le=2000, description="Cap on number of clusters returned (top-N by size)."),
+    limit: int = Query(30, ge=1, le=2000, description="Cap on number of clusters returned (top-N by size). Default 30 keeps the response under 3s on Render free; merge those, refresh, get the next batch."),
     db: AsyncSession = Depends(get_db),
 ):
     """Group pending duplicate proposals into connected components so the
