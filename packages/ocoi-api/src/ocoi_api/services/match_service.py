@@ -15,7 +15,7 @@ import logging
 from datetime import datetime
 from typing import Iterable
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ocoi_common.timezone import now_israel
@@ -319,6 +319,70 @@ async def merge_entities(
     if not merge:
         raise ValueError("merge entity not found")
 
+    # ── Dedup before the UPDATEs ──
+    # The compound unique index `ix_rel_compound` covers
+    #   (source_type, source_id, target_type, target_id,
+    #    relationship_type, document_id)
+    # so the moment two duplicates share an edge (which they routinely do
+    # — that's WHY they're duplicates), a naïve UPDATE collides with the
+    # canonical's existing row and the whole transaction aborts.
+    #
+    # We drop the about-to-collide rows from the merge side first, so the
+    # subsequent UPDATEs only have to relocate truly-unique edges. The
+    # canonical's copy stays, so the relationship is preserved — just
+    # de-duplicated.
+    er = EntityRelationship.__table__
+    # Aliased SELECT-for-delete: bind each alias to a local variable so
+    # the same alias object is reused in JOIN and WHERE — otherwise
+    # SQLAlchemy generates two distinct subqueries that don't correlate.
+    keep_src_alias = er.alias("k_src")
+    src_collisions = (await session.execute(
+        select(er.c.id)
+        .select_from(
+            er.join(
+                keep_src_alias,
+                and_(
+                    er.c.source_entity_type == keep_src_alias.c.source_entity_type,
+                    er.c.target_entity_type == keep_src_alias.c.target_entity_type,
+                    er.c.target_entity_id == keep_src_alias.c.target_entity_id,
+                    er.c.relationship_type == keep_src_alias.c.relationship_type,
+                    er.c.document_id == keep_src_alias.c.document_id,
+                ),
+            )
+        )
+        .where(
+            er.c.source_entity_type == entity_type,
+            er.c.source_entity_id == merge_id,
+            keep_src_alias.c.source_entity_id == keep_id,
+        )
+    )).scalars().all()
+    keep_tgt_alias = er.alias("k_tgt")
+    tgt_collisions = (await session.execute(
+        select(er.c.id)
+        .select_from(
+            er.join(
+                keep_tgt_alias,
+                and_(
+                    er.c.source_entity_type == keep_tgt_alias.c.source_entity_type,
+                    er.c.source_entity_id == keep_tgt_alias.c.source_entity_id,
+                    er.c.target_entity_type == keep_tgt_alias.c.target_entity_type,
+                    er.c.relationship_type == keep_tgt_alias.c.relationship_type,
+                    er.c.document_id == keep_tgt_alias.c.document_id,
+                ),
+            )
+        )
+        .where(
+            er.c.target_entity_type == entity_type,
+            er.c.target_entity_id == merge_id,
+            keep_tgt_alias.c.target_entity_id == keep_id,
+        )
+    )).scalars().all()
+    collision_ids = set(src_collisions) | set(tgt_collisions)
+    if collision_ids:
+        await session.execute(
+            er.delete().where(er.c.id.in_(list(collision_ids)))
+        )
+
     # Move SOURCE-side relationships
     src_result = await session.execute(
         update(EntityRelationship)
@@ -378,6 +442,7 @@ async def merge_entities(
         "moved_target_rels": moved_tgt,
         "self_loops_removed": self_loops_dropped,
         "aliases_added": merged_in,
+        "duplicate_edges_removed": len(collision_ids),
     }
 
 
