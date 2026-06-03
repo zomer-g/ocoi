@@ -2487,11 +2487,13 @@ async def matches_clusters(
     clusters first; sweep through, merge those, refresh, repeat. The
     ``meta`` block tells you how many additional clusters are queued."""
     from ocoi_api.services.match_service import build_duplicate_clusters
+    timings: dict = {}
     clusters = await build_duplicate_clusters(
         db,
         entity_type=entity_type,
         min_score=min_score,
         limit=limit,
+        timings=timings,
     )
     return {
         "status": "ok",
@@ -2500,6 +2502,7 @@ async def matches_clusters(
             "total": len(clusters),
             "limit": limit,
             "limited": len(clusters) >= limit,
+            "timings_ms": timings,
         },
     }
 

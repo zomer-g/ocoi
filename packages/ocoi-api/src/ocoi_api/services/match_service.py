@@ -532,6 +532,7 @@ async def build_duplicate_clusters(
     entity_type: str | None = None,
     min_score: float = SCORE_THRESHOLD,
     limit: int | None = None,
+    timings: dict | None = None,
 ) -> list[dict]:
     """Return clusters of entities that share at least one pending
     duplicate proposal of score ≥ ``min_score``.
@@ -551,6 +552,12 @@ async def build_duplicate_clusters(
          longer one being the more specific / corrected name.
       3. Lowest id — stable deterministic tiebreaker.
     """
+    import time as _time
+    _t0 = _time.perf_counter()
+    def _mark(label: str) -> None:
+        if timings is not None:
+            timings[label] = round((_time.perf_counter() - _t0) * 1000, 1)
+
     # 1. Pull every pending duplicate proposal at-or-above the threshold.
     where = [
         EntityMatchProposal.proposal_kind == "duplicate",
@@ -569,6 +576,7 @@ async def build_duplicate_clusters(
             EntityMatchProposal.reasons,
         ).where(*where)
     )).all()
+    _mark("load_proposals")
     if not rows:
         return []
 
@@ -643,6 +651,12 @@ async def build_duplicate_clusters(
         )
         filtered_pairs = filtered_pairs[:limit]
     components_filtered: dict[tuple[str, str], set[tuple[str, str]]] = dict(filtered_pairs)
+    _mark("union_find_and_filter")
+    if timings is not None:
+        timings["components_kept"] = len(components_filtered)
+        timings["biggest_cluster_size"] = (
+            max((len(v) for v in components_filtered.values()), default=0)
+        )
 
     # Group member ids by entity_type so the batch queries can hit a
     # single table at a time.
@@ -650,6 +664,8 @@ async def build_duplicate_clusters(
     for _root, member_keys in components_filtered.items():
         for etype, eid in member_keys:
             ids_by_type.setdefault(etype, set()).add(eid)
+    if timings is not None:
+        timings["total_ids_to_hydrate"] = sum(len(s) for s in ids_by_type.values())
 
     entities_by_type: dict[str, dict[str, dict]] = {}
     counts_by_type: dict[str, dict[str, int]] = {}
@@ -719,6 +735,7 @@ async def build_duplicate_clusters(
         for eid, n in tgt_rows:
             counts[str(eid)] = counts.get(str(eid), 0) + int(n or 0)
         counts_by_type[etype] = counts
+        _mark(f"hydrate_{etype}")
 
     out: list[dict] = []
     for root, member_keys in components_filtered.items():
