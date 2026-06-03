@@ -2471,6 +2471,55 @@ async def matches_approve(
     return {"status": "ok", "data": summary}
 
 
+@router.post("/matches/cleanup-pending")
+async def matches_cleanup_pending(
+    body: dict,
+    current = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Bulk-delete pending duplicate proposals matching a filter — useful
+    after tightening the matcher rules and realising the previous scan
+    wrote a flood of false positives (e.g. all "בנימין"-named persons
+    chained together by substring matching).
+
+    Body:
+      ``entity_type``   — required: 'person' / 'company' / 'association'
+      ``reasons_any``   — optional list[str]; delete only proposals whose
+                          reasons text contains ANY of these substrings.
+                          Pass ``["prefix_match", "substring_match",
+                          "token_subset"]`` to wipe matcher-changed rows
+                          without touching the strict-token proposals.
+
+    Returns the number of rows deleted."""
+    entity_type = (body.get("entity_type") or "").strip()
+    if entity_type not in ("person", "company", "association"):
+        raise HTTPException(400, "entity_type must be person/company/association")
+    reasons_any = body.get("reasons_any") or []
+    if not isinstance(reasons_any, list):
+        raise HTTPException(400, "reasons_any must be an array of strings")
+
+    where = [
+        EntityMatchProposal.proposal_kind == "duplicate",
+        EntityMatchProposal.status == "pending",
+        EntityMatchProposal.entity_type == entity_type,
+    ]
+    if reasons_any:
+        # The `reasons` column is JSON-encoded text — checking with LIKE
+        # is enough; we don't need full JSON parsing for this admin
+        # housekeeping path.
+        like_filters = [
+            EntityMatchProposal.reasons.ilike(f"%{r}%") for r in reasons_any if r
+        ]
+        if like_filters:
+            where.append(or_(*like_filters))
+
+    res = await db.execute(
+        EntityMatchProposal.__table__.delete().where(*where)
+    )
+    await db.commit()
+    return {"status": "ok", "data": {"deleted": int(res.rowcount or 0)}}
+
+
 @router.get("/matches/clusters")
 async def matches_clusters(
     entity_type: str | None = Query(None, description="Filter by 'person' / 'company' / 'association'."),
