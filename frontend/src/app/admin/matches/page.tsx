@@ -151,6 +151,11 @@ export default function AdminMatchesPage() {
   // than the auto-recommended canonical, they pick from a dropdown and
   // we remember it for that cluster only.
   const [canonicalOverride, setCanonicalOverride] = useState<Record<string, string>>({});
+  // Bulk-merge selection. Keyed on the cluster's *initial* canonical_id
+  // (stable for the cluster's lifetime even if the admin overrides who
+  // gets kept). Set semantics keep toggling O(1).
+  const [selectedClusters, setSelectedClusters] = useState<Set<string>>(new Set());
+  const [bulkMerging, setBulkMerging] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -258,6 +263,80 @@ export default function AdminMatchesPage() {
       await refreshScan();
     } catch {
       // ignore
+    }
+  };
+
+  const toggleClusterSelected = (canonicalId: string) => {
+    setSelectedClusters((prev) => {
+      const next = new Set(prev);
+      if (next.has(canonicalId)) next.delete(canonicalId);
+      else next.add(canonicalId);
+      return next;
+    });
+  };
+
+  const selectAllClusters = () => {
+    setSelectedClusters(new Set(clusters.map((c) => c.canonical_id)));
+  };
+
+  const clearClusterSelection = () => {
+    setSelectedClusters(new Set());
+  };
+
+  // Pre-compute the impact of the current selection so the action bar can
+  // show "מזג N אשכולות (X ישויות יימחקו)".
+  const selectedClusterList = clusters.filter((c) =>
+    selectedClusters.has(c.canonical_id),
+  );
+  const selectedEntitiesToDelete = selectedClusterList.reduce((sum, c) => {
+    // Each cluster of size N collapses into 1 → N-1 entities removed.
+    return sum + Math.max(0, c.size - 1);
+  }, 0);
+
+  const bulkMergeSelected = async () => {
+    if (selectedClusterList.length === 0) return;
+    const confirmText =
+      `למזג ${selectedClusterList.length} אשכולות בבת אחת?\n\n` +
+      `סה"כ ${selectedEntitiesToDelete} ישויות יימחקו (הקשרים שלהן יועברו לישות הקנונית של כל אשכול).\n\n` +
+      `הפעולה אינה הפיכה.`;
+    if (!window.confirm(confirmText)) return;
+
+    setBulkMerging(true);
+    setError(null);
+    try {
+      const operations = selectedClusterList.map((c) => {
+        const canonicalId = canonicalOverride[c.canonical_id] || c.canonical_id;
+        return {
+          entity_type: c.entity_type,
+          canonical_id: canonicalId,
+          member_ids: c.members.map((m) => m.id),
+        };
+      });
+      const res = await fetch(`/api/v1/admin/matches/clusters/merge-batch`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ operations }),
+      });
+      if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(txt || `שגיאה (${res.status})`);
+      }
+      const data = await res.json();
+      const summary = data.data || {};
+      const failed = summary.failed || 0;
+      if (failed > 0) {
+        setError(
+          `${summary.succeeded || 0} אשכולות אוחדו, ${failed} נכשלו. רענון התצוגה...`,
+        );
+      }
+      // Reset selection + refresh both feeds.
+      setSelectedClusters(new Set());
+      await Promise.all([refresh(), refreshClusters()]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "שגיאה במיזוג מרובה");
+    } finally {
+      setBulkMerging(false);
     }
   };
 
@@ -444,9 +523,61 @@ export default function AdminMatchesPage() {
               )}
             </h2>
             <span className="text-xs text-gray-400">
-              מזג ישויות זהות בלחיצה אחת. הקנונית נבחרה אוטומטית לפי מס&apos; הקשרים
+              סמן כמה שתרצה ולחץ &quot;מזג בחירה&quot;. הקנונית נבחרת אוטומטית לפי מס&apos; הקשרים.
             </span>
           </div>
+
+          {/* Sticky bulk-action bar. Shows the running total of impact
+              ("X אשכולות · Y ישויות יימחקו") so the admin can see what
+              they're about to do before clicking. Stays glued to the
+              top of the section while scrolling through hundreds of
+              clusters. */}
+          {clusters.length > 0 && (
+            <div className="sticky top-14 sm:top-16 z-30 -mx-4 sm:-mx-6 lg:-mx-8 px-4 sm:px-6 lg:px-8 py-2 bg-amber-100/95 backdrop-blur border-y border-amber-300 mb-3 flex items-center justify-between gap-3 flex-wrap">
+              <div className="flex items-center gap-3 flex-wrap text-sm">
+                <button
+                  type="button"
+                  onClick={
+                    selectedClusters.size === clusters.length
+                      ? clearClusterSelection
+                      : selectAllClusters
+                  }
+                  className="px-3 py-1.5 text-xs rounded-lg border border-amber-400 bg-white text-amber-900 hover:bg-amber-50 font-medium"
+                >
+                  {selectedClusters.size === clusters.length
+                    ? "בטל בחירה"
+                    : `סמן את כל ${clusters.length}`}
+                </button>
+                {selectedClusters.size > 0 && (
+                  <button
+                    type="button"
+                    onClick={clearClusterSelection}
+                    className="text-xs text-amber-800 hover:underline"
+                  >
+                    נקה בחירה
+                  </button>
+                )}
+                <span className="text-amber-900">
+                  <strong>{selectedClusters.size}</strong> אשכולות נבחרו
+                  {selectedClusters.size > 0 && (
+                    <span className="text-amber-800">
+                      {" "}· <strong>{selectedEntitiesToDelete}</strong> ישויות יימחקו
+                    </span>
+                  )}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={bulkMergeSelected}
+                disabled={selectedClusters.size === 0 || bulkMerging}
+                className="px-4 py-1.5 text-sm rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+              >
+                {bulkMerging
+                  ? `ממזג ${selectedClusters.size} אשכולות...`
+                  : `מזג בחירה (${selectedClusters.size})`}
+              </button>
+            </div>
+          )}
 
           {clustersLoading ? (
             <div className="text-center py-8 text-gray-400 text-sm">טוען אשכולות...</div>
@@ -467,10 +598,22 @@ export default function AdminMatchesPage() {
                 return (
                   <div
                     key={`${cluster.entity_type}-${cluster.canonical_id}`}
-                    className="bg-amber-50 border border-amber-200 rounded-lg p-4"
+                    className={`border rounded-lg p-4 transition-colors ${
+                      selectedClusters.has(cluster.canonical_id)
+                        ? "bg-amber-100 border-amber-400 ring-2 ring-amber-300"
+                        : "bg-amber-50 border-amber-200"
+                    }`}
                   >
                     <div className="flex items-center justify-between gap-2 flex-wrap mb-3">
-                      <div className="flex items-center gap-2 flex-wrap">
+                      <label className="flex items-center gap-2 flex-wrap cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={selectedClusters.has(cluster.canonical_id)}
+                          onChange={() => toggleClusterSelected(cluster.canonical_id)}
+                          disabled={bulkMerging || isMerging}
+                          className="w-4 h-4 shrink-0 accent-amber-600"
+                          title="סמן לאיחוד מרובה"
+                        />
                         <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${KIND_BADGE[cluster.entity_type] || "bg-gray-100 text-gray-700"}`}>
                           {KIND_LABEL[cluster.entity_type] || cluster.entity_type}
                         </span>
@@ -480,10 +623,10 @@ export default function AdminMatchesPage() {
                         <span className="text-xs text-amber-800">
                           · {totalConnections.toLocaleString()} קשרים סך הכל
                         </span>
-                      </div>
+                      </label>
                       <button
                         onClick={() => mergeCluster(cluster)}
-                        disabled={isMerging}
+                        disabled={isMerging || bulkMerging}
                         className="px-3 py-1.5 text-sm rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 font-medium"
                       >
                         {isMerging ? "ממזג..." : `מזג את כל ${cluster.size} ל"${cluster.members.find((m) => m.id === canonicalId)?.name || "?"}"`}

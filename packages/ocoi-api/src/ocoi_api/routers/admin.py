@@ -2531,6 +2531,108 @@ async def matches_cluster_merge(
     return {"status": "ok", "data": summary}
 
 
+@router.post("/matches/clusters/merge-batch")
+async def matches_cluster_merge_batch(
+    body: dict,
+    current = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Merge several duplicate clusters in a single round-trip.
+
+    Body:
+      ``operations`` — array of ``{entity_type, canonical_id, member_ids}``
+        objects (same shape as the single-cluster endpoint above).
+
+    Each cluster is processed sequentially with its own commit so that
+    a failure on cluster #7 doesn't roll back clusters #1-#6. The
+    response carries per-operation status so the UI can show "5
+    succeeded, 1 failed" and re-fetch.
+    """
+    from ocoi_api.services.match_service import merge_cluster
+
+    raw_ops = body.get("operations") or []
+    if not isinstance(raw_ops, list) or not raw_ops:
+        raise HTTPException(400, "operations must be a non-empty array")
+
+    reviewer_id = (
+        str(getattr(current, "id", None)) if getattr(current, "id", None) else None
+    )
+
+    results: list[dict] = []
+    total_merged = 0
+    total_proposals_approved = 0
+    succeeded = 0
+    failed = 0
+
+    for idx, op in enumerate(raw_ops):
+        if not isinstance(op, dict):
+            results.append({"index": idx, "status": "error", "error": "operation must be an object"})
+            failed += 1
+            continue
+        entity_type = (op.get("entity_type") or "").strip()
+        canonical_id = (op.get("canonical_id") or "").strip()
+        raw_members = op.get("member_ids") or []
+        if not entity_type or not canonical_id or not isinstance(raw_members, list) or not raw_members:
+            results.append({
+                "index": idx,
+                "status": "error",
+                "error": "entity_type, canonical_id, member_ids are required",
+                "canonical_id": canonical_id or None,
+            })
+            failed += 1
+            continue
+        try:
+            summary = await merge_cluster(
+                db,
+                entity_type=entity_type,
+                canonical_id=canonical_id,
+                member_ids=[str(m) for m in raw_members],
+                reviewer_id=reviewer_id,
+            )
+            # Commit per cluster so a later failure doesn't wipe out the
+            # earlier successes.
+            await db.commit()
+            total_merged += int(summary.get("merged_count") or 0)
+            total_proposals_approved += int(summary.get("proposals_approved") or 0)
+            succeeded += 1
+            results.append({
+                "index": idx,
+                "status": "ok",
+                "canonical_id": canonical_id,
+                "summary": summary,
+            })
+        except ValueError as e:
+            await db.rollback()
+            failed += 1
+            results.append({
+                "index": idx,
+                "status": "error",
+                "error": str(e),
+                "canonical_id": canonical_id,
+            })
+        except Exception as e:  # noqa: BLE001 — surface unknown failures
+            await db.rollback()
+            failed += 1
+            results.append({
+                "index": idx,
+                "status": "error",
+                "error": f"{type(e).__name__}: {e}",
+                "canonical_id": canonical_id,
+            })
+
+    return {
+        "status": "ok",
+        "data": {
+            "total_operations": len(raw_ops),
+            "succeeded": succeeded,
+            "failed": failed,
+            "total_entities_merged": total_merged,
+            "total_proposals_approved": total_proposals_approved,
+            "results": results,
+        },
+    }
+
+
 @router.post("/matches/{proposal_id}/reject")
 async def matches_reject(
     proposal_id: uuid.UUID,
