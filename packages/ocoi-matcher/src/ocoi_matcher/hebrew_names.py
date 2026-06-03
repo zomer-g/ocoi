@@ -215,45 +215,31 @@ def similarity(a: str, b: str, *, kind: str = "person") -> tuple[float, list[str
         # truly exact strings can be sorted above word-swap matches.
         return 0.97, reasons
 
-    # Substring + token_subset are STRICTLY for organisations / domains —
-    # not people. Hebrew first names overlap routinely between unrelated
-    # people ("בנימין" matches Netanyahu, Gantz's father, ten different
-    # MKs, …) so substring chaining wrecks the union-find: a 95-member
-    # "everyone called X" cluster forms instantly and gets proposed as a
-    # single merge. Persons stay on the strict token_sort / Jaccard /
-    # swap-bonus path.
+    # token_subset is STRICTLY for organisations — Hebrew first names
+    # ("בנימין", "משה") overlap across unrelated people, so any kind
+    # of subset rule for persons chains them transitively in union-find
+    # and creates "everyone called X" mega-clusters.
+    #
+    # We DELIBERATELY do NOT have a prefix rule any more. Earlier
+    # iterations tried (a) substring containment (b) left-prefix with a
+    # length floor, but both got swamped by chain stores ("ארומה" is a
+    # prefix of every "ארומה <city>" → 95-member cluster, all of which
+    # are *legitimately different* branches the admin doesn't want to
+    # merge). The cleanup wins from prefix matching weren't worth the
+    # downstream confusion.
+    #
+    # Genuine "short form vs full form" duplicates (e.g. "עמותת הצלחה"
+    # vs "תנועת הצלחה") are caught by tokens_identical after
+    # ORG_PREFIXES + COMPANY_SUFFIXES stripping. Genuine "long form vs
+    # longer form" duplicates (e.g. "הצלחה לקידום חברה" vs "הצלחה -
+    # התנועה הצרכנית לקידום חברה כלכלית הוגנת") are caught by the
+    # subset rule below.
     if kind != "person":
-        # Substring containment — the short form of an org name is
-        # routinely a prefix of the full form ("הצלחה" ⊂ "הצלחה התנועה
-        # הצרכנית …"). Require a LEFT PREFIX (norm_a starts where
-        # norm_b starts) — otherwise we false-match on "ארומה" inside
-        # an unrelated name that happens to mention coffee.
-        shorter, longer = (
-            (norm_a, norm_b) if len(norm_a) <= len(norm_b) else (norm_b, norm_a)
-        )
-        if (
-            len(shorter) >= 3
-            and longer.startswith(shorter)
-            # Avoid degenerate "shorter ≈ 0% of longer" cases — if the
-            # short side is less than 25% of the long side, the prefix
-            # rule is too loose and we're better off letting the
-            # token-based metrics speak.
-            and (len(shorter) / max(1, len(longer))) >= 0.25
-        ):
-            reasons.append("prefix_match")
-            return 0.92, reasons
-
-        # Token-set containment for organisations: if every token in
-        # the shorter name appears in the longer one (after suffix/
-        # prefix stripping), they're almost certainly the same
-        # organisation with extra qualifier words attached. Catches
-        # cases like ["הצלחה", "לקידום", "חברה", "הוגנת"]  ⊂
-        # ["הצלחה", "התנועה", "הצרכנית", "לקידום", "חברה", "כלכלית",
-        # "הוגנת"]. Coverage floor of 0.5 prevents single-token-in-set
-        # noise: ["הצלחה"] ⊂ ["הצלחה", "X", "Y", "Z"] won't fire (the
-        # shorter side has too few tokens to be discriminating).
         sa, sb = set(ta), set(tb)
         small, big = (sa, sb) if len(sa) <= len(sb) else (sb, sa)
+        # Require ≥2 tokens on the shorter side AND ≥50% coverage of
+        # the larger. The 2-token floor kills the "single common
+        # token" pattern that lets brand names chain across stores.
         if len(small) >= 2 and small.issubset(big):
             coverage = len(small) / len(big)
             if coverage >= 0.5:
