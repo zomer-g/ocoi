@@ -15,7 +15,7 @@ import logging
 from datetime import datetime
 from typing import Iterable
 
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ocoi_common.timezone import now_israel
@@ -621,49 +621,108 @@ async def build_duplicate_clusters(
         })
 
     # 4. Hydrate each cluster with display data + pick the canonical.
-    out: list[dict] = []
+    # Performance: with ~1,500+ pending proposals the previous "one query
+    # per cluster + one per member" pattern was 5,000+ round-trips and
+    # blew the request timeout. We now batch:
+    #   - For each entity_type, do ONE SELECT loading all entities at once.
+    #   - For each entity_type, do TWO GROUP-BY SELECTs (source + target)
+    #     yielding connection counts for every member in a single round-trip.
+    # Net: ~6 DB queries total regardless of cluster count.
+
+    # Group member ids by entity_type so the batch queries can hit a
+    # single table at a time.
+    ids_by_type: dict[str, set[str]] = {}
+    components_filtered: dict[tuple[str, str], set[tuple[str, str]]] = {}
     for root, member_keys in components.items():
         if len(member_keys) < 2:
-            # All edges of this component must have been to the same id —
-            # nothing to merge, drop it.
             continue
+        components_filtered[root] = member_keys
+        for etype, eid in member_keys:
+            ids_by_type.setdefault(etype, set()).add(eid)
 
+    entities_by_type: dict[str, dict[str, dict]] = {}
+    counts_by_type: dict[str, dict[str, int]] = {}
+
+    for etype, id_set in ids_by_type.items():
+        if etype not in _SCAN_MODELS:
+            continue
+        id_list = list(id_set)
+        model, _ = _SCAN_MODELS[etype]
+
+        # Hydrate every entity in ONE query.
+        cols = [model.id, model.name_hebrew, model.aliases]
+        if etype == "person":
+            cols.extend([model.title, model.position, model.ministry])
+        rows = (await session.execute(
+            select(*cols).where(model.id.in_(id_list))
+        )).all()
+        ent_map: dict[str, dict] = {}
+        for r in rows:
+            row_dict = r._mapping
+            eid = str(row_dict["id"])
+            summary: dict = {
+                "id": eid,
+                "type": etype,
+                "name": row_dict.get("name_hebrew") or "",
+                "aliases": _safe_parse_aliases(row_dict.get("aliases")),
+            }
+            if etype == "person":
+                summary["title"] = row_dict.get("title")
+                summary["position"] = row_dict.get("position")
+                summary["ministry"] = row_dict.get("ministry")
+            ent_map[eid] = summary
+        # For ids that disappeared between proposal-write and now, leave
+        # a stub so the cluster card still shows "(נמחק)".
+        for eid in id_list:
+            if eid not in ent_map:
+                ent_map[eid] = {"id": eid, "type": etype, "name": "(נמחק)", "aliases": []}
+        entities_by_type[etype] = ent_map
+
+        # Connection-count GROUP BYs — one for the source side, one for
+        # the target side. Merge in Python.
+        src_rows = (await session.execute(
+            select(
+                EntityRelationship.source_entity_id,
+                func.count(EntityRelationship.id),
+            )
+            .where(
+                EntityRelationship.source_entity_type == etype,
+                EntityRelationship.source_entity_id.in_(id_list),
+            )
+            .group_by(EntityRelationship.source_entity_id)
+        )).all()
+        tgt_rows = (await session.execute(
+            select(
+                EntityRelationship.target_entity_id,
+                func.count(EntityRelationship.id),
+            )
+            .where(
+                EntityRelationship.target_entity_type == etype,
+                EntityRelationship.target_entity_id.in_(id_list),
+            )
+            .group_by(EntityRelationship.target_entity_id)
+        )).all()
+        counts: dict[str, int] = {}
+        for eid, n in src_rows:
+            counts[str(eid)] = counts.get(str(eid), 0) + int(n or 0)
+        for eid, n in tgt_rows:
+            counts[str(eid)] = counts.get(str(eid), 0) + int(n or 0)
+        counts_by_type[etype] = counts
+
+    out: list[dict] = []
+    for root, member_keys in components_filtered.items():
         cluster_type = root[0]
         member_ids = [eid for (_etype, eid) in member_keys]
 
-        # Connection counts for canonical selection. One query per cluster
-        # keeps it bounded; clusters are small (typically 3-50 members)
-        # so we don't bother batching across clusters.
-        conn_q = await session.execute(
-            select(
-                EntityRelationship.source_entity_id.label("anchor"),
-                EntityRelationship.id,
-            ).where(
-                EntityRelationship.source_entity_type == cluster_type,
-                EntityRelationship.source_entity_id.in_(member_ids),
-            )
-        )
-        source_counts: dict[str, int] = {}
-        for anchor, _ in conn_q.fetchall():
-            source_counts[str(anchor)] = source_counts.get(str(anchor), 0) + 1
-        conn_q = await session.execute(
-            select(
-                EntityRelationship.target_entity_id.label("anchor"),
-                EntityRelationship.id,
-            ).where(
-                EntityRelationship.target_entity_type == cluster_type,
-                EntityRelationship.target_entity_id.in_(member_ids),
-            )
-        )
-        target_counts: dict[str, int] = {}
-        for anchor, _ in conn_q.fetchall():
-            target_counts[str(anchor)] = target_counts.get(str(anchor), 0) + 1
+        ent_map = entities_by_type.get(cluster_type, {})
+        counts = counts_by_type.get(cluster_type, {})
 
         members = []
         for mid in member_ids:
-            summary = await _entity_summary(session, cluster_type, mid)
-            conn_count = source_counts.get(mid, 0) + target_counts.get(mid, 0)
-            summary["connection_count"] = conn_count
+            summary = dict(ent_map.get(mid, {
+                "id": mid, "type": cluster_type, "name": "(נמחק)", "aliases": [],
+            }))
+            summary["connection_count"] = counts.get(mid, 0)
             members.append(summary)
 
         # Sort key per heuristic (above). The first element is canonical.
