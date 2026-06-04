@@ -29,6 +29,12 @@ HONORIFICS: frozenset[str] = frozenset({
     "ד", "דר", "דוקטור", "ד״ר",
     "פרופ", "פרופסור",
     "עו", "עוד", "עו״ד",
+    # Common OCR / parsing residues of "עו״ד":
+    # * "וד" — appears when gershayim get stripped from "ע ו״ד" and the
+    #   stray "ע" gets filtered as a 1-char token, leaving just "וד".
+    # * "עוייד" — OCR misread of the gershayim as "יי".
+    # * "עויד" / "עוד״" — other gershayim-mangling variants seen in raw imports.
+    "וד", "עוייד", "עויד", "עוד״",
     "רב", "הרב",
     "מהנדס", "אדריכל",
     # common Hebrew titles
@@ -110,7 +116,11 @@ def tokens(name: str, *, kind: str = "person") -> list[str]:
         drops = HONORIFICS
     else:
         drops = HONORIFICS | COMPANY_SUFFIXES | ORG_PREFIXES
-    out = [t for t in raw if t not in drops]
+    # Single-character Hebrew tokens are never disambiguating names — they
+    # are artefacts of gershayim/quote splitting ("ע ו״ד" → "ע", "וד")
+    # or stray initials. Dropping them prevents the "אלעד מן" vs
+    # "ע ו״ד אלעד מן" pair from scoring 0.73 instead of 0.97.
+    out = [t for t in raw if t not in drops and len(t) > 1]
     out.sort()
     return out
 
