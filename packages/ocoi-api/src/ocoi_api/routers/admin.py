@@ -2569,6 +2569,99 @@ async def audit_orphans_and_garbage(
     }
 
 
+@router.post("/audit/cleanup")
+async def audit_cleanup(
+    body: dict | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete the junk surfaced by ``/audit/orphans-and-garbage``:
+
+    * **Garbage-name entities** — every Person/Company/Association/Domain
+      whose ``name_hebrew`` is a pure placeholder (per
+      ``ocoi_common.is_placeholder_name``). Their relationships are
+      deleted first (FK-safe), then the entity row.
+    * **Orphan relationships** — ``entity_relationships`` rows whose
+      source/target id has no matching entity row of that type.
+
+    Body (all optional, default all True):
+      ``garbage_entities``: bool — remove placeholder-name entities
+      ``orphan_relationships``: bool — remove dangling relationship rows
+      ``dry_run``: bool — count only, change nothing
+
+    Returns per-category counts of what was (or would be) removed.
+    """
+    from sqlalchemy import text as sa_text
+    from ocoi_common.blocklist import is_placeholder_name
+
+    body = body or {}
+    do_garbage = body.get("garbage_entities", True)
+    do_orphans = body.get("orphan_relationships", True)
+    dry_run = body.get("dry_run", False)
+
+    report: dict = {"dry_run": dry_run, "garbage_entities": {}, "orphan_relationships": {}}
+
+    _TYPE_TABLE = (
+        ("person", "persons"), ("company", "companies"),
+        ("association", "associations"), ("domain", "domains"),
+    )
+
+    # ── 1. Garbage-name entities ──
+    if do_garbage:
+        for etype, tbl in _TYPE_TABLE:
+            rows = (await db.execute(sa_text(
+                f"SELECT id::text AS id, name_hebrew FROM {tbl}"
+            ))).fetchall()
+            bad_ids = [r[0] for r in rows if is_placeholder_name(r[1])]
+            rels_deleted = 0
+            if bad_ids and not dry_run:
+                # Delete relationships touching these entities first.
+                rel_res = await db.execute(sa_text(f"""
+                    DELETE FROM entity_relationships
+                    WHERE (source_entity_type = :etype AND source_entity_id::text = ANY(:ids))
+                       OR (target_entity_type = :etype AND target_entity_id::text = ANY(:ids))
+                """).bindparams(etype=etype, ids=bad_ids))
+                rels_deleted = rel_res.rowcount or 0
+                # Then the entity rows.
+                await db.execute(sa_text(
+                    f"DELETE FROM {tbl} WHERE id::text = ANY(:ids)"
+                ).bindparams(ids=bad_ids))
+            report["garbage_entities"][etype] = {
+                "entities_removed": len(bad_ids),
+                "relationships_removed": rels_deleted,
+                "ids": bad_ids,
+            }
+
+    # ── 2. Orphan relationships ──
+    if do_orphans:
+        total_orphans = 0
+        per_type: dict[str, int] = {}
+        for etype, tbl in _TYPE_TABLE:
+            # Count first (also serves as the dry-run answer).
+            cnt = (await db.execute(sa_text(f"""
+                SELECT COUNT(*) FROM entity_relationships er
+                WHERE (er.source_entity_type = :etype
+                       AND NOT EXISTS (SELECT 1 FROM {tbl} t WHERE t.id = er.source_entity_id))
+                   OR (er.target_entity_type = :etype
+                       AND NOT EXISTS (SELECT 1 FROM {tbl} t WHERE t.id = er.target_entity_id))
+            """).bindparams(etype=etype))).scalar() or 0
+            if cnt and not dry_run:
+                await db.execute(sa_text(f"""
+                    DELETE FROM entity_relationships er
+                    WHERE (er.source_entity_type = :etype
+                           AND NOT EXISTS (SELECT 1 FROM {tbl} t WHERE t.id = er.source_entity_id))
+                       OR (er.target_entity_type = :etype
+                           AND NOT EXISTS (SELECT 1 FROM {tbl} t WHERE t.id = er.target_entity_id))
+                """).bindparams(etype=etype))
+            per_type[etype] = int(cnt)
+            total_orphans += int(cnt)
+        report["orphan_relationships"] = {"total": total_orphans, "by_type": per_type}
+
+    if not dry_run:
+        await db.commit()
+
+    return {"status": "ok", "data": report}
+
+
 @router.post("/entities/merge-cross-type")
 async def entities_merge_cross_type(
     body: dict,

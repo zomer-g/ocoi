@@ -81,11 +81,53 @@ _BY_TYPE: dict[str, frozenset[str]] = {
 }
 
 
+import re as _re
+
+# A name made up entirely of punctuation / placeholder characters — the
+# extractor emits these when it can't read a name off a redacted
+# (מושחר) document: rows of asterisks, dashes, underscores, or the
+# literal strings "null"/"none". They must never become real entities.
+#
+# Examples caught: "***", "----------", "________________",
+# "**** *** ***** ** ** *** * ***", "null", "None", "N/A".
+_PLACEHOLDER_CHARS_RE = _re.compile(r"^[\*_\-–—=\.,\s'\"`׳״]+$")
+_PLACEHOLDER_WORDS = frozenset({"null", "none", "n/a", "nan", "undefined"})
+
+
+def is_placeholder_name(name: str | None) -> bool:
+    """Return True for names that are pure OCR/extraction noise rather
+    than a real entity name — independent of entity_type.
+
+    This is the *shape*-based check (all-punctuation, or a known
+    null-literal). ``is_blocked`` layers the curated per-type string
+    lists on top of it.
+    """
+    if name is None:
+        return True
+    s = " ".join(str(name).split())  # normalise whitespace
+    if not s:
+        return True
+    if s.lower() in _PLACEHOLDER_WORDS:
+        return True
+    if _PLACEHOLDER_CHARS_RE.match(s):
+        return True
+    return False
+
+
 def is_blocked(entity_type: str, name: str | None) -> bool:
-    """Return True if the (entity_type, name) pair is on the canonical
-    block list. Whitespace is normalised before comparison."""
+    """Return True if the (entity_type, name) pair should be treated as a
+    non-entity. Two layers:
+
+    1. Shape check — pure placeholder/punctuation names
+       (``is_placeholder_name``), applies to every entity type.
+    2. Curated per-type string block list.
+
+    Whitespace is normalised before comparison.
+    """
     if not name:
-        return False
+        return True  # an empty name is itself a placeholder
+    if is_placeholder_name(name):
+        return True
     bl = _BY_TYPE.get(entity_type)
     if bl is None:
         return False

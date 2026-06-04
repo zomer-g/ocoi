@@ -5,6 +5,7 @@ from ocoi_common.blocklist import (
     PERSON_BLOCKLIST,
     blocklist_for,
     is_blocked,
+    is_placeholder_name,
 )
 from ocoi_common.config import Settings, settings
 from ocoi_common.logging import setup_logging
@@ -31,5 +32,5 @@ __all__ = [
     "ORIGIN_KINDS", "ORIGIN_LABELS_HE", "is_valid_origin",
     "PERSON_BLOCKLIST", "COMPANY_BLOCKLIST",
     "ASSOCIATION_BLOCKLIST", "DOMAIN_BLOCKLIST",
-    "is_blocked", "blocklist_for",
+    "is_blocked", "is_placeholder_name", "blocklist_for",
 ]

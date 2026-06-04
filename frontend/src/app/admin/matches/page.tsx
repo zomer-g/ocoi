@@ -272,6 +272,59 @@ export default function AdminMatchesPage() {
     }
   };
 
+  const [cleaning, setCleaning] = useState(false);
+
+  // Data-quality sweep: first does a dry-run to count the junk, shows
+  // the admin exactly what will be removed, then runs for real on
+  // confirm. Junk = placeholder-name entities ("null"/"***"/"----") +
+  // orphan relationships (edges pointing at non-existent entities).
+  const runCleanup = async () => {
+    setError(null);
+    setCleaning(true);
+    try {
+      const dry = await fetch(`/api/v1/admin/audit/cleanup`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dry_run: true }),
+      });
+      if (!dry.ok) throw new Error(await dry.text());
+      const dj = (await dry.json()).data;
+      const garbageTotal = (Object.values(dj.garbage_entities || {}) as Array<{ entities_removed?: number }>)
+        .reduce((s, v) => s + (v.entities_removed || 0), 0);
+      const orphanTotal = dj.orphan_relationships?.total || 0;
+      if (garbageTotal === 0 && orphanTotal === 0) {
+        setError("לא נמצאו ישויות זבל או קשרים יתומים — המאגר נקי.");
+        return;
+      }
+      const ok = window.confirm(
+        `נמצאו:\n` +
+        `• ${garbageTotal} ישויות עם שם פסול (null / *** / ---- וכו')\n` +
+        `• ${orphanTotal} קשרים יתומים (מצביעים על ישות שלא קיימת)\n\n` +
+        `למחוק את כולם? הפעולה אינה הפיכה.`,
+      );
+      if (!ok) return;
+      const real = await fetch(`/api/v1/admin/audit/cleanup`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (!real.ok) throw new Error(await real.text());
+      const rj = (await real.json()).data;
+      const removed = (Object.values(rj.garbage_entities || {}) as Array<{ entities_removed?: number }>)
+        .reduce((s, v) => s + (v.entities_removed || 0), 0);
+      setError(
+        `נוקו ${removed} ישויות זבל ו-${rj.orphan_relationships?.total || 0} קשרים יתומים. ✓`,
+      );
+      await Promise.all([refresh(), refreshClusters()]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "שגיאה בניקוי");
+    } finally {
+      setCleaning(false);
+    }
+  };
+
   const toggleClusterSelected = (canonicalId: string) => {
     setSelectedClusters((prev) => {
       const next = new Set(prev);
@@ -427,6 +480,14 @@ export default function AdminMatchesPage() {
             className="px-4 py-2 rounded-lg bg-primary-700 text-white text-sm font-medium hover:bg-primary-800 disabled:opacity-50 transition-colors"
           >
             {scanRunning ? "סורק..." : "סרוק כפילויות"}
+          </button>
+          <button
+            onClick={runCleanup}
+            disabled={cleaning}
+            className="px-3 py-2 rounded-lg border border-red-300 text-sm text-red-700 hover:bg-red-50 disabled:opacity-50"
+            title="מחיקת ישויות עם שם פסול (null/***/----) וקשרים יתומים"
+          >
+            {cleaning ? "מנקה..." : "נקה זבל"}
           </button>
           {scan && !scan.running && (scan.errors > 0 || scan.proposals_written > 0 || scan.scanned_entities > 0) && (
             <button

@@ -653,7 +653,15 @@ async def _run_extraction(document_ids: list[str] | None):
                 # Step 3: Save entities and relationships to DB
                 entity_id_map = {}
 
+                # Drop pure-placeholder names ("***", "----", "null", …)
+                # before they become entities. The LLM emits these for
+                # redacted (מושחר) documents; persisting them creates
+                # nameless graph nodes + dangling relationships.
+                from ocoi_common.blocklist import is_placeholder_name
+
                 for person in extraction.persons:
+                    if is_placeholder_name(person.name_hebrew):
+                        continue
                     db_person = await upsert_person(
                         session,
                         name_hebrew=person.name_hebrew,
@@ -665,6 +673,8 @@ async def _run_extraction(document_ids: list[str] | None):
                     entity_id_map[("person", person.name_hebrew)] = db_person.id
 
                 for company in extraction.companies:
+                    if is_placeholder_name(company.name_hebrew):
+                        continue
                     db_company = await upsert_company(
                         session,
                         name_hebrew=company.name_hebrew,
@@ -683,6 +693,8 @@ async def _run_extraction(document_ids: list[str] | None):
                             logger.debug(f"Registry match failed for company '{company.name_hebrew}': {match_err}")
 
                 for assoc in extraction.associations:
+                    if is_placeholder_name(assoc.name_hebrew):
+                        continue
                     db_assoc = await upsert_association(
                         session,
                         name_hebrew=assoc.name_hebrew,
@@ -700,6 +712,8 @@ async def _run_extraction(document_ids: list[str] | None):
                             logger.debug(f"Registry match failed for association '{assoc.name_hebrew}': {match_err}")
 
                 for domain in extraction.domains:
+                    if is_placeholder_name(domain.name_hebrew):
+                        continue
                     db_domain = await upsert_domain(
                         session,
                         name_hebrew=domain.name_hebrew,

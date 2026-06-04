@@ -81,7 +81,16 @@ async def _extract_pending(limit: int, use_llm: bool, use_ner: bool):
                 # Save entities to database
                 entity_id_map = {}
 
+                # Skip pure placeholder names ("***", "----", "null", …)
+                # outright — the extractor emits these for redacted
+                # (מושחר) documents where it couldn't read a real name.
+                # Creating them pollutes the graph with nameless nodes and
+                # their relationships dangle to nothing meaningful.
+                from ocoi_common.blocklist import is_placeholder_name
+
                 for person in merged.persons:
+                    if is_placeholder_name(person.name_hebrew):
+                        continue
                     db_person = await upsert_person(
                         session,
                         name_hebrew=person.name_hebrew,
@@ -93,6 +102,8 @@ async def _extract_pending(limit: int, use_llm: bool, use_ner: bool):
                     entity_id_map[("person", person.name_hebrew)] = db_person.id
 
                 for company in merged.companies:
+                    if is_placeholder_name(company.name_hebrew):
+                        continue
                     db_company = await upsert_company(
                         session,
                         name_hebrew=company.name_hebrew,
@@ -102,6 +113,8 @@ async def _extract_pending(limit: int, use_llm: bool, use_ner: bool):
                     entity_id_map[("company", company.name_hebrew)] = db_company.id
 
                 for assoc in merged.associations:
+                    if is_placeholder_name(assoc.name_hebrew):
+                        continue
                     db_assoc = await upsert_association(
                         session,
                         name_hebrew=assoc.name_hebrew,
@@ -110,6 +123,8 @@ async def _extract_pending(limit: int, use_llm: bool, use_ner: bool):
                     entity_id_map[("association", assoc.name_hebrew)] = db_assoc.id
 
                 for domain in merged.domains:
+                    if is_placeholder_name(domain.name_hebrew):
+                        continue
                     db_domain = await upsert_domain(
                         session,
                         name_hebrew=domain.name_hebrew,
