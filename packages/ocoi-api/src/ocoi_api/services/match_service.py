@@ -446,6 +446,173 @@ async def merge_entities(
     }
 
 
+async def merge_entities_cross_type(
+    session: AsyncSession,
+    *,
+    keep_type: str,
+    keep_id: str,
+    merge_type: str,
+    merge_id: str,
+) -> dict:
+    """Cross-type merge: fold ``merge`` (any entity type) into ``keep``
+    (any entity type). The classic case is the same legal entity
+    appearing as both a 'company' AND an 'association' because the
+    source documents misclassified it ("עמותת הצלחה" recorded as a
+    company plus "עמותת הצלחה" recorded as an association).
+
+    The relationship rows that touched the merge side are rewritten
+    with both ``entity_type`` AND ``entity_id`` swapped to the keep
+    side, and the merge entity is then deleted from its own table.
+    Aliases (and the merge entity's display name) fold into the keep
+    entity's alias list so the public surface still answers searches
+    for the old name.
+    """
+    if keep_type not in _SCAN_MODELS or merge_type not in _SCAN_MODELS:
+        raise ValueError(f"unsupported entity types: {keep_type}/{merge_type}")
+    if keep_type == merge_type and keep_id == merge_id:
+        raise ValueError("keep and merge identify the same entity")
+    keep_id = str(keep_id)
+    merge_id = str(merge_id)
+
+    keep_model = _SCAN_MODELS[keep_type][0]
+    merge_model = _SCAN_MODELS[merge_type][0]
+
+    keep = await session.get(keep_model, keep_id)
+    merge = await session.get(merge_model, merge_id)
+    if not keep:
+        raise ValueError("keep entity not found")
+    if not merge:
+        raise ValueError("merge entity not found")
+
+    er = EntityRelationship.__table__
+
+    # Dedup colliding edges BEFORE the UPDATE. Same reasoning as
+    # merge_entities() — the compound unique index will abort the
+    # transaction the moment a rewritten row collides with a keep-side
+    # row sharing the same (compound-key fields).
+    #
+    # For cross-type, the keep side compares on (keep_type, keep_id) and
+    # the merge side has (merge_type, merge_id). After the rewrite, the
+    # merge-side row becomes (keep_type, keep_id, …); collision iff
+    # there's an existing keep-side row with the same target compound +
+    # rel_type + doc_id.
+    keep_src_alias = er.alias("xk_src")
+    src_collisions = (await session.execute(
+        select(er.c.id)
+        .select_from(
+            er.join(
+                keep_src_alias,
+                and_(
+                    er.c.target_entity_type == keep_src_alias.c.target_entity_type,
+                    er.c.target_entity_id == keep_src_alias.c.target_entity_id,
+                    er.c.relationship_type == keep_src_alias.c.relationship_type,
+                    er.c.document_id == keep_src_alias.c.document_id,
+                ),
+            )
+        )
+        .where(
+            er.c.source_entity_type == merge_type,
+            er.c.source_entity_id == merge_id,
+            keep_src_alias.c.source_entity_type == keep_type,
+            keep_src_alias.c.source_entity_id == keep_id,
+        )
+    )).scalars().all()
+
+    keep_tgt_alias = er.alias("xk_tgt")
+    tgt_collisions = (await session.execute(
+        select(er.c.id)
+        .select_from(
+            er.join(
+                keep_tgt_alias,
+                and_(
+                    er.c.source_entity_type == keep_tgt_alias.c.source_entity_type,
+                    er.c.source_entity_id == keep_tgt_alias.c.source_entity_id,
+                    er.c.relationship_type == keep_tgt_alias.c.relationship_type,
+                    er.c.document_id == keep_tgt_alias.c.document_id,
+                ),
+            )
+        )
+        .where(
+            er.c.target_entity_type == merge_type,
+            er.c.target_entity_id == merge_id,
+            keep_tgt_alias.c.target_entity_type == keep_type,
+            keep_tgt_alias.c.target_entity_id == keep_id,
+        )
+    )).scalars().all()
+
+    collision_ids = set(src_collisions) | set(tgt_collisions)
+    if collision_ids:
+        await session.execute(
+            er.delete().where(er.c.id.in_(list(collision_ids)))
+        )
+
+    # Move SOURCE-side: rewrite both the type and the id.
+    src_result = await session.execute(
+        update(EntityRelationship)
+        .where(
+            EntityRelationship.source_entity_type == merge_type,
+            EntityRelationship.source_entity_id == merge_id,
+        )
+        .values(source_entity_type=keep_type, source_entity_id=keep_id)
+    )
+    moved_src = src_result.rowcount or 0
+
+    # Move TARGET-side.
+    tgt_result = await session.execute(
+        update(EntityRelationship)
+        .where(
+            EntityRelationship.target_entity_type == merge_type,
+            EntityRelationship.target_entity_id == merge_id,
+        )
+        .values(target_entity_type=keep_type, target_entity_id=keep_id)
+    )
+    moved_tgt = tgt_result.rowcount or 0
+
+    # Self-loop cleanup — any row that now points keep→keep gets dropped.
+    self_loop_result = await session.execute(
+        er.delete().where(
+            EntityRelationship.source_entity_type == keep_type,
+            EntityRelationship.target_entity_type == keep_type,
+            EntityRelationship.source_entity_id == keep_id,
+            EntityRelationship.target_entity_id == keep_id,
+        )
+    )
+    self_loops_dropped = self_loop_result.rowcount or 0
+
+    # Fold merge's name + aliases into keep's alias list (dedup).
+    existing_aliases = set(_get_aliases(keep))
+    merged_in: list[str] = []
+    candidates = [merge.name_hebrew or ""] + list(_get_aliases(merge))
+    for cand in candidates:
+        cand = (cand or "").strip()
+        if not cand or cand == (keep.name_hebrew or "").strip():
+            continue
+        if cand in existing_aliases:
+            continue
+        existing_aliases.add(cand)
+        merged_in.append(cand)
+    keep.aliases = (
+        json.dumps(sorted(existing_aliases), ensure_ascii=False)
+        if existing_aliases else None
+    )
+
+    # Drop the merge entity row from its own table.
+    await session.delete(merge)
+    await session.flush()
+
+    return {
+        "kept_type": keep_type,
+        "kept_id": str(keep.id),
+        "merged_type": merge_type,
+        "merged_id": merge_id,
+        "moved_source_rels": moved_src,
+        "moved_target_rels": moved_tgt,
+        "self_loops_removed": self_loops_dropped,
+        "duplicate_edges_removed": len(collision_ids),
+        "aliases_added": merged_in,
+    }
+
+
 # ── Pretty payloads for the admin UI ───────────────────────────────────
 
 

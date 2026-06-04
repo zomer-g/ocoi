@@ -2471,6 +2471,44 @@ async def matches_approve(
     return {"status": "ok", "data": summary}
 
 
+@router.post("/entities/merge-cross-type")
+async def entities_merge_cross_type(
+    body: dict,
+    current = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Merge two entities that live in DIFFERENT tables (e.g. one
+    classified as a 'company', the other as an 'association') even
+    though they're the same legal entity in the real world.
+
+    Body:
+      keep_type / keep_id   — the surviving side (kept as-is)
+      merge_type / merge_id — folded in and deleted
+
+    All relationships referencing the merge side are rewritten with
+    keep's (type, id) pair. Aliases fold in. The merge row is deleted.
+    """
+    from ocoi_api.services.match_service import merge_entities_cross_type
+
+    keep_type = (body.get("keep_type") or "").strip()
+    keep_id = (body.get("keep_id") or "").strip()
+    merge_type = (body.get("merge_type") or "").strip()
+    merge_id = (body.get("merge_id") or "").strip()
+    if not all([keep_type, keep_id, merge_type, merge_id]):
+        raise HTTPException(400, "keep_type/keep_id/merge_type/merge_id all required")
+
+    try:
+        summary = await merge_entities_cross_type(
+            db,
+            keep_type=keep_type, keep_id=keep_id,
+            merge_type=merge_type, merge_id=merge_id,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    await db.commit()
+    return {"status": "ok", "data": summary}
+
+
 @router.post("/matches/cleanup-pending")
 async def matches_cleanup_pending(
     body: dict,
