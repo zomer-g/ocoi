@@ -2471,6 +2471,104 @@ async def matches_approve(
     return {"status": "ok", "data": summary}
 
 
+@router.get("/audit/orphans-and-garbage")
+async def audit_orphans_and_garbage(
+    db: AsyncSession = Depends(get_db),
+):
+    """One-shot data-quality audit:
+
+    1. **Garbage names** — entity rows whose ``name_hebrew`` is a
+       placeholder ("null", "***", "----", empty after trim, etc.).
+       The LLM extractor occasionally emits these and the importer
+       persists them as real entities, polluting the graph.
+    2. **Orphan relationships** — rows in ``entity_relationships`` whose
+       ``source_entity_id`` or ``target_entity_id`` doesn't exist in
+       the corresponding entity table. Caused by mid-merge deletes or
+       relationship-level inserts that ran before the entity insert.
+       The graph endpoint renders these as nameless circles labelled
+       only with the UUID prefix.
+
+    Returns counts + sample IDs per category so the admin can decide
+    whether to mark hidden / delete / repair.
+    """
+    from sqlalchemy import text as sa_text
+
+    # Garbage names — same predicate everywhere; built as a SQL fragment
+    # so we don't have to fetch every row into Python.
+    GARBAGE_SQL = (
+        "TRIM(name_hebrew) IS NULL "
+        "OR TRIM(name_hebrew) = '' "
+        "OR LOWER(TRIM(name_hebrew)) IN ('null', 'none', 'n/a') "
+        "OR TRIM(name_hebrew) ~ '^[\\*_\\-–—=\\.,\\s]+$'"
+    )
+    garbage: dict[str, list[dict]] = {}
+    for tbl, etype in (("persons", "person"), ("companies", "company"),
+                       ("associations", "association"), ("domains", "domain")):
+        rows = (await db.execute(sa_text(
+            f"SELECT id::text AS id, name_hebrew FROM {tbl} WHERE {GARBAGE_SQL}"
+        ))).fetchall()
+        garbage[etype] = [
+            {"id": r[0], "name": r[1]} for r in rows
+        ]
+
+    # Orphan relationships — pairs that reference an ID not present in
+    # the corresponding entity table. We do this with LEFT JOINs per
+    # entity_type to keep each query simple and indexable.
+    orphans: dict[str, dict] = {}
+    for etype, tbl in (("person", "persons"), ("company", "companies"),
+                       ("association", "associations"), ("domain", "domains")):
+        # Source side
+        src_rows = (await db.execute(sa_text(f"""
+            SELECT DISTINCT er.source_entity_id::text AS id
+            FROM entity_relationships er
+            LEFT JOIN {tbl} t ON t.id = er.source_entity_id
+            WHERE er.source_entity_type = :etype AND t.id IS NULL
+        """).bindparams(etype=etype))).fetchall()
+        tgt_rows = (await db.execute(sa_text(f"""
+            SELECT DISTINCT er.target_entity_id::text AS id
+            FROM entity_relationships er
+            LEFT JOIN {tbl} t ON t.id = er.target_entity_id
+            WHERE er.target_entity_type = :etype AND t.id IS NULL
+        """).bindparams(etype=etype))).fetchall()
+        orphan_ids = sorted({r[0] for r in src_rows} | {r[0] for r in tgt_rows})
+        # Count how many relationships reference each orphan id (useful for
+        # deciding whether to delete the rels outright or attempt to back-fill
+        # the entity row).
+        ref_counts = {}
+        if orphan_ids:
+            count_rows = (await db.execute(sa_text(f"""
+                SELECT id, c FROM (
+                    SELECT source_entity_id::text AS id, COUNT(*) AS c
+                    FROM entity_relationships
+                    WHERE source_entity_type = :etype
+                      AND source_entity_id::text = ANY(:ids)
+                    GROUP BY source_entity_id
+                    UNION ALL
+                    SELECT target_entity_id::text AS id, COUNT(*) AS c
+                    FROM entity_relationships
+                    WHERE target_entity_type = :etype
+                      AND target_entity_id::text = ANY(:ids)
+                    GROUP BY target_entity_id
+                ) x
+            """).bindparams(etype=etype, ids=orphan_ids))).fetchall()
+            for rid, c in count_rows:
+                ref_counts[rid] = ref_counts.get(rid, 0) + int(c)
+        orphans[etype] = {
+            "count": len(orphan_ids),
+            "ids": [{"id": i, "ref_count": ref_counts.get(i, 0)} for i in orphan_ids],
+        }
+
+    return {
+        "status": "ok",
+        "data": {
+            "garbage_names": {
+                k: {"count": len(v), "items": v} for k, v in garbage.items()
+            },
+            "orphan_references": orphans,
+        },
+    }
+
+
 @router.post("/entities/merge-cross-type")
 async def entities_merge_cross_type(
     body: dict,
