@@ -10,6 +10,7 @@ a ContextVar so tool implementations can read them without plumbing.
 from __future__ import annotations
 
 import contextvars
+import hmac
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -18,8 +19,14 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from ocoi_api.auth import decode_mcp_token
+from ocoi_common.config import settings
 from ocoi_db.engine import async_session_factory
 from ocoi_db.models import BillingAccount, User
+
+# Synthetic identity for the machine-to-machine service-token path. It
+# maps to no ``users`` row on purpose — service callers bypass quota and
+# metering, so nothing tries to write a ``usage_events`` row keyed on it.
+SERVICE_CALLER_ID = "service-gateway"
 
 
 @dataclass
@@ -30,6 +37,10 @@ class MCPCaller:
     client_id: str | None
     plan: str
     monthly_quota: int | None
+    # True only for the shared-secret service principal (see the bypass in
+    # ``BearerAuthMiddleware.dispatch``). Downstream billing/metering skips
+    # these callers entirely.
+    is_service: bool = False
 
 
 _current_caller: contextvars.ContextVar[MCPCaller | None] = contextvars.ContextVar(
@@ -75,6 +86,29 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
             return _unauth("missing_or_malformed_bearer")
 
         token = header.split(" ", 1)[1].strip()
+
+        # ── Service-token bypass (machine-to-machine) ──────────────────
+        # A trusted gateway identifies with a static shared secret instead
+        # of an OAuth JWT. Timing-safe compare; only active when the secret
+        # is configured. Runs *before* JWT verification so no ``api_users``
+        # / DB lookup happens for the service principal.
+        service_token = settings.mcp_service_token.strip()
+        if service_token and hmac.compare_digest(token, service_token):
+            caller = MCPCaller(
+                user_id=SERVICE_CALLER_ID,
+                email="service@discovery-gateway",
+                name="Discovery Gateway (service)",
+                client_id="service",
+                plan="service",
+                monthly_quota=None,
+                is_service=True,
+            )
+            token_handle = set_current_caller(caller)
+            try:
+                return await call_next(request)
+            finally:
+                reset_current_caller(token_handle)
+
         try:
             payload = decode_mcp_token(token)
         except Exception as exc:

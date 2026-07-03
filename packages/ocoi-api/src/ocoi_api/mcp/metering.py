@@ -98,6 +98,14 @@ def metered(tool_name: str) -> Callable:
         @wraps(fn)
         async def wrapper(*args, **kwargs):
             caller = get_current_caller()
+
+            # Service principal (shared-secret gateway) bypasses billing
+            # and quota entirely. Its synthetic user_id has no ``users``
+            # row, so a ``usage_events`` write would violate the FK — skip
+            # metering and just run the tool.
+            if caller.is_service:
+                return await fn(*args, **kwargs)
+
             started_at = _now()
             t0 = time.perf_counter()
 
