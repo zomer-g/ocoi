@@ -228,6 +228,88 @@ def step_invite_only_gate():
     print("  Uninvited email correctly rejected (returned None)")
 
 
+def step_service_token_bypass():
+    """Machine-to-machine bypass — a request whose Bearer token equals
+    ``MCP_SERVICE_TOKEN`` authenticates as the synthetic service principal
+    without any JWT/DB lookup. A wrong token still 401s."""
+    from ocoi_common.config import settings
+    from ocoi_api.mcp.auth import (
+        BearerAuthMiddleware,
+        SERVICE_CALLER_ID,
+        _current_caller,
+    )
+    import asyncio
+
+    secret = "smoke-service-secret"
+    original = settings.mcp_service_token
+    settings.mcp_service_token = secret
+    try:
+        mw = BearerAuthMiddleware(app=None)
+
+        class _Req:
+            def __init__(self, token):
+                self.headers = {"authorization": f"Bearer {token}"}
+
+        seen = {}
+
+        async def _capture(_request):
+            # Middleware sets the ContextVar before calling us.
+            seen["caller"] = _current_caller.get()
+            return "OK"
+
+        async def run():
+            # Correct secret → service caller injected, downstream reached.
+            resp = await mw.dispatch(_Req(secret), _capture)
+            assert resp == "OK", "service token should reach downstream"
+            caller = seen["caller"]
+            assert caller is not None and caller.is_service, "caller not service"
+            assert caller.user_id == SERVICE_CALLER_ID
+            assert caller.monthly_quota is None
+            # ContextVar reset after the request.
+            assert _current_caller.get() is None, "caller not reset"
+
+            # Wrong secret → falls through to JWT path → 401.
+            seen.clear()
+            r401 = await mw.dispatch(_Req("not-the-secret"), _capture)
+            assert getattr(r401, "status_code", None) == 401, "wrong token must 401"
+            assert "caller" not in seen, "downstream must not run for bad token"
+
+        asyncio.run(run())
+        print(f"  Service token authenticates as {SERVICE_CALLER_ID}; wrong token 401s")
+    finally:
+        settings.mcp_service_token = original
+
+
+def step_service_token_disabled_by_default():
+    """With no ``MCP_SERVICE_TOKEN`` set the bypass is fully off: even an
+    empty Bearer token must not slip through as a service caller."""
+    from ocoi_common.config import settings
+    from ocoi_api.mcp.auth import BearerAuthMiddleware
+    import asyncio
+
+    original = settings.mcp_service_token
+    settings.mcp_service_token = ""
+    try:
+        mw = BearerAuthMiddleware(app=None)
+
+        class _Req:
+            def __init__(self, token):
+                self.headers = {"authorization": f"Bearer {token}"}
+
+        async def _boom(_request):
+            raise AssertionError("downstream must not run when bypass is disabled")
+
+        async def run():
+            # An empty token must not match an empty secret.
+            resp = await mw.dispatch(_Req(""), _boom)
+            assert getattr(resp, "status_code", None) == 401, "empty token must 401"
+
+        asyncio.run(run())
+        print("  Bypass off by default — empty token 401s")
+    finally:
+        settings.mcp_service_token = original
+
+
 def step_mcp_disabled_404():
     """Kill switch — MCP_ENABLED=false → /.well-known/* 404."""
     from ocoi_common.config import settings
@@ -259,5 +341,7 @@ if __name__ == "__main__":
     check("/mcp without bearer returns 401 + WWW-Authenticate", step_unauth_mcp_returns_401)
     check("dynamic client registration", step_dynamic_client_registration)
     check("invite-only gate rejects uninvited", step_invite_only_gate)
+    check("service-token bypass authenticates gateway", step_service_token_bypass)
+    check("service-token bypass off by default", step_service_token_disabled_by_default)
     check("MCP_ENABLED=false kill switch", step_mcp_disabled_404)
     print("\nALL SMOKE TESTS PASSED")

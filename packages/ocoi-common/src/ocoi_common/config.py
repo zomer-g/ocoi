@@ -118,6 +118,14 @@ class Settings(BaseSettings):
     # cookie tokens — both are signed by ``jwt_secret_key`` but cross-use
     # is rejected by the verifier.
     mcp_jwt_audience: str = "mcp"
+    # Machine-to-machine bypass. A shared secret that lets a trusted
+    # gateway (the "חיפוש רוחבי" discovery gateway) query /mcp without an
+    # interactive Google login: a request whose Bearer token equals this
+    # value skips JWT verification and runs as a synthetic service
+    # principal. Empty (the default) disables the bypass entirely — the
+    # only auth path is then OAuth. Equivalent to full MCP access; keep it
+    # in secrets only (Render sync:false / .env), never in the repo.
+    mcp_service_token: str = ""
 
     # ── Stripe (metered billing) ────────────────────────────────────────
     stripe_secret_key: str = ""
