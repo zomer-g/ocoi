@@ -34,6 +34,11 @@ services:
         value: "true"
       - key: MCP_PUBLIC_URL
         sync: false  # e.g. https://ocoi.org.il
+      # Machine-to-machine service token (shared secret with the discovery
+      # gateway). Empty/unset => the bypass is off. Set the value manually
+      # in the Render dashboard; must match the gateway's token for OCOI.
+      - key: MCP_SERVICE_TOKEN
+        sync: false
       # Stripe metered billing (test or live keys)
       - key: STRIPE_SECRET_KEY
         sync: false
