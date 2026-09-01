@@ -23,7 +23,7 @@ Support URL:         mailto:guy@z-g.co.il
 ```
 The extension marks names of Israeli public officials, companies, and
 associations on the current web page that have a published record on
-OCOI (ocoi.org.il), and shows their relationship map in a floating
+OCOI (over.org.il/projects/ocoi), and shows their relationship map in a floating
 panel — so the reader can verify potential conflicts of interest
 without leaving the page.
 ```
@@ -62,19 +62,21 @@ so the user can trigger an ad-hoc lookup without scanning the whole page.
 The menu only appears in the "selection" context.
 ```
 
-### Host permission `https://www.ocoi.org.il/*`
+### Host permission `https://www.over.org.il/*`
 ```
-The extension's only data source. The background service worker calls
-GET /api/v1/search and GET /api/v1/graph/neighbors to look up entities
-and fetch their relationship subgraph. Limiting the host permission to
-the OCOI domain means the extension cannot fetch from any other origin.
+The extension's only data source. "ניגוד עניינים לעם" (OCOI) is now published as
+part of "גרסאות לעם" at over.org.il/projects/ocoi, and its former
+domain ocoi.org.il is being retired. The background service worker calls
+GET /api/ocoi/search and GET /api/ocoi/graph/neighbors to look up entities
+and fetch their relationship subgraph. Limiting the host permission to this
+one domain means the extension cannot fetch from any other origin.
 ```
 
-### Host permission `https://ocoi.org.il/*`
+### Host permission `https://over.org.il/*`
 ```
-Identical purpose; covers the apex domain because ocoi.org.il currently
-issues a 301 redirect to www.ocoi.org.il, and Chrome requires the redirect
-target to be in host_permissions for the fetch to follow.
+Identical purpose; covers the apex domain because over.org.il issues a 301
+redirect to www.over.org.il, and Chrome requires the redirect target to be
+in host_permissions for the fetch to follow.
 ```
 
 ### Host permission `http://localhost:8000/*`
@@ -97,14 +99,14 @@ during testing only. End users do not interact with this URL.
 | Location | No | |
 | Web history | No | |
 | User activity | No | The extension does not track clicks, scroll, page views, or behavioral data. |
-| Website content | **Yes — limited** | When the user clicks the toolbar icon, the extension reads the visible Hebrew text of the active tab to extract multi-word name candidates. Each candidate phrase (typically 2–4 Hebrew words) is sent to `https://www.ocoi.org.il/api/v1/search` strictly to perform the lookup. No raw page text, URLs, titles, screenshots, or metadata are sent. Nothing is persisted. |
+| Website content | **Yes — limited** | When the user clicks the toolbar icon, the extension reads the visible Hebrew text of the active tab to extract multi-word name candidates. Each candidate phrase (typically 2–4 Hebrew words) is sent to `https://www.over.org.il/api/ocoi/search` strictly to perform the lookup. No raw page text, URLs, titles, screenshots, or metadata are sent. Nothing is persisted. |
 
 ### Per "Website content" justification
 ```
 Used for: implementing the extension's single purpose — matching names on
 the page against OCOI's public dataset and showing their relationship map.
 
-Transferred to: ocoi.org.il only. Not shared with any third party.
+Transferred to: over.org.il only. Not shared with any third party.
 
 Not sold. Not used for advertising. Not used for assessing creditworthiness
 or for lending purposes. Not used for any purpose unrelated to the

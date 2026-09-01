@@ -16,10 +16,42 @@
 //  - A small in-memory cache keyed by query string and entity id, so opening
 //    the same name on multiple pages in one browser session doesn't refetch.
 
+// ניגוד עניינים לעם moved into גרסאות לעם, and ocoi.org.il is being retired.
+// The two endpoints this extension uses — /search and /graph/neighbors/{id} —
+// were ported with identical shapes, so only the base changes.
 const DEFAULTS = {
-  apiBase: "https://www.ocoi.org.il/api/v1",
+  apiBase: "https://www.over.org.il/api/ocoi",
   enabled: true,
 };
+
+// Installs that predate the move carry the old base in chrome.storage, and a
+// stored value WINS over DEFAULTS — so shipping a new default alone would
+// leave every existing user pointed at a host that has stopped answering,
+// silently, with no error they could act on.
+const LEGACY_API_BASES = [
+  "https://www.ocoi.org.il/api/v1",
+  "https://ocoi.org.il/api/v1",
+];
+
+async function migrateLegacyApiBase() {
+  try {
+    const { apiBase } = await chrome.storage.local.get("apiBase");
+    if (apiBase && LEGACY_API_BASES.includes(apiBase.replace(/\/+$/, ""))) {
+      await chrome.storage.local.set({ apiBase: DEFAULTS.apiBase });
+      // The neighbour cache is keyed by apiBase, so old entries are now
+      // unreachable rather than wrong — but they are dead weight either way.
+      await chrome.storage.local.remove(
+        Object.keys(await chrome.storage.local.get(null))
+          .filter((k) => LEGACY_API_BASES.some((b) => k.startsWith(b + "|"))),
+      );
+    }
+  } catch (e) {
+    console.warn("[ocoi] could not migrate the stored API base", e);
+  }
+}
+
+chrome.runtime.onInstalled.addListener(migrateLegacyApiBase);
+chrome.runtime.onStartup?.addListener(migrateLegacyApiBase);
 
 const SEARCH_TTL_MS = 10 * 60 * 1000;
 // Neighbor responses are stable for days at a time (declarations get

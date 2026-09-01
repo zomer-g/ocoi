@@ -1,5 +1,5 @@
 const DEFAULTS = {
-  apiBase: "https://www.ocoi.org.il/api/v1",
+  apiBase: "https://www.over.org.il/api/ocoi",
   enabled: true,
 };
 

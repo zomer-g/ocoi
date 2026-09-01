@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "__MSG_extName__",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "__MSG_extDescription__",
   "default_locale": "he",
   "icons": {
@@ -9,10 +9,15 @@
     "48": "icons/icon-48.png",
     "128": "icons/icon-128.png"
   },
-  "permissions": ["activeTab", "storage", "contextMenus", "scripting"],
+  "permissions": [
+    "activeTab",
+    "storage",
+    "contextMenus",
+    "scripting"
+  ],
   "host_permissions": [
-    "https://www.ocoi.org.il/*",
-    "https://ocoi.org.il/*",
+    "https://www.over.org.il/*",
+    "https://over.org.il/*",
     "http://localhost:8000/*"
   ],
   "content_security_policy": {
@@ -32,8 +37,12 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["content/content-style.css"],
-      "matches": ["<all_urls>"]
+      "resources": [
+        "content/content-style.css"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
     }
   ]
 }

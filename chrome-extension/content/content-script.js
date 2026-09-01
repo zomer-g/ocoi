@@ -457,16 +457,17 @@
     window.addEventListener("mouseup", () => { dragging = false; });
   }
 
+  // ניגוד עניינים לעם is served from גרסאות לעם now. Its old per-type routes
+  // (/persons/<id>, /companies/<id>, …) do not exist there — the whole project
+  // is one page whose focus lives in the query string.
   function entityPagePath(type, id) {
-    if (type === "person") return `/persons/${id}`;
-    if (type === "company") return `/companies/${id}`;
-    if (type === "association") return `/associations/${id}`;
-    if (type === "domain") return `/domains/${id}`;
-    return `/`;
+    if (!type || !id) return "/projects/ocoi";
+    return `/projects/ocoi?tab=graph&type=${encodeURIComponent(type)}` +
+           `&id=${encodeURIComponent(id)}`;
   }
 
   function ocoiOrigin() {
-    return "https://www.ocoi.org.il";
+    return "https://www.over.org.il";
   }
 
   function typeLabel(type) {
@@ -786,7 +787,7 @@
       panel.classList.add("ocoi-panel--open");
       panel.querySelector(".ocoi-panel-title").textContent = cand;
       panel.querySelector(".ocoi-panel-link").href =
-        `https://www.ocoi.org.il/search?q=${encodeURIComponent(cand)}`;
+        `${ocoiOrigin()}/projects/ocoi?q=${encodeURIComponent(cand)}`;
       // textContent (not innerHTML) — `cand` is user-supplied page text and
       // could otherwise carry HTML markup, so we never let it parse.
       const body = panel.querySelector(".ocoi-panel-body");
