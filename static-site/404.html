@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>לא נמצא — ניגוד עניינים לעם</title>
+<meta name="robots" content="noindex">
+<link rel="canonical" href="https://www.over.org.il/projects/ocoi">
+<script>
+// Catch-all for the old site's own page routes. Besides the query-string
+// links (/document?id=, /entity?type=&id=), OCOI served per-type paths —
+// /persons/<id>, /companies/<id>, /associations/<id>, /domains/<id> — and the
+// browser extension built its panel links from exactly those. They are in the
+// wild too, so they get carried across rather than dead-ending here.
+(function () {
+  var base = "https://www.over.org.il/projects/ocoi";
+  var TYPES = {
+    persons: "person", companies: "company",
+    associations: "association", domains: "domain"
+  };
+  var parts = location.pathname.split("/").filter(Boolean);
+  var out = base;
+  if (parts.length === 2 && TYPES[parts[0]]) {
+    out = base + "?tab=graph&type=" + TYPES[parts[0]] +
+          "&id=" + encodeURIComponent(parts[1]);
+  } else if (parts.length === 1 && parts[0] === "documents") {
+    out = base + "?tab=documents";
+  }
+  location.replace(out);
+})();
+</script>
+<style>
+  body {
+    font-family: "Segoe UI", Rubik, Arial, system-ui, sans-serif;
+    margin: 0; min-height: 100vh; display: flex; align-items: center;
+    justify-content: center; background: #f7f7f5; color: #16161a;
+    padding: 1.5rem; text-align: center; line-height: 1.7;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background: #101014; color: #ececf1; }
+  }
+  a { color: #1f6f5c; }
+  @media (prefers-color-scheme: dark) { a { color: #4bbf9d; } }
+</style>
+</head>
+<body>
+  <div>
+    <p>הדף הזה עבר לגרסאות לעם.</p>
+    <p><a href="https://www.over.org.il/projects/ocoi">מעבר לניגוד עניינים לעם ←</a></p>
+  </div>
+</body>
+</html>

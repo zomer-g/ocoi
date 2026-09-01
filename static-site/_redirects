@@ -1,0 +1,19 @@
+# Server-side redirects for hosts that read this file (Netlify, Cloudflare
+# Pages). They run BEFORE the HTML, so the browser never paints an interstitial
+# and search engines see a real 301. The matching .html pages stay as the
+# fallback for hosts that ignore this file (Render, GitHub Pages).
+#
+# Query strings are forwarded automatically, but the destination needs them
+# RESHAPED (id -> doc, plus a tab), which a splat cannot express — so the
+# query-string paths keep their HTML redirectors and only the path-shaped
+# routes are handled here.
+
+/persons/*        https://www.over.org.il/projects/ocoi?tab=graph&type=person&id=:splat        301
+/companies/*      https://www.over.org.il/projects/ocoi?tab=graph&type=company&id=:splat       301
+/associations/*   https://www.over.org.il/projects/ocoi?tab=graph&type=association&id=:splat   301
+/domains/*        https://www.over.org.il/projects/ocoi?tab=graph&type=domain&id=:splat        301
+/documents        https://www.over.org.il/projects/ocoi?tab=documents                          301
+
+# The old API. Nothing here can serve it, and a silent 404 would look like an
+# outage rather than a move — send callers to the documented replacement.
+/api/v1/*         https://www.over.org.il/api/ocoi/:splat                                       301

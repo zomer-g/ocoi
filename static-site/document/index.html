@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>מסמך — ניגוד עניינים לעם</title>
+<meta name="robots" content="noindex">
+<link rel="canonical" href="https://www.over.org.il/projects/ocoi">
+<script>
+// ניגוד עניינים לעם is served from over.org.il now. This page exists only to
+// carry a legacy deep link across: OCOI's MCP server told models to cite
+// ocoi.org.il/document?…, so those URLs sit in text nobody can edit. Losing them
+// would break every citation the project ever produced.
+(function () {
+  var p = new URLSearchParams(location.search);
+  var base = "https://www.over.org.il/projects/ocoi";
+  var out = (p.get("id") ? base + "?tab=documents&doc=" + encodeURIComponent(p.get("id")) : base + "?tab=documents");
+  location.replace(out);
+})();
+</script>
+<style>
+  body {
+    font-family: "Segoe UI", Rubik, Arial, system-ui, sans-serif;
+    margin: 0; min-height: 100vh; display: flex; align-items: center;
+    justify-content: center; background: #f7f7f5; color: #16161a;
+    padding: 1.5rem; text-align: center; line-height: 1.7;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background: #101014; color: #ececf1; }
+  }
+  a { color: #1f6f5c; }
+  @media (prefers-color-scheme: dark) { a { color: #4bbf9d; } }
+</style>
+</head>
+<body>
+  <div>
+    <p>מעבירים אותך לניגוד עניינים לעם באתר גרסאות לעם…</p>
+    <p><a id="fallback" href="https://www.over.org.il/projects/ocoi">להמשך לחצו כאן</a></p>
+  </div>
+  <script>
+    // Without JS the redirect above never runs, so at least aim the link.
+    (function () {
+      var p = new URLSearchParams(location.search);
+      var base = "https://www.over.org.il/projects/ocoi";
+      document.getElementById("fallback").href = (p.get("id") ? base + "?tab=documents&doc=" + encodeURIComponent(p.get("id")) : base + "?tab=documents");
+    })();
+  </script>
+</body>
+</html>
