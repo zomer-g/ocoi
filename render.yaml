@@ -1,54 +1,60 @@
+# ocoi.org.il is no longer an application.
+#
+# ניגוד עניינים לעם now lives inside גרסאות לעם, at
+# https://www.over.org.il/projects/ocoi. The domain stays here, so what this
+# blueprint deploys is the static site in ./static-site: a landing page that
+# sends visitors to the new home, plus the redirects that keep every old
+# citation link (/document?id=…, /entity?type=&id=…, /persons/<id>, …) alive.
+#
+# A static site on Render has no instance and no database, so it costs nothing
+# to keep running. The Docker web service and the Postgres database that used
+# to be declared here are deliberately gone — see static-site/README.md for the
+# cut-over order, which ends with deleting them by hand in the dashboard
+# (removing them from this file does NOT delete them, and must not).
+#
+# The FastAPI app, the extension and the data pipeline all stay in the repo;
+# only the hosting of ocoi.org.il changes.
+
 services:
   - type: web
-    name: ocoi
-    runtime: docker
-    plan: free
-    dockerfilePath: ./Dockerfile
-    envVars:
-      - key: DATABASE_URL
-        fromDatabase:
-          name: ocoi-db
-          property: connectionString
-      - key: ENV
-        value: production
-      - key: STATIC_DIR
-        value: /app/static
-      - key: DEEPSEEK_API_KEY
-        sync: false
-      - key: OPENCORPORATES_API_KEY
-        sync: false
-      - key: ALLOWED_ORIGINS
-        sync: false
-      - key: GOOGLE_CLIENT_ID
-        sync: false
-      - key: GOOGLE_CLIENT_SECRET
-        sync: false
-      - key: GOOGLE_REDIRECT_URI
-        sync: false
-      - key: JWT_SECRET_KEY
-        sync: false
-      - key: ADMIN_EMAILS
-        sync: false
-      # MCP server
-      - key: MCP_ENABLED
-        value: "true"
-      - key: MCP_PUBLIC_URL
-        sync: false  # e.g. https://ocoi.org.il
-      # Machine-to-machine service token (shared secret with the discovery
-      # gateway). Empty/unset => the bypass is off. Set the value manually
-      # in the Render dashboard; must match the gateway's token for OCOI.
-      - key: MCP_SERVICE_TOKEN
-        sync: false
-      # Stripe metered billing (test or live keys)
-      - key: STRIPE_SECRET_KEY
-        sync: false
-      - key: STRIPE_METERED_PRICE_ID
-        sync: false
-      - key: TZ
-        value: Asia/Jerusalem
+    name: ocoi-static
+    runtime: static
+    # The old `ocoi` service is a Docker one, and Render cannot convert a
+    # service's runtime in place — this has to be a NEW service, which is why
+    # the name differs. Its custom domains are moved over in the dashboard,
+    # which is also why `domains:` is not declared here: claiming ocoi.org.il
+    # while the old service still holds it would fail the sync.
+    staticPublishPath: ./static-site
+    buildCommand: echo "nothing to build - the site is committed as static files"
 
-databases:
-  - name: ocoi-db
-    plan: free
-    databaseName: ocoi
-    postgresMajorVersion: "16"
+    # Real 301s for the path-shaped legacy routes. The query-string ones
+    # (/document?id=, /entity?type=&id=, /search?q=) are NOT here: their
+    # destination reshapes the parameters (id becomes doc, and a tab is added),
+    # which a rule cannot express, so they keep their own HTML redirectors.
+    # Render skips a rule when a real file exists at that path, so those pages
+    # keep answering for themselves.
+    #
+    # 404.html performs the same path redirects in JS, and stays as the net for
+    # anything these rules miss.
+    routes:
+      - type: redirect
+        source: /persons/:id
+        destination: https://www.over.org.il/projects/ocoi?tab=graph&type=person&id=:id
+      - type: redirect
+        source: /companies/:id
+        destination: https://www.over.org.il/projects/ocoi?tab=graph&type=company&id=:id
+      - type: redirect
+        source: /associations/:id
+        destination: https://www.over.org.il/projects/ocoi?tab=graph&type=association&id=:id
+      - type: redirect
+        source: /domains/:id
+        destination: https://www.over.org.il/projects/ocoi?tab=graph&type=domain&id=:id
+      - type: redirect
+        source: /documents
+        destination: https://www.over.org.il/projects/ocoi?tab=documents
+      # The old API. A silent 404 here would read as an outage rather than a
+      # move, so callers are pointed at the documented replacement. The path
+      # after /api/v1 is dropped on purpose: Render has no splat to carry it.
+      - type: redirect
+        source: /api/v1/*
+        destination: https://www.over.org.il/api/ocoi
